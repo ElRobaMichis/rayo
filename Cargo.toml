@@ -1,6 +1,6 @@
 [package]
 name = "rayo"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "A fast, minimalist file explorer for Windows, with instant search built in"
 license = "MIT"
