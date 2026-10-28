@@ -61,6 +61,28 @@ fn side_item(ui: &mut Ui, t: &Theme, icon: &str, icon_color: Color32, fill: bool
     resp
 }
 
+/// Resalta una fila de la barra lateral mientras se arrastran archivos encima. Devuelve lo que se
+/// soltó en ella (de Rayo o de otra app), si se soltó algo.
+fn sidebar_drop(ui: &Ui, t: &Theme, resp: &Response) -> Option<Vec<String>> {
+    if crate::ui::views::drag_hovering(resp) {
+        let r = resp.rect.shrink2(vec2(6.0, 1.0));
+        ui.painter().rect_filled(r, 6.0, t.accent.gamma_multiply(0.18));
+        ui.painter().rect_stroke(r, 6.0, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
+    }
+    crate::ui::views::take_drop(resp)
+}
+
+/// Soltar archivos en un lugar, una unidad o un favorito: se copian o se mueven ahí, como al
+/// soltarlos en una carpeta (mismo disco = mover, otro disco = copiar; Ctrl copia, Mayús mueve).
+fn drop_into(ui: &Ui, t: &Theme, resp: &Response, dest: &str, actions: &mut Vec<Action>) {
+    if let Some(files) = sidebar_drop(ui, t, resp) {
+        let paths: Vec<String> = files.into_iter().filter(|f| droppable_into(f, dest)).collect();
+        if !paths.is_empty() {
+            actions.push(Action::DropFiles { paths, dest: dest.to_string(), force: crate::ui::views::drop_force() });
+        }
+    }
+}
+
 /// Menú de clic derecho de un lugar, una unidad o un favorito.
 fn location_menu(ui: &mut Ui, path: &str, split: bool, groups: &[String], actions: &mut Vec<Action>) {
     let item = |ui: &mut Ui, icon: &str, text: &str| ui.add(egui::Button::new(format!("{icon}  {text}")).min_size(vec2(220.0, 0.0))).clicked();
@@ -96,6 +118,7 @@ fn location_menu(ui: &mut Ui, path: &str, split: bool, groups: &[String], action
 
 fn drive_row(ui: &mut Ui, t: &Theme, d: &Drive, selected: bool, split: bool, groups: &[String], actions: &mut Vec<Action>) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::click());
+    drop_into(ui, t, &resp, &d.root(), actions);
     let p = ui.painter().clone();
     let r = rect.shrink2(vec2(6.0, 1.0));
     if selected {
@@ -195,6 +218,7 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
             for p in s.places {
                 let sel = p.path.to_lowercase() == cur_lower;
                 let r = side_item(ui, t, p.icon, if sel { t.accent } else { t.dim }, false, p.name, sel);
+                drop_into(ui, t, &r, &p.path, actions);
                 if r.clicked() {
                     actions.push(Action::Navigate(p.path.clone()));
                 }
@@ -211,6 +235,10 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
             }
             let sel = s.special == "papelera";
             let r = side_item(ui, t, ic::TRASH_SIMPLE, if sel { t.accent } else { t.dim }, false, t!("comun.papelera"), sel);
+            if let Some(files) = sidebar_drop(ui, t, &r) {
+                // Soltar en la papelera: mandar ahí (como la tecla Supr).
+                actions.push(Action::Delete(files, false));
+            }
             if r.clicked() || r.middle_clicked() {
                 actions.push(Action::OpenRecycle);
             }
@@ -250,6 +278,12 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
             let collapsed = s.cfg.groups[gi].collapsed;
             let name = s.cfg.groups[gi].name.clone();
             let (h, hrect) = section_header(ui, t, &name, collapsed);
+            if let Some(files) = sidebar_drop(ui, t, &h) {
+                // Soltar carpetas en el título de un grupo: agregarlas a sus favoritos.
+                for f in files.into_iter().filter(|f| fsx::is_dir_like(f)) {
+                    actions.push(Action::AddFavorite(gi, f));
+                }
+            }
             if h.clicked() {
                 s.cfg.groups[gi].collapsed ^= true;
             }
@@ -291,6 +325,7 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
                 let sel = path.to_lowercase() == cur_lower;
                 let label = if path.len() <= 3 { path.clone() } else { fsx::file_name(path) };
                 let r = side_item(ui, t, ic::FOLDER, t.folder, true, &label, sel).on_hover_text(path);
+                drop_into(ui, t, &r, path, actions);
                 if r.clicked() {
                     actions.push(Action::Navigate(path.clone()));
                 }
