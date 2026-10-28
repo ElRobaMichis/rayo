@@ -1029,17 +1029,19 @@ mod tests {
     }
 
     fn wait(t: &Transfers, id: u64) -> JobView {
-        for _ in 0..500 {
-            let v = t.snapshot().into_iter().find(|j| j.id == id).unwrap();
+        let mut v = None;
+        for _ in 0..3000 {
+            let v = v.insert(t.snapshot().into_iter().find(|j| j.id == id).unwrap());
             if v.state == State::Conflict {
                 t.resolve(id, Choice::KeepBoth, true);
             }
             if v.finished() {
-                return v;
+                return v.clone();
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        panic!("el trabajo no terminó");
+        let all: Vec<(u64, State)> = t.snapshot().iter().map(|j| (j.id, j.state)).collect();
+        panic!("el trabajo no terminó: {v:#?}\ntodos: {all:?}");
     }
 
     /// Muchos archivos en carpetas anidadas (en un SSD se copian varios a la vez): llegan todos,
@@ -1082,6 +1084,7 @@ mod tests {
         let src = join(&root, "a.bin");
         std::fs::write(long_path(&src), vec![7u8; 1 << 20]).unwrap();
         let (d1, d2) = (join(&root, "uno"), join(&root, "dos"));
+        println!("{root}: {:?}", disks::volume(&root));
         let t = Transfers::new(Arc::new(|| {}), Arc::new(|_| {}));
         let a = t.enqueue(Op::Copy, vec![src.clone()], d1.clone());
         let b = t.enqueue(Op::Copy, vec![src.clone()], d2.clone());

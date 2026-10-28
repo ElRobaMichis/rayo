@@ -397,10 +397,60 @@ fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, sele
     resp
 }
 
+/// Un renombrado "lento" en espera: clic sobre el nombre de lo que ya estaba seleccionado.
+#[derive(Clone)]
+struct SlowRename {
+    row: Id,
+    dir: String,
+    name: String,
+    at: f64,
+}
+
+/// Renombrar con un clic lento, como en todo Windows: clic sobre el nombre de lo único que ya
+/// estaba seleccionado y, si en el tiempo de doble clic de Windows no llega otro clic ni una
+/// tecla, se abre el renombrado (con doble clic, en cambio, se abre el archivo).
+/// `name_area`: dónde está el nombre; con `measure`, solo hasta donde llega el texto.
+fn slow_rename(cx: &mut Cx, resp: &egui::Response, dir: &str, e: &FileEntry, selected: bool, selection: &[String], name_area: Rect, measure: bool) {
+    let key = Id::new("renombrar-lento");
+    let ctx = resp.ctx.clone();
+    let now = ctx.input(|i| i.time);
+    let wait = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() } as f64 / 1000.0;
+    if let Some(p) = ctx.data(|d| d.get_temp::<SlowRename>(key)) {
+        if p.row == resp.id {
+            let interrupted = ctx.input(|i| i.pointer.any_pressed() || i.events.iter().any(|ev| matches!(ev, egui::Event::Key { pressed: true, .. })));
+            if interrupted || resp.double_clicked() || !selected || selection.len() != 1 || cx.rename.is_some() {
+                ctx.data_mut(|d| d.remove::<SlowRename>(key));
+            } else if now - p.at >= wait {
+                ctx.data_mut(|d| d.remove::<SlowRename>(key));
+                cx.actions.push(Action::StartRename(p.dir, p.name));
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait - (now - p.at) + 0.01));
+            }
+            return;
+        }
+    }
+    // `selected` es de antes de este clic: el clic que selecciona algo no lo renombra.
+    if !(resp.clicked() && selected && selection.len() == 1 && cx.rename.is_none() && ctx.input(|i| i.modifiers.is_none())) {
+        return;
+    }
+    let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) else { return };
+    let mut area = name_area;
+    if measure {
+        let w = ctx.fonts_mut(|f| f.layout_no_wrap(e.name.clone(), FontId::proportional(13.5), Color32::WHITE).size().x);
+        area.max.x = area.max.x.min(area.min.x + w + 6.0);
+    }
+    if area.contains(pos) {
+        ctx.data_mut(|d| d.insert_temp(key, SlowRename { row: resp.id, dir: dir.to_string(), name: e.name.clone(), at: now }));
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait + 0.01));
+    }
+}
+
 /// Devuelve true si el arrastre empezó en `marquee_x` o más a la derecha (fuera del nombre):
 /// ese arrastre es un rectángulo de selección, no mover archivos.
+/// `name_area` / `measure`: dónde está el nombre (para renombrar con un clic lento).
 #[allow(clippy::too_many_arguments)]
-fn handle_row_response(cx: &mut Cx, resp: &egui::Response, ci: usize, dir: &str, e: &FileEntry, selected: bool, selection: Vec<String>, marquee_x: Option<f32>) -> bool {
+fn handle_row_response(cx: &mut Cx, resp: &egui::Response, ci: usize, dir: &str, e: &FileEntry, selected: bool, selection: Vec<String>, marquee_x: Option<f32>, name_area: Rect, measure: bool) -> bool {
+    slow_rename(cx, resp, dir, e, selected, &selection, name_area, measure);
     let path = fsx::join(dir, &e.name);
     // Arrastrar: se lleva la selección si la fila está seleccionada; si no, solo esa fila (y queda seleccionada sola).
     if resp.drag_started() {
@@ -497,7 +547,8 @@ pub fn column(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, active: bool, 
         let st = size_text(e);
         let right = st.as_deref();
         let resp = file_row(ui, cx, r, e, &dir, selected, active, right, e.is_dir, None);
-        handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), None);
+        let name_area = Rect::from_min_max(pos2(r.left() + 36.0, r.top()), pos2(r.right() - 12.0, r.bottom()));
+        handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), None, name_area, true);
     });
     marquee(ui, cx, ci, start, selection, &out, |r| list_hits(data.entries, r));
     background_drop(ui, cx, &bg, rect, &dir);
@@ -605,7 +656,8 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
             p.text(pos2(r.right() - 14.0, r.center().y), Align2::RIGHT_CENTER, txt, FontId::proportional(12.0), dim_c);
         }
         // Arrastrar desde fuera del nombre (fecha, tipo, tamaño) dibuja un rectángulo, como en el Explorador.
-        if handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), Some(x1)) {
+        let name_area = Rect::from_min_max(pos2(r.left() + 36.0, r.top()), pos2(x1, r.bottom()));
+        if handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), Some(x1), name_area, true) {
             start = resp.ctx.input(|i| i.pointer.press_origin());
         }
     });
@@ -873,7 +925,7 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                     let g = p.layout_job(job);
                     p.galley(pos2(name_rect.center().x, name_rect.top()), g, color);
                 }
-                handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), None);
+                handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), None, name_rect, false);
             }
         }
     });
