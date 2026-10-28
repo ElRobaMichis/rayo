@@ -3352,6 +3352,11 @@ impl eframe::App for App {
 
         // El menú de clic derecho, en sus propias ventanas.
         self.show_menu(&ctx, &mut actions);
+        // Lo que cambian las acciones se ve en el cuadro siguiente: pedirlo, aunque no haya
+        // entrada (p. ej. el renombrado con clic lento lo dispara un temporizador).
+        if !actions.is_empty() {
+            ctx.request_repaint();
+        }
         for a in actions {
             self.apply(&ctx, a);
         }
