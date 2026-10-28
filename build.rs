@@ -160,6 +160,27 @@ fn write_ico(path: &Path, images: &[(u32, Vec<u8>)]) {
     std::fs::write(path, dir).expect("no se pudo escribir el .ico");
 }
 
+/// `rc.exe` (el compilador de recursos de MSVC): el del PATH si está (consola de Visual Studio) y si no
+/// el del SDK de Windows más nuevo, que es lo que hay en una PC común o en GitHub Actions.
+fn find_rc() -> PathBuf {
+    let on_path = std::process::Command::new("rc.exe").arg("/?").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok();
+    if on_path {
+        return PathBuf::from("rc.exe");
+    }
+    let arch = if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") { "arm64" } else { "x64" };
+    let kits = std::env::var_os("ProgramFiles(x86)").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Program Files (x86)")).join(r"Windows Kits\10\bin");
+    let mut found: Vec<PathBuf> = std::fs::read_dir(&kits)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path().join(arch).join("rc.exe"))
+        .filter(|p| p.is_file())
+        .collect();
+    // Las carpetas se llaman por versión (10.0.22621.0): la más nueva queda última.
+    found.sort();
+    found.pop().unwrap_or_else(|| PathBuf::from("rc.exe"))
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -176,7 +197,7 @@ fn main() {
     std::fs::write(&rc, format!("1 ICON \"{}\"\n", ico.display().to_string().replace('\\', "/"))).unwrap();
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         let res = out.join("rayo.res");
-        let ok = std::process::Command::new("rc.exe").arg("/nologo").arg("/fo").arg(&res).arg(&rc).status().is_ok_and(|s| s.success());
+        let ok = std::process::Command::new(find_rc()).arg("/nologo").arg("/fo").arg(&res).arg(&rc).status().is_ok_and(|s| s.success());
         if ok {
             println!("cargo:rustc-link-arg-bin=rayo={}", res.display());
         } else {

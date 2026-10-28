@@ -1,0 +1,51 @@
+name: Release
+
+# Pushing a version tag publishes a release:
+#   1. bump `version` in Cargo.toml and commit
+#   2. git tag v0.2.0 && git push origin v0.2.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check that the tag matches Cargo.toml
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($tag -ne $version) {
+            Write-Error "Tag v$tag does not match the version in Cargo.toml ($version)."
+            exit 1
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Test
+        run: cargo test --release --lib --locked
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          $hash = (Get-FileHash target/release/rayo.exe -Algorithm SHA256).Hash.ToLower()
+          $notes = (Get-Content .github/release-notes.md -Raw).Replace('{sha256}', $hash)
+          Set-Content -Path release-notes.md -Value $notes -Encoding utf8
+          gh release create "${{ github.ref_name }}" target/release/rayo.exe `
+            --title "Rayo $version" `
+            --notes-file release-notes.md `
+            --generate-notes `
+            --verify-tag

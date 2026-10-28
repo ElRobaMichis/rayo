@@ -66,5 +66,17 @@ safe to experiment with.
 - [ ] New interface text is in `idiomas/es.csv` and `idiomas/en.csv`
 - [ ] Screenshots for visual changes
 
+## Releasing (maintainers)
+
+Releases are automatic. Bump `version` in `Cargo.toml`, commit, then push a matching tag:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The [Release workflow](.github/workflows/release.yml) checks that the tag matches `Cargo.toml`, builds and
+tests on Windows, and publishes `rayo.exe` with its SHA-256 and the list of changes since the previous release.
+
 By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE) and that you
 follow our [Code of Conduct](CODE_OF_CONDUCT.md).

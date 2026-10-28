@@ -13,7 +13,7 @@ jobs:
     name: Build and test (Windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
@@ -21,7 +21,7 @@ jobs:
       - name: Test
         run: cargo test --release --lib --locked
       - name: Upload rayo.exe
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rayo-${{ github.sha }}
           path: target/release/rayo.exe
