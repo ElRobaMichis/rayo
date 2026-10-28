@@ -916,9 +916,10 @@ fn search_history(ui: &mut Ui, t: &Theme, tab: &mut Tab, id: Id, rect: Rect, foc
     let area_id = id.with("hist");
     let rect_id = id.with("hist-rect");
     let sel_id = id.with("hist-sel");
-    // Mientras se hace clic en la lista la caja pierde el foco: la lista sigue hasta soltar.
+    // Al apretar sobre la lista la caja pierde el foco: la lista sigue mientras el botón está
+    // apretado y también en el cuadro en que se suelta, que es cuando egui cuenta el clic.
     let last_rect: Option<Rect> = ui.data(|d| d.get_temp(rect_id));
-    let pressing_list = ui.input(|i| i.pointer.any_down() && i.pointer.interact_pos().is_some_and(|p| last_rect.is_some_and(|r| r.contains(p))));
+    let pressing_list = ui.input(|i| (i.pointer.any_down() || i.pointer.any_released()) && i.pointer.interact_pos().is_some_and(|p| last_rect.is_some_and(|r| r.contains(p))));
     if !tab.search.text.is_empty() || history.is_empty() || !(focused || pressing_list) {
         ui.data_mut(|d| {
             d.remove::<Rect>(rect_id);
@@ -968,6 +969,8 @@ fn search_history(ui: &mut Ui, t: &Theme, tab: &mut Tab, id: Id, rect: Rect, foc
                 }
                 if xresp.clicked() {
                     actions.push(Action::ForgetSearch(Some(k)));
+                    // La lista queda abierta (la caja recupera el foco) para seguir quitando.
+                    ui.memory_mut(|m| m.request_focus(id));
                 } else if resp.clicked() {
                     pick = Some(q.clone());
                 }
