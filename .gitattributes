@@ -1,0 +1,8 @@
+# Code and docs with LF line endings in the repository.
+* text=auto eol=lf
+
+# Translation files keep their bytes as they are (UTF-8 with BOM and CRLF, as Excel saves them).
+*.csv -text
+
+*.png binary
+*.ico binary

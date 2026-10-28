@@ -1,0 +1,21 @@
+name: Translation
+description: Add a new language or fix an existing translation
+labels: ["translation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you! Follow the [translation guide](https://github.com/ElRobaMichis/rayo/blob/main/idiomas/L%C3%89EME.md),
+        then attach your CSV here (or open a pull request that adds it to `idiomas/`).
+  - type: input
+    id: language
+    attributes:
+      label: Language
+      placeholder: "Português (pt)"
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything that was hard to translate, or texts that don't fit in the interface.

@@ -1,0 +1,666 @@
+﻿clave,texto,original (es),nota
+admin.copiar,Copy {que} to “{nombre}”,Copiar {que} a «{nombre}»,"{nombre} = un nombre de archivo o carpeta; {que} = «nombre» o «N elementos»"
+admin.crear_carpeta,Create a folder in “{nombre}”,Crear una carpeta en «{nombre}»,{nombre} = un nombre de archivo o carpeta
+admin.enviar_papelera,Move to the Recycle Bin,Enviar a la papelera,
+admin.mover,Move {que} to “{nombre}”,Mover {que} a «{nombre}»,"{nombre} = un nombre de archivo o carpeta; {que} = «nombre» o «N elementos»"
+admin.renombrar_como,Rename “{viejo}” to “{nuevo}”,Renombrar «{viejo}» como «{nuevo}»,"{nuevo} = el nombre nuevo; {viejo} = el nombre de antes"
+admin.windows_no_permitio_ni_permisos,"Windows didn't allow it, not even as administrator",Windows no lo permitió ni con permisos de administrador,
+antiguedad.ahora,now,ahora,Antigüedad corta de un archivo (en una pastilla chica junto a la fecha): lo más corto posible
+antiguedad.anios,{n} y,{n} a,Antigüedad corta de un archivo (en una pastilla chica junto a la fecha): lo más corto posible · {n} = un número
+antiguedad.dias,{n} d,{n} d,Antigüedad corta de un archivo (en una pastilla chica junto a la fecha): lo más corto posible · {n} = un número
+antiguedad.horas,{n} h,{n} h,Antigüedad corta de un archivo (en una pastilla chica junto a la fecha): lo más corto posible · {n} = un número
+antiguedad.meses,{n} mo,{n} m,Antigüedad corta de un archivo (en una pastilla chica junto a la fecha): lo más corto posible · {n} = un número
+antiguedad.minutos,{n} min,{n} min,Antigüedad corta de un archivo (en una pastilla chica junto a la fecha): lo más corto posible · {n} = un número
+antiguedad.semanas,{n} wk,{n} sem,Antigüedad corta de un archivo (en una pastilla chica junto a la fecha): lo más corto posible · {n} = un número
+app.1_coincide,1 match,1 coincide,
+app.abre_vista_dividida_ctrl_enviar,Open the split view (Ctrl+\) to send to the other pane,Abre la vista dividida (Ctrl+\) para enviar al otro panel,
+app.abriendo_copia_temporal,Opening a temporary copy…,Abriendo una copia temporal…,
+app.abriendo_esta_carpeta,Opening {que} in this folder,Abriendo {que} en esta carpeta,{que} = «nombre» o «N elementos»
+app.abriran_rayo,These will open in Rayo:,Se abrirán en Rayo:,
+app.activar,Turn on,Activar,
+app.actualizando_indice,updating index,actualizando índice,
+app.al_dia_por,up to date via {modo},al día por {modo},{modo} = cómo se mantiene al día el índice
+app.bienvenido_rayo,Welcome to Rayo,Bienvenido a Rayo,
+app.cambiar_tema,Change theme,Cambiar tema,
+app.carpeta_nueva_ya_tiene_archivos,The new folder already has files in it: it won't be removed,La carpeta nueva ya tiene archivos: no se elimina,
+app.carpetas_unidades_archivos_zip_abras,"folders, drives and .zip files you open from any program, and Win+E;","las carpetas, unidades y archivos .zip que abras desde cualquier programa, y Win+E;",
+app.cerrar_rayo_cierra_todo,Closing the window now quits Rayo completely,"Al cerrar, Rayo se cierra del todo",
+app.cerrar_rayo_queda_segundo_plano,"Closing the window keeps Rayo in the background, so it opens instantly (Ctrl+Q to quit)","Al cerrar, Rayo queda en segundo plano y vuelve a abrir al instante (Ctrl+Q para salir)",
+app.coinciden,{n} matches,{n} coinciden,{n} = un número
+app.comprimidos_son_solo_lectura_extrae,Archives are read-only: extract the files to change them,Los comprimidos son de solo lectura: extrae los archivos para cambiarlos,
+app.continuar_como_administrador,Continue as administrator,Continuar como administrador,
+app.copiado_n.uno,Copied {n} item,Copiado {n} elemento,Cuando la cantidad es 1 · al portapapeles · {n} = un número
+app.copiado_n.varios,Copied {n} items,Copiados {n} elementos,Cuando la cantidad no es 1 · al portapapeles · {n} = un número
+app.copiando_a.uno,Copying {n} item to “{destino}”,Copiando {n} elemento a «{destino}»,"Cuando la cantidad es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
+app.copiando_a.varios,Copying {n} items to “{destino}”,Copiando {n} elementos a «{destino}»,"Cuando la cantidad no es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
+app.copiando_n.uno,Copying {n} item,Copiando {n} elemento,Cuando la cantidad es 1 · {n} = un número
+app.copiando_n.varios,Copying {n} items,Copiando {n} elementos,Cuando la cantidad no es 1 · {n} = un número
+app.copiar,  ·  copy,  ·  copiar,
+app.cortado_n.uno,Cut {n} item,Cortado {n} elemento,Cuando la cantidad es 1 · al portapapeles · {n} = un número
+app.cortado_n.varios,Cut {n} items,Cortados {n} elementos,Cuando la cantidad no es 1 · al portapapeles · {n} = un número
+app.cpu_cuadro_ms_peor_ms,CPU per frame: {promedio} ms (worst {peor} ms),CPU por cuadro: {promedio} ms (peor {peor} ms),
+app.cuadros_s,{fps} frames/s,{fps} cuadros/s,
+app.deshaciendo_devolviendo.uno,Undoing: moving {n} item back,Deshaciendo: devolviendo {n} elemento,Cuando la cantidad es 1 · {n} = un número
+app.deshaciendo_devolviendo.varios,Undoing: moving {n} items back,Deshaciendo: devolviendo {n} elementos,Cuando la cantidad no es 1 · {n} = un número
+app.deshecho_carpeta_nueva_eliminada,Undone: new folder removed,Deshecho: carpeta nueva eliminada,
+app.deshecho_copias_papelera.uno,Undone: {n} copy moved to the Recycle Bin,Deshecho: {n} copia a la papelera,Cuando la cantidad es 1 · {n} = un número
+app.deshecho_copias_papelera.varios,Undone: {n} copies moved to the Recycle Bin,Deshecho: {n} copias a la papelera,Cuando la cantidad no es 1 · {n} = un número
+app.deshecho_nombres_restaurados,Undone: {n} names restored,Deshecho: {n} nombres restaurados,{n} = un número
+app.deshecho_restaurados.uno,Undone: {n} item restored,Deshecho: {n} elemento restaurado,Cuando la cantidad es 1 · {n} = un número
+app.deshecho_restaurados.varios,Undone: {n} items restored,Deshecho: {n} elementos restaurados,Cuando la cantidad no es 1 · {n} = un número
+app.deshecho_vuelve_llamarse,Undone: “{nuevo}” is “{viejo}” again,Deshecho: «{nuevo}» vuelve a llamarse «{viejo}»,"{nuevo} = el nombre nuevo; {viejo} = el nombre de antes"
+app.elige_enlazar,Choose what to link,Elige qué enlazar,
+app.elige_uno_mas_archivos,Choose one or more files,Elige uno o más archivos,
+app.enlaces_creados.uno,{n} link created ({tipos}),{n} enlace creado ({tipos}),"Cuando la cantidad es 1 · {tipos} = «enlace simbólico», «unión de carpeta»… · {n} = un número"
+app.enlaces_creados.varios,{n} links created ({tipos}),{n} enlaces creados ({tipos}),"Cuando la cantidad no es 1 · {tipos} = «enlace simbólico», «unión de carpeta»… · {n} = un número"
+app.esta_vista_este_orden_son,This view and sort order now apply to every folder,Esta vista y este orden son ahora los de todas las carpetas,
+app.estado_archivos,{n} files · {como},{n} archivos · {como},{n} = un número
+app.este_ya_rayo_instalado,This is already the installed Rayo,Este ya es el Rayo instalado,
+app.extrayendo,Extracting…,Extrayendo…,
+app.extrayendo_a.uno,Extracting {n} item to “{destino}”,Extrayendo {n} elemento a «{destino}»,"Cuando la cantidad es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
+app.extrayendo_a.varios,Extracting {n} items to “{destino}”,Extrayendo {n} elementos a «{destino}»,"Cuando la cantidad no es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
+app.hace_falta_permiso_administrador,Administrator permission needed,Hace falta permiso de administrador,
+app.indexando,indexing {letra}: {n}…,indexando {letra}: {n}…,"{letra} = la letra de una unidad (C, D…); {n} = un número"
+app.indice_esta_construyendo,The index is being built…,El índice se está construyendo…,
+app.indice_instantaneo_activado_mantiene_dia,Instant index on: it stays up to date with the USN Journal,Índice instantáneo activado: se mantiene al día con el USN Journal,
+app.indice_ya_mantiene_dia,The index is already kept up to date via {modo},El índice ya se mantiene al día por {modo},{modo} = cómo se mantiene al día el índice
+app.iniciar_rayo_windows_oculto_mostrar,"Start Rayo with Windows, hidden (so “Show in folder” works right away)","Iniciar Rayo con Windows, oculto (para que «Mostrar en carpeta» funcione desde el primer momento)",
+app.instalando_servicio_acepta_aviso_windows,Installing the service… (accept the Windows prompt),Instalando el servicio… (acepta el aviso de Windows),
+app.instalar,Install,Instalar,
+app.instalas_queda_menu_inicio_aplicaciones,"Install it? It goes in the Start menu and in “Installed apps” (where you can uninstall it), and it can be used as your default file explorer. Just for your user: no administrator permission needed.","¿Lo instalas? Queda en el menú Inicio y en «Aplicaciones instaladas» (de donde se desinstala), y se puede usar como explorador predeterminado. Solo para tu usuario: no pide permiso de administrador.",
+app.jpg_png_texto,"*.jpg; *.png   ·   or some text","*.jpg; *.png   ·   o un texto",
+app.listo_carpetas_vuelven_abrirse_explorado,Done: folders open in Windows File Explorer again,Listo: las carpetas vuelven a abrirse en el Explorador de Windows,
+app.listo_como_administrador,Done (as administrator),Listo (como administrador),
+app.listo_rayo_tu_explorador_predeterminado,Done: Rayo is your default file explorer,Listo: Rayo es tu explorador predeterminado,
+app.mostrar_carpeta_navegador_abrir_ubicacio,"your browser's “Show in folder”, “Open file location” and the like (with Rayo open or in the background).","«Mostrar en carpeta» del navegador, «Abrir ubicación del archivo» y similares (con Rayo abierto o en segundo plano).",
+app.mover,  ·  move,  ·  mover,
+app.moviendo_a.uno,Moving {n} item to “{destino}”,Moviendo {n} elemento a «{destino}»,"Cuando la cantidad es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
+app.moviendo_a.varios,Moving {n} items to “{destino}”,Moviendo {n} elementos a «{destino}»,"Cuando la cantidad no es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
+app.moviendo_n.uno,Moving {n} item,Moviendo {n} elemento,Cuando la cantidad es 1 · {n} = un número
+app.moviendo_n.varios,Moving {n} items,Moviendo {n} elementos,Cuando la cantidad no es 1 · {n} = un número
+app.ninguno_coincide,Nothing matches,Ninguno coincide,
+app.no_carpeta_ni_programa,Not a folder or a program: “{texto}”,No es una carpeta ni un programa: «{texto}»,
+app.no_encontro_papelera,Not found in the Recycle Bin,No se encontró en la papelera,
+app.no_existe,Doesn't exist: {ruta},No existe: {ruta},{ruta} = una ruta
+app.no_hay_archivos_renombrar_aqui,There are no files to rename here,No hay archivos para renombrar aquí,
+app.no_hay_nada_deshacer,Nothing to undo,No hay nada que deshacer,
+app.no_pudieron_renombrar,{n} couldn't be renamed: {error},{n} no se pudieron renombrar: {error},"{error} = el mensaje de error; {n} = un número"
+app.no_pudieron_restaurar,{n} couldn't be restored: {error},{n} no se pudieron restaurar: {error},"{error} = el mensaje de error; {n} = un número"
+app.no_pudo,Couldn't do it: {error},No se pudo: {error},{error} = el mensaje de error
+app.no_pudo_abrir_archivo,Couldn't open the file,No se pudo abrir el archivo,
+app.no_pudo_borrar,Couldn't delete,No se pudo borrar,
+app.no_pudo_cambiar,Couldn't change it: {error},No se pudo cambiar: {error},{error} = el mensaje de error
+app.no_pudo_cambiar_inicio_windows,Couldn't change starting with Windows: {error},No se pudo cambiar el inicio con Windows: {error},{error} = el mensaje de error
+app.no_pudo_completar_operacion,Couldn't complete the operation,No se pudo completar la operación,
+app.no_pudo_copiar,Couldn't copy,No se pudo copiar,
+app.no_pudo_crear_archivo,Couldn't create the file: {error},No se pudo crear el archivo: {error},{error} = el mensaje de error
+app.no_pudo_crear_carpeta,Couldn't create the folder: {error},No se pudo crear la carpeta: {error},{error} = el mensaje de error
+app.no_pudo_crear_enlace,Couldn't create the link: {error},No se pudo crear el enlace: {error},{error} = el mensaje de error
+app.no_pudo_deshacer,Couldn't undo: {error},No se pudo deshacer: {error},{error} = el mensaje de error
+app.no_pudo_expulsar,Couldn't eject {letra}: ({error}),No se pudo expulsar {letra}: ({error}),"{error} = el mensaje de error; {letra} = la letra de una unidad (C, D…)"
+app.no_pudo_instalar,Couldn't install: {error},No se pudo instalar: {error},{error} = el mensaje de error
+app.no_pudo_renombrar,Couldn't rename,No se pudo renombrar,
+app.no_pudo_renombrar_error,Couldn't rename: {error},No se pudo renombrar: {error},{error} = el mensaje de error
+app.preparando_copia,Preparing the copy…,Preparando la copia…,
+app.presupuesto_144_hz_ms,budget at 144 Hz: {ms} ms,presupuesto a 144 Hz: {ms} ms,
+app.primero_copia_ctrl_c_quieres,First copy (Ctrl+C) what you want to link to,Primero copia (Ctrl+C) lo que quieres enlazar,
+app.puede_retirar_seguridad,{letra}: is safe to remove,{letra}: se puede retirar con seguridad,"{letra} = la letra de una unidad (C, D…)"
+app.quitando_servicio,Removing the service…,Quitando el servicio…,
+app.rayo_iniciara_windows_oculto_listo,"Rayo will start with Windows, hidden and ready","Rayo se iniciará con Windows, oculto y listo",
+app.rayo_tu_explorador_predeterminado,Rayo is your default file explorer,Rayo es tu explorador predeterminado,
+app.rayo_ya_no_inicia_windows,Rayo no longer starts with Windows,Rayo ya no se inicia con Windows,
+app.renombrado_listo,Renamed,Renombrado listo,
+app.ruta_copiada,Path copied,Ruta copiada,
+app.sacando_papelera,Taking it out of the Recycle Bin…,Sacando de la papelera…,
+app.seleccionados.uno,{n} selected,{n} seleccionado,Cuando la cantidad es 1 · Barra de estado · {n} = un número
+app.seleccionados.varios,{n} selected,{n} seleccionados,Cuando la cantidad no es 1 · Barra de estado · {n} = un número
+app.seleccionar,Select,Seleccionar,
+app.seleccionar_patron,Select by pattern,Seleccionar por patrón,
+app.servicio_quitado,Service removed,Servicio quitado,
+app.siguen_explorador_panel_control_papelera,"Control Panel, the Windows Recycle Bin and Network stay in File Explorer. Hold Shift while opening something to use File Explorer that one time.","Siguen en el Explorador el Panel de control, la Papelera de Windows y la Red. Mantén Mayús al abrir algo para usar el Explorador esa vez.",
+app.sin_instalar_funciona_igual_como,"It works the same without installing, as a portable program (from a USB drive, for example).","Sin instalar funciona igual, como programa portátil (por ejemplo, desde un USB).",
+app.solo_cambia_tu_usuario_no,"Only changes your user and needs no administrator. To undo it, come back here; if Rayo were gone, open restaurar-explorador.reg (in %APPDATA%\Rayo).","Solo cambia tu usuario y no pide administrador. Para deshacerlo, vuelve aquí; si Rayo ya no estuviera, abre restaurar-explorador.reg (en %APPDATA%\Rayo).",
+app.sumar_ya_seleccionado,Add to the current selection,Sumar a lo ya seleccionado,
+app.usa_cualquier_texto_letra_separa,"Use * for any text and ? for one character; separate several with ;","Usa * para cualquier texto y ? para una letra; separa varios con ;",
+app.usar_rayo_como_explorador_predeterminado,Use Rayo as the default file explorer,Usar Rayo como explorador predeterminado,
+app.usar_sin_instalar,Use without installing,Usar sin instalar,
+app.vigilando_cambios,watching for changes,vigilando cambios,
+app.volver_explorador_windows,Go back to Windows File Explorer,Volver al Explorador de Windows,
+app.volver_explorador_windows_todo_queda,"When you go back to Windows File Explorer, everything is left exactly as it was before turning this on.","Al volver al Explorador de Windows, todo queda exactamente como estaba antes de activarlo.",
+app.volver_intentar,Try again,Volver a intentar,
+app.volver_intentar_borrar,Try deleting again,Volver a intentar borrar,
+app.volver_intentar_papelera,Try again (to the Recycle Bin),Volver a intentar (a la papelera),
+app.windows_no_dejo_hacerlo_tus,Windows didn't allow it with your normal permissions.,Windows no dejó hacerlo con tus permisos normales.,
+app.windows_pide_permiso_administrador_algun,Windows asks for administrator permission for some items.,Windows pide permiso de administrador para algunos elementos.,
+app.windows_pide_permiso_administrador_crear,Windows asks for administrator permission to create a folder here.,Windows pide permiso de administrador para crear una carpeta aquí.,
+app.windows_pide_permiso_administrador_renom,Windows asks for administrator permission to rename this.,Windows pide permiso de administrador para renombrar esto.,
+app.windows_va_pedir_permiso_hara,"Windows will ask for permission and only this will be done; Rayo keeps your normal permissions.","Windows va a pedir permiso y se hará solo esto; Rayo sigue con tus permisos normales.",
+archivo.descargas,Downloads,Descargas,
+archivo.documentos,Documents,Documentos,
+archivo.escritorio,Desktop,Escritorio,
+archivo.imagenes,Pictures,Imágenes,
+archivo.inicio,Home,Inicio,
+archivo.musica,Music,Música,
+archivo.videos,Videos,Videos,
+barra.abrir_otro_panel,Open in the other pane,Abrir en el otro panel,
+barra.abrir_pestana_nueva,Open in new tab,Abrir en pestaña nueva,
+barra.abrir_terminal_aqui,Open terminal here,Abrir terminal aquí,
+barra.activar_indice_instantaneo,Turn on instant index,Activar índice instantáneo,
+barra.actualizar_f5,Refresh (F5),Actualizar (F5),
+barra.adelante_alt,Forward (Alt+→),Adelante (Alt+→),
+barra.agregar_carpeta_actual,Add the current folder,Agregar la carpeta actual,
+barra.aqui,Here,Aquí,
+barra.arrastra_llevar_esta_carpeta_otro,Drag to take this folder somewhere else,Arrastra para llevar esta carpeta a otro lado,
+barra.atras_alt,Back (Alt+←),Atrás (Alt+←),
+barra.borrar_historial,Clear history,Borrar historial,
+barra.buscar_archivos_ctrl_f,Search files (Ctrl+F),Buscar archivos (Ctrl+F),
+barra.buscar_todo_equipo_solo_carpeta,Search the whole computer or just the current folder,Buscar en todo el equipo o solo en la carpeta actual,
+barra.busquedas_recientes,Recent searches,Búsquedas recientes,
+barra.cancelado,Canceled,Cancelado,
+barra.cancelar_copia,Cancel the copy,Cancelar la copia,
+barra.carpetas_anteriores,Parent folders,Carpetas anteriores,
+barra.clic_escribir_ruta_comando_ctrl,Click to type a path or a command (Ctrl+L),Clic para escribir una ruta o un comando (Ctrl+L),
+barra.conservar_ambos,Keep both,Conservar ambos,
+barra.continuar,Resume,Continuar,
+barra.copias,Copies,Copias,
+barra.copias_terminadas,Copies finished,Copias terminadas,
+barra.copias_terminadas_error,Copies finished · {errores} with errors,Copias terminadas · {errores} con error,
+barra.disco_local,Local Disk ({letra}:),Disco local ({letra}:),"{letra} = la letra de una unidad (C, D…)"
+barra.eliminar_grupo,Delete group,Eliminar grupo,
+barra.espera,Waiting,En espera,
+barra.esperando_tu_decision,Waiting for your decision,Esperando tu decisión,
+barra.este_archivo_ya_existe_destino,This file already exists in the destination,Este archivo ya existe en el destino,
+barra.eta_horas,{horas} h {minutos} min,{horas} h {minutos} min,"{horas} = un número de horas; {minutos} = un número de minutos"
+barra.eta_minutos,{minutos} min,{minutos} min,{minutos} = un número de minutos
+barra.eta_segundos,{segundos} s,{segundos} s,{segundos} = un número de segundos
+barra.expulsar,Eject,Expulsar,
+barra.expulsar_forma_segura,Safely eject,Expulsar de forma segura,
+barra.faltan, · {tiempo} left, · faltan {tiempo},{tiempo} = un tiempo (3 min)
+barra.hacer_mismo_siguientes,Do the same for the next ones,Hacer lo mismo con los siguientes,
+barra.indice_mantiene_dia_usn_journal,The index stays up to date with the NTFS USN Journal (right-click for options),El índice se mantiene al día con el USN Journal de NTFS (clic derecho para opciones),
+barra.instala_pequeno_servicio_windows_lee,"Installs a small Windows service that reads the MFT and the USN Journal: Rayo opens already up to date, without reindexing, and sees every change instantly. It asks for administrator permission only once.","Instala un pequeño servicio de Windows que lee la MFT y el USN Journal: Rayo abre ya al día, sin reindexar, y ve cada cambio al instante. Pide permiso de administrador una sola vez.",
+barra.libres,{libre} free of {total},{libre} libres de {total},"{libre} = un tamaño (espacio libre); {total} = un total (tamaño o cantidad)"
+barra.limpiar_terminadas,Clear finished,Limpiar terminadas,
+barra.listo_archivos.uno,Done · {n} file,Listo · {n} archivo,Cuando la cantidad es 1 · {n} = un número
+barra.listo_archivos.varios,Done · {n} files,Listo · {n} archivos,Cuando la cantidad no es 1 · {n} = un número
+barra.lugares,Places,Lugares,
+barra.mas_nuevo, (newer), (más nuevo),
+barra.maximizar,Maximize,Maximizar,
+barra.minimizar,Minimize,Minimizar,
+barra.mostrar_explorador,Show in File Explorer,Mostrar en el Explorador,
+barra.nombre_grupo,Group name,Nombre del grupo,
+barra.omitir,Skip,Omitir,
+barra.panel_vista_previa_ctrl_p,Preview pane (Ctrl+P),Panel de vista previa (Ctrl+P),
+barra.pausa,Paused · {hecho} of {total},En pausa · {hecho} de {total},"{hecho} = lo que va hecho (12,5 MB); {total} = un total (tamaño o cantidad)"
+barra.pausar,Pause,Pausar,
+barra.pestana_nueva_ctrl_t,New tab (Ctrl+T),Pestaña nueva (Ctrl+T),
+barra.preparando,Preparing…,Preparando…,
+barra.progreso_copia,{hecho} of {total} · {velocidad}/s,{hecho} de {total} · {velocidad}/s,"{hecho} = lo que va hecho (12,5 MB); {total} = un total (tamaño o cantidad); {velocidad} = un tamaño (por segundo)"
+barra.propiedades,Properties,Propiedades,
+barra.quitar_favoritos,Remove from favorites,Quitar de favoritos,
+barra.quitar_servicio_indexado,Remove the indexing service,Quitar el servicio de indexado,
+barra.recientes,Recent,Recientes,
+barra.red,Network ({letra}:),Red ({letra}:),"{letra} = la letra de una unidad (C, D…)"
+barra.reemplazar,Replace,Reemplazar,
+barra.renombrar_grupo,Rename group,Renombrar grupo,
+barra.sin_subcarpetas,   No subfolders,   Sin subcarpetas,
+barra.subir_alt,Up (Alt+↑),Subir (Alt+↑),
+barra.terminado_errores.uno,Finished with {n} error,Terminado con {n} error,Cuando la cantidad es 1 · Una copia que terminó · {n} = un número
+barra.terminado_errores.varios,Finished with {n} errors,Terminado con {n} errores,Cuando la cantidad no es 1 · Una copia que terminó · {n} = un número
+barra.todo,All,Todo,
+barra.unidades,Drives,Unidades,
+barra.usa_agregar_carpeta_actual,Use + to add the current folder,Usa + para agregar la carpeta actual,
+barra.usb,USB ({letra}:),USB ({letra}:),"{letra} = la letra de una unidad (C, D…)"
+barra.ver_copias,Show copies,Ver las copias,
+barra.vista_columnas_ctrl_1,Columns view (Ctrl+1),Vista de columnas (Ctrl+1),
+barra.vista_cuadricula_ctrl_3,Grid view (Ctrl+3),Vista de cuadrícula (Ctrl+3),
+barra.vista_detalles_ctrl_2,Details view (Ctrl+2),Vista de detalles (Ctrl+2),
+barra.ya_esta,The existing one,El que ya está,
+cmd.autostart,Start with Windows (in the background),Iniciar con Windows (en segundo plano),Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.autostart.buscar,startup boot login session fast,arranque inicio sesion rapido,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.batch_rename,Batch rename…,Renombrar en lote…,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.batch_rename.buscar,bulk rename many number replace exif,renombrado masivo varios numerar reemplazar exif,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.close_tab,Close tab,Cerrar pestaña,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.close_tab.buscar,tab,tab,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.compare,Compare and sync folders…,Comparar y sincronizar carpetas…,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.compare.buscar,backup mirror synchronize,respaldo backup espejo,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.compare_other,Compare with the other pane,Comparar con el otro panel,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.compare_other.buscar,sync synchronize differences,sincronizar diferencias,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.compress,Compress to ZIP,Comprimir en ZIP,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.compress.buscar,zip pack compress archive,zip empaquetar comprimir,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.copy,Copy,Copiar,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.copy.buscar,clipboard,portapapeles,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.copy_other,Copy to the other pane,Copiar al otro panel,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.copy_other.buscar,duplicate send,duplicar enviar,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.copy_path,Copy path,Copiar ruta,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.copy_path.buscar,path address location,path direccion,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.cut,Cut,Cortar,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.cut.buscar,move clipboard,mover portapapeles,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.default_explorer,Use Rayo as the default file explorer…,Usar Rayo como explorador predeterminado…,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.default_explorer.buscar,windows explorer default replace win+e open folder show in folder,windows explorador predeterminado reemplazar win+e abrir carpeta mostrar en carpeta defecto,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.delete,Move to the Recycle Bin,Mover a la papelera,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.delete.buscar,delete remove trash recycle,borrar eliminar,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.dupes_drive,Find duplicates on the whole drive,Buscar duplicados en todo el disco,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.dupes_drive.buscar,duplicate repeated identical same,repetidos iguales,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.dupes_here,Find duplicates here,Buscar duplicados aquí,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.dupes_here.buscar,duplicate repeated identical same,repetidos iguales,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.explorer,Show in File Explorer,Mostrar en el Explorador,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.explorer.buscar,windows,windows,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.extract_folder,Extract to a folder,Extraer en una carpeta,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.extract_folder.buscar,unzip decompress zip rar 7z,descomprimir unzip zip rar 7z,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.extract_here,Extract here,Extraer aquí,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.extract_here.buscar,unzip decompress zip rar 7z,descomprimir unzip zip rar 7z,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.favorite,Add to favorites,Agregar a favoritos,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.favorite.buscar,bookmark star,marcador,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.flat,Flat view (include subfolders),Vista plana (incluir subcarpetas),Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.flat.buscar,all files recursive flatten,todos los archivos recursivo aplanar,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.hash,"Calculate hash (SHA-256, SHA-1, MD5)","Calcular hash (SHA-256, SHA-1, MD5)",Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.hash.buscar,checksum verify integrity sha md5 fingerprint,checksum verificar integridad sha md5 huella,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.hidden,Show hidden files,Mostrar archivos ocultos,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.hidden.buscar,system,sistema,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.install,Install Rayo (or update it with this version),Instalar Rayo (o actualizarlo con esta versión),Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.install.buscar,install update start menu apps portable,instalar actualizar menu inicio aplicaciones portable,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.invert_selection,Invert selection,Invertir selección,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.invert_selection.buscar,opposite rest,contrario resto,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.language,Language…,Idioma…,
+cmd.language.buscar,language idioma translate translation english spanish espanol,idioma lenguaje traducir traduccion language english espanol,
+cmd.link_other,Create link in the other pane,Crear enlace en el otro panel,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.link_other.buscar,symlink symbolic junction,symlink simbolico union,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.move_other,Move to the other pane,Mover al otro panel,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.move_other.buscar,send,enviar,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.native_menu,More Windows options,Más opciones de Windows,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.native_menu.buscar,context menu explorer,menu contextual explorador,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.new_folder,New folder,Nueva carpeta,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.new_folder.buscar,create directory,crear directorio,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.new_tab,New tab,Pestaña nueva,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.new_tab.buscar,tab,tab,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.open,Open,Abrir,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.open.buscar,run execute launch,ejecutar,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.open_other,Open here in the other pane,Abrir aquí en el otro panel,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.open_other.buscar,same,mismo,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.open_tab,Open in new tab,Abrir en pestaña nueva,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.open_tab.buscar,tab,pestana,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.open_with,Open with…,Abrir con…,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.open_with.buscar,program application app,programa aplicacion,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.paste,Paste,Pegar,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.paste.buscar,clipboard,portapapeles,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.paste_link,Paste as link,Pegar como enlace,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.paste_link.buscar,symlink shortcut symbolic junction,symlink acceso simbolico union junction,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.preview,Preview pane,Panel de vista previa,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.preview.buscar,preview,previsualizar,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.properties,Properties,Propiedades,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.properties.buscar,details info,detalles,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.quicklook,Quick look,Vista rápida,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.quicklook.buscar,preview quicklook peek,previsualizar preview quicklook,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.quit,Quit Rayo,Salir de Rayo,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.quit.buscar,close exit,cerrar terminar,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.recent,Recent files,Archivos recientes,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.recent.buscar,latest modified today week,ultimos modificados hoy semana,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.recycle,Show the Recycle Bin,Ver la papelera,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.recycle.buscar,restore recover deleted trash,restaurar recuperar borrados,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.refresh,Refresh,Actualizar,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.refresh.buscar,reload,recargar,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.rename,Rename,Renombrar,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.rename.buscar,name,nombre,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.resident,Stay in the background when closed (opens instantly),Quedarse en segundo plano al cerrar (abre al instante),Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.resident.buscar,fast instant tray resident,rapido instantaneo bandeja residente,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.search,Search files,Buscar archivos,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.search.buscar,find,encontrar,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.select_all,Select all,Seleccionar todo,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.select_all.buscar,everything,todos,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.select_pattern,Select by pattern…,Seleccionar por patrón…,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.select_pattern.buscar,wildcard filter extension jpg,comodin filtro extension jpg,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.service,Instant index (service),Índice instantáneo (servicio),Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.service.buscar,usn mft everything,usn mft everything,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.space,What's taking up space here,Qué ocupa espacio aquí,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.space.buscar,size big disk full usage,tamano grande disco lleno,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.space_bars,Space usage bars,Barras de uso de espacio,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.space_bars.buscar,size proportion,tamano proporcion,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.split,Split / join panes,Dividir / unir paneles,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.split.buscar,two panes dual,dos paneles dual,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.terminal,Open terminal here,Abrir terminal aquí,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.terminal.buscar,console cmd powershell,consola cmd powershell,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.theme,Switch light / dark theme,Cambiar tema claro / oscuro,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.theme.buscar,dark light mode,dark light modo,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.transfers,Show copies in progress,Ver copias en curso,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.transfers.buscar,queue transfers progress,cola transferencias progreso,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.undo,Undo,Deshacer,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.undo.buscar,revert go back,revertir volver atras,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.view_columns,Columns view,Vista de columnas,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.view_columns.buscar,finder miller,finder miller,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.view_default,Use this view in every folder,Usar esta vista en todas las carpetas,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.view_default.buscar,default remember forget,predeterminada por defecto recordar olvidar,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.view_details,Details view,Vista de detalles,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.view_details.buscar,list table,lista tabla,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.view_grid,Grid view,Vista de cuadrícula,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.view_grid.buscar,thumbnails icons photos,miniaturas iconos fotos,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.who_uses,Who's using it?,¿Quién lo está usando?,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.who_uses.buscar,locked in use open process program close unlock can't delete,bloqueado en uso abierto proceso programa cerrar desbloquear no deja borrar,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+comprimido.7_zip_no_pudo_extraer,7-Zip couldn't extract it,7-Zip no pudo extraer,
+comprimido.abrir_este_formato_hace_falta,7-Zip is needed to open this format,Para abrir este formato hace falta 7-Zip,
+comprimido.comprimido_tiene_contrasena,The archive is password-protected,El comprimido tiene contraseña,
+comprimido.extraer_este_formato_hace_falta,7-Zip is needed to extract this format,Para extraer este formato hace falta 7-Zip,
+comprimido.nada_extraer,nothing to extract,nada que extraer,
+comprimido.no_existe_dentro_comprimido,It doesn't exist inside the archive,No existe dentro del comprimido,
+comprimido.no_pudo_leer,couldn't read it,no se pudo leer,
+comprimido.no_zip_valido,Not a valid ZIP: {error},No es un ZIP válido: {error},{error} = el mensaje de error
+comun.abrir,Open,Abrir,
+comun.agregar_favoritos,Add to favorites,Agregar a favoritos,
+comun.archivo,File,Archivo,
+comun.archivo_extension,{extension} file,Archivo {extension},"{extension} = una extensión (PDF, TXT…)"
+comun.cancelar,Cancel,Cancelar,
+comun.carpeta,Folder,Carpeta,
+comun.cerrar,Close,Cerrar,
+comun.comprimiendo,Compressing into “{nombre}”,Comprimiendo en «{nombre}»,{nombre} = un nombre de archivo o carpeta
+comun.copiado,Copied,Copiado,
+comun.copiando,Copying,Copiando,
+comun.elementos,{n} items,{n} elementos,{n} = un número
+comun.elementos_n.uno,{n} item,{n} elemento,Cuando la cantidad es 1 · {n} = un número
+comun.elementos_n.varios,{n} items,{n} elementos,Cuando la cantidad no es 1 · {n} = un número
+comun.eliminar_definitivamente,Delete permanently,Eliminar definitivamente,
+comun.favoritos,Favorites,Favoritos,
+comun.modificado,Modified,Modificado,
+comun.mostrar_su_carpeta,Show in its folder,Mostrar en su carpeta,
+comun.moviendo,Moving,Moviendo,
+comun.nuevo,New,Nuevo,
+comun.nuevo_grupo,New group,Nuevo grupo,
+comun.papelera,Recycle Bin,Papelera,
+comun.restaurar,Restore,Restaurar,
+comun.tamano,Size,Tamaño,
+comun.ya_existe,“{nombre}” already exists,ya existe «{nombre}»,{nombre} = un nombre de archivo o carpeta
+copia.deshaciendo.uno,Undoing: moving {n} item back to {destino},Deshaciendo: devolviendo {n} elemento a {destino},"Cuando la cantidad es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
+copia.deshaciendo.varios,Undoing: moving {n} items back to {destino},Deshaciendo: devolviendo {n} elementos a {destino},"Cuando la cantidad no es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
+copia.etiqueta,{accion} {que} to {destino},{accion} {que} a {destino},"{accion} = la acción («Copiar a la derecha»); {destino} = el nombre de la carpeta de destino; {que} = «nombre» o «N elementos»"
+copia.extrayendo,Extracting {que} into {destino},Extrayendo {que} en {destino},"{destino} = el nombre de la carpeta de destino; {que} = «nombre» o «N elementos»"
+copia.no_comprimido,Not an archive: {origen},No es un comprimido: {origen},{origen} = una ruta
+copia.no_existe,Doesn't exist: {origen},No existe: {origen},{origen} = una ruta
+copia.no_pudo_borrar_original,Couldn't delete the original {origen}: {error},No se pudo borrar el original {origen}: {error},"{error} = el mensaje de error; {origen} = una ruta"
+copia.no_puede_copiar_dentro_si,Can't copy “{nombre}” into itself,No se puede copiar «{nombre}» dentro de sí misma,{nombre} = un nombre de archivo o carpeta
+copia.sincronizando.uno,Syncing {n} item into {destino},Sincronizando {n} elemento en {destino},"Cuando la cantidad es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
+copia.sincronizando.varios,Syncing {n} items into {destino},Sincronizando {n} elementos en {destino},"Cuando la cantidad no es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
+enlace.enlace_duro,hard link,enlace duro,
+enlace.enlace_simbolico,symbolic link,enlace simbólico,
+enlace.nombre_enlace,{nombre} - link{extension},{nombre} - enlace{extension},"{extension} = una extensión (PDF, TXT…); {nombre} = un nombre de archivo o carpeta"
+enlace.nombre_enlace_n,{nombre} - link ({k}){extension},{nombre} - enlace ({k}){extension},"{extension} = una extensión (PDF, TXT…); {k} = un número; {nombre} = un nombre de archivo o carpeta"
+enlace.union_carpeta,folder junction,unión de carpeta,
+enlace.windows_no_permite_enlaces_simbolicos,"Windows doesn't allow symbolic links without permission (turn on Developer Mode), and a hard link can only be on the same drive",Windows no permite enlaces simbólicos sin permisos (activa el modo de desarrollador) y un enlace duro solo puede ir en el mismo disco,
+fondo.abrir_rayo,Open Rayo,Abrir Rayo,Menú del ícono de Rayo en la bandeja (junto al reloj)
+fondo.rayo_segundo_plano,Rayo (in the background),Rayo (en segundo plano),
+hash.md5_no_disponible,MD5 not available,MD5 no disponible,
+hash.sha_1_no_disponible,SHA-1 not available,SHA-1 no disponible,
+hash.sha_256_no_disponible,SHA-256 not available,SHA-256 no disponible,
+herr.abrir_carpeta_original,Open the original folder,Abrir la carpeta original,
+herr.actualizar,Refresh,Actualizar,
+herr.actualizar_derecha,Update the right side,Actualizar la derecha,
+herr.ahora,Now,Ahora,
+herr.algun_archivo_esta_solo_nube,Some files are cloud-only: they'll be downloaded to calculate the hash.,Algún archivo está solo en la nube: se descarga para calcularlo.,
+herr.ambas_direcciones,Both ways,En ambas direcciones,
+herr.archivos_duplicados,Duplicate files,Archivos duplicados,
+herr.archivos_solo_nube_no_revisados,{nube} files are cloud-only (OneDrive) and weren't checked: reading them would download them.,{nube} archivos están solo en la nube (OneDrive) y no se revisaron: leerlos los descargaría.,
+herr.buscando_archivos_mismo_tamano,Looking for files of the same size…,Buscando archivos del mismo tamaño…,
+herr.buscar,Find,Buscar,
+herr.buscar_expresion_regular_reemplazo_1,"Search with a regular expression; in the replacement, $1, $2… is what was captured in parentheses","Buscar con una expresión regular; en el reemplazo, $1, $2… es lo capturado entre paréntesis",
+herr.buscar_otra_vez,Search again,Buscar otra vez,
+herr.busqueda_cancelada,Search canceled,Búsqueda cancelada,
+herr.cada_palabra_mayuscula,Every Word Capitalized,Cada Palabra Con Mayúscula,
+herr.calculando,Calculating…,Calculando…,
+herr.cambian_nombre.uno,{n} gets a new name,{n} cambia de nombre,Cuando la cantidad es 1 · {n} = un número
+herr.cambian_nombre.varios,{n} get a new name,{n} cambian de nombre,Cuando la cantidad no es 1 · {n} = un número
+herr.cierra_vista_previa_liberar_archivo,Closes the preview to release the file,Cierra la vista previa para liberar el archivo,
+herr.clic_cambiar,{accion} (click to change),{accion} (clic para cambiar),{accion} = la acción («Copiar a la derecha»)
+herr.coincide_archivo_correcto,It matches: the file is the right one,Coincide: el archivo es el correcto,
+herr.como_tocar_su_x_programa,Like clicking its X: the program may ask if you want to save,Como tocar su X: el programa puede preguntar si quieres guardar,
+herr.comparando_contenido_candidatos,Comparing the contents of {n} candidates…,Comparando el contenido de {n} candidatos…,{n} = un número
+herr.comparando_elementos_revisados,Comparing… {n} items checked,Comparando… {n} elementos revisados,{n} = un número
+herr.comparar,Compare,Comparar,
+herr.comparar_carpetas,Compare folders,Comparar carpetas,
+herr.comparar_hash_esperado,Compare with the expected hash,Comparar con el hash esperado,
+herr.comparar_sincronizar,Compare and sync,Comparar y sincronizar,
+herr.conservar_mas_nueva,Keep the newest,Conservar la más nueva,
+herr.copia_derecha_nuevo_cambiado_no,"Copies new or changed files to the right; deletes nothing","Copia a la derecha lo nuevo o cambiado; no borra nada",
+herr.copiar,Copy,Copiar,
+herr.copiar_derecha,Copy to the right,Copiar a la derecha,
+herr.copiar_izquierda,Copy to the left,Copiar a la izquierda,
+herr.copias_cada,{n} copies · {tamano} each,{n} copias · {tamano} cada una,"{n} = un número; {tamano} = un tamaño (12,5 MB)"
+herr.deja_nombre_como_esta,Leaves the name as it is,Deja el nombre como está,
+herr.derecha,Right,Derecha,
+herr.derecha_queda_identica_sobra_va,The right side ends up identical: anything extra goes to the Recycle Bin,La derecha queda idéntica: lo que sobra va a la papelera,
+herr.desde,{n} from,{n} desde,{n} = un número
+herr.desmarcar_todo,Unmark all,Desmarcar todo,
+herr.diferencias_iguales,{diferentes} differences · {iguales} identical,{diferentes} diferencias · {iguales} iguales,
+herr.digitos,Digits,Dígitos,
+herr.dos_carpetas_son_iguales,The two folders are identical,Las dos carpetas son iguales,
+herr.elegir_carpeta,Choose folder…,Elegir carpeta…,
+herr.elemento,Item,Elemento,
+herr.elige_dos_carpetas_compararlas,Choose two folders to compare them,Elige dos carpetas para compararlas,
+herr.elige_dos_carpetas_distintas,Choose two different folders,Elige dos carpetas distintas,
+herr.escribe_pega_arrastra_carpeta,"Type, paste or drag a folder","Escribe, pega o arrastra una carpeta",
+herr.escribe_pega_rutas_arrastralas_desde,"Type or paste the paths, drag them from a pane, or use the folder button.","Escribe o pega las rutas, arrástralas desde un panel o usa el botón de la carpeta.",
+herr.espejo_derecha,Mirror to the right,Espejo a la derecha,
+herr.esperando_termine_calculo,Waiting for the calculation to finish…,Esperando a que termine el cálculo…,
+herr.esta_abierto_otro_programa,{motivo}: {que} is open in another program.,{motivo}: {que} está abierto en otro programa.,"{motivo} = qué falló («No se pudo borrar»); {que} = «nombre» o «N elementos»"
+herr.explorador, · File Explorer, · el Explorador,
+herr.expresion_regular,Regular expression,Expresión regular,
+herr.expresion_regular_p_ej_d,"Regular expression, e.g. (\d+)","Expresión regular, p. ej. (\d+)",
+herr.extension,Extension,Extensión,
+herr.fecha_modificacion,Date modified,Fecha de modificación,
+herr.fecha_tomo_foto,Date the photo was taken,Fecha en que se tomó la foto,
+herr.filtrar_nombre_carpeta,Filter by name or folder,Filtrar por nombre o carpeta,
+herr.forzar_cierre,Force close,Forzar cierre,
+herr.grupos_copias_mas_pueden_liberar,"{grupos} groups · {copias} extra copies · {tamano} can be freed   ({segundos} s, {como})","{grupos} grupos · {copias} copias de más · se pueden liberar {tamano}   ({segundos} s, {como})","{segundos} = un número de segundos; {tamano} = un tamaño (12,5 MB)"
+herr.hash,Hash,Hash,
+herr.ignorar_menores,Ignore smaller than,Ignorar menores de,
+herr.indice,with the index,con el índice,
+herr.insertar,Insert,Insertar,
+herr.intercambiar_lados,Swap sides,Intercambiar lados,
+herr.izquierda,Left,Izquierda,
+herr.leyendo,Reading… {hecho} of {total},Leyendo… {hecho} de {total},"{hecho} = lo que va hecho (12,5 MB); {total} = un total (tamaño o cantidad)"
+herr.leyendo_papelera,Reading the Recycle Bin…,Leyendo la papelera…,
+herr.mandar_papelera_derecha,Send to the Recycle Bin (right),Mandar a la papelera (derecha),
+herr.mandar_papelera_izquierda,Send to the Recycle Bin (left),Mandar a la papelera (izquierda),
+herr.marcar_copias_conservar_mas_antigua,Mark copies (keep the oldest),Marcar copias (conservar la más antigua),
+herr.marcar_todo,Mark all,Marcar todo,
+herr.mas_nuevo_cada_lado_gana,"The newest on each side wins; anything missing is copied","Lo más nuevo de cada lado gana; lo que falta se copia",
+herr.mayusculas,UPPERCASE,MAYÚSCULAS,
+herr.mayusculas_minusculas,Letter case,Mayúsculas y minúsculas,
+herr.minusculas,lowercase,minúsculas,
+herr.misma,same,la misma,
+herr.mostrar_iguales,Show identical,Mostrar iguales,
+herr.mover_papelera,Move {n} to the Recycle Bin · {tamano},Mover {n} a la papelera · {tamano},"{n} = un número; {tamano} = un tamaño (12,5 MB)"
+herr.n_a_la_papelera,{n} to the Recycle Bin,{n} a la papelera,{n} = un número
+herr.n_con_problemas,{problemas} with problems: {primero},{problemas} con problemas: {primero},
+herr.ningun_programa_tiene_abierto_ahora,No program has it open right now.,Ningún programa lo tiene abierto ahora.,
+herr.no,No,No,
+herr.no_coincide_archivo_puede_estar,It doesn't match: the file may be damaged or a different one,No coincide: el archivo puede estar dañado o ser otro,
+herr.no_hacer_nada,Do nothing,No hacer nada,
+herr.no_hay_archivos_duplicados,There are no duplicate files,No hay archivos duplicados,
+herr.no_pudo_cerrar,Couldn't close {nombre}: {error},No se pudo cerrar {nombre}: {error},"{error} = el mensaje de error; {nombre} = un nombre de archivo o carpeta"
+herr.nombre_carpeta,Folder name,Nombre de la carpeta,
+herr.nombre_nuevo,New name,Nombre nuevo,
+herr.nombre_original,Original name,Nombre original,
+herr.numero_desde_digitos_abajo,"Number (start and digits, below)","Número (desde y dígitos, abajo)",
+herr.papelera_esta_vacia,The Recycle Bin is empty,La papelera está vacía,
+herr.papelera_resumen.uno,{n} item · {tamano},{n} elemento · {tamano},"Cuando la cantidad es 1 · {n} = un número; {tamano} = un tamaño (12,5 MB)"
+herr.papelera_resumen.varios,{n} items · {tamano},{n} elementos · {tamano},"Cuando la cantidad no es 1 · {n} = un número; {tamano} = un tamaño (12,5 MB)"
+herr.parte_windows, · part of Windows, · parte de Windows,
+herr.pega_hash_te_dieron_sha,"Paste the hash you were given (SHA-256, SHA-1 or MD5)","Pega el hash que te dieron (SHA-256, SHA-1 o MD5)",
+herr.pierde_no_este_guardado,Anything unsaved is lost,Se pierde lo que no esté guardado,
+herr.preguntando_windows,Asking Windows…,Preguntando a Windows…,
+herr.proceso,process {pid},proceso {pid},{pid} = el número de proceso
+herr.proceso_programa,{programa} · process {pid},{programa} · proceso {pid},"{pid} = el número de proceso; {programa} = el nombre de un programa"
+herr.progreso_hecho_total,{hecho} of {total},{hecho} de {total},"{hecho} = lo que va hecho (12,5 MB); {total} = un total (tamaño o cantidad)"
+herr.quedara,Will become,Quedará,
+herr.quien_esta_usando,Who's using it?,¿Quién lo está usando?,
+herr.rayo_vista_previa_miniatura,Rayo (preview or thumbnail),Rayo (vista previa o miniatura),
+herr.recorriendo_carpetas,walking folders,recorriendo carpetas,
+herr.reemplazar,Replace with,Reemplazar por,
+herr.renombrar,Rename,Renombrar,
+herr.renombrar_elementos.uno,Rename {n} item,Renombrar {n} elemento,Cuando la cantidad es 1 · {n} = un número
+herr.renombrar_elementos.varios,Rename {n} items,Renombrar {n} elementos,Cuando la cantidad no es 1 · {n} = un número
+herr.restaurar_n,Restore {n},Restaurar {n},{n} = un número
+herr.servicio_windows, · Windows service, · servicio de Windows,
+herr.si_forzar,"Yes, force it","Sí, forzar",
+herr.si_igual_no_deja_borrar,"If it still can't be deleted or moved, a permission may be missing or a console may be open in that folder.","Si igual no se deja borrar o mover, puede faltar un permiso o haber una consola abierta en esa carpeta.",
+herr.siempre_queda_menos_copia_cada,At least one copy of each file always stays,Siempre queda al menos una copia de cada archivo,
+herr.sin_cambios,No change,Sin cambios,
+herr.sincronizando_progreso_esta_cola_copias,Syncing… (progress is in the copy queue),Sincronizando… (el progreso está en la cola de copias),
+herr.sincronizar,Sync,Sincronizar,
+herr.sincronizar_tamano,Sync · {tamano},Sincronizar · {tamano},"{tamano} = un tamaño (12,5 MB)"
+herr.sirve_comprobar_descarga_si_coincide,"Use it to check a download: if it matches, the file arrived intact.","Sirve para comprobar una descarga: si coincide, el archivo llegó entero.",
+herr.soltarlo,Release it,Soltarlo,
+herr.termina_programa_instante_pierde_no,Ends the program instantly: anything unsaved is lost,Termina el programa al instante: se pierde lo que no esté guardado,
+herr.texto_cambiar,Text to change,Texto a cambiar,
+herr.tipo_titulo,Title Case,Tipo Título,
+herr.titulo_duplicados,Duplicates · {carpeta},Duplicados · {carpeta},{carpeta} = el nombre de una carpeta
+herr.todo_mayusculas,ALL IN UPPERCASE,TODO EN MAYÚSCULAS,
+herr.todo_minusculas,all in lowercase,todo en minúsculas,
+herr.todos_tamanos,All,Todo,Duplicados: sin tamaño mínimo (lista «Ignorar menores de»)
+herr.usa_1_2_capturado,"Use $1, $2… for what was captured","Usa $1, $2… para lo capturado",
+herr.usar_carpeta_otro_panel_derecha,Use the other pane's folder on the right,Usar la carpeta del otro panel a la derecha,
+herr.vaciar_papelera,Empty Recycle Bin,Vaciar papelera,
+herr.vacio_borrar_texto,Empty = delete the text,Vacío = borrar el texto,
+herr.veras_cambio_cada_lado_podras,You'll see what changed on each side and be able to sync them.,Verás qué cambió de cada lado y podrás sincronizarlas.,
+herr.volver_mirar,Check again,Volver a mirar,
+herr.windows_pedira_confirmacion,Windows will ask for confirmation,Windows pedirá confirmación,
+idioma.abrir_carpeta,Open the languages folder,Abrir la carpeta de idiomas,
+idioma.igual_que_windows,Same as Windows ({idioma}),Igual que Windows ({idioma}),{idioma} = el nombre del idioma de Windows
+idioma.listo,Done,Listo,
+idioma.nombre,English,Español,"El nombre del idioma, escrito en ese idioma (aparece en la lista de idiomas)"
+idioma.paso_1,"Open the languages folder: you'll find “_plantilla.csv” there, with every text in Spanish and English.","Abre la carpeta de idiomas: ahí queda «_plantilla.csv», con cada texto en español y en inglés.",
+idioma.paso_2,"Copy it with your language's code (for example, pt.csv for Portuguese) and fill in the “texto” column in Excel or Google Sheets. Save it as CSV UTF-8.","Cópiala con el código del idioma (por ejemplo, pt.csv para portugués) y completa la columna «texto» en Excel o Google Sheets. Guárdala como CSV UTF-8.",Si traduces este texto: el código de tu idioma va en el ejemplo (pt.csv)
+idioma.paso_3,Come back here and pick it: it applies instantly. “Check translations” tells you what's missing.,Vuelve aquí y elígelo: se aplica al instante. «Revisar traducciones» te dice qué falta.,
+idioma.porcentaje,{n} % translated,{n} % traducido,Qué parte de un idioma está traducida · {n} = un número
+idioma.revisar,Check translations,Revisar traducciones,
+idioma.titulo,Language,Idioma,
+idioma.traducir_titulo,Want to translate Rayo into another language?,¿Quieres traducir Rayo a otro idioma?,
+indice.modo_administrador,USN (administrator),USN (administrador),"Cómo se mantiene al día el índice, con permisos de administrador"
+indice.modo_servicio,USN (service),USN (servicio),Cómo se mantiene al día el índice («al día por USN (servicio)»)
+indice.modo_vigilancia,watching,vigilancia,Cómo se mantiene al día el índice sin servicio
+inicio.no_pudo_completar_operacion,"Couldn't complete the operation:
+
+{error}","No se pudo completar la operación:
+
+{error}",{error} = el mensaje de error
+instalar.borrar_tambien_tu_configuracion_pestanas,"Also delete your settings (tabs, favorites) and the search index?","¿Borrar también tu configuración (pestañas, favoritos) y el índice de búsqueda?",
+instalar.desinstalar_rayo,Uninstall Rayo,Desinstalar Rayo,
+instalar.desinstalar_rayo_si_rayo_tu,"Uninstall Rayo?
+
+If Rayo is your default file explorer, folders will open in Windows File Explorer again.","¿Desinstalar Rayo?
+
+Si Rayo es tu explorador predeterminado, las carpetas vuelven a abrirse en el Explorador de Windows.",
+instalar.explorador_archivos_rapido_minimalista,"Fast, minimalist file explorer",Explorador de archivos rápido y minimalista,
+instalar.no_pudo_copiar_rayo,couldn't copy Rayo: {error},no se pudo copiar Rayo: {error},{error} = el mensaje de error
+instalar.no_pudo_crear_carpeta,couldn't create the folder: {error},no se pudo crear la carpeta: {error},{error} = el mensaje de error
+instalar.quitar_tambien_servicio_indice_instantan,"Also remove the instant index service?
+
+Windows will ask for administrator permission.","¿Quitar también el servicio del índice instantáneo?
+
+Windows va a pedir permiso de administrador.",
+instalar.rayo_desinstalo,Rayo was uninstalled.,Rayo se desinstaló.,
+lista.buscando,Searching…,Buscando…,
+lista.cargando,Loading…,Cargando…,
+lista.carpeta_vacia,Empty folder,Carpeta vacía,
+lista.disponible_este_equipo_sincronizado,Available on this device (synced),Disponible en este equipo (sincronizado),
+lista.esc_quitar,Esc to clear,Esc para quitar,
+lista.filtrando,Filtering: {filtro},Filtrando: {filtro},{filtro} = lo que se escribió para filtrar
+lista.milisegundos,· {ms} ms,· {ms} ms,
+lista.no_puede_abrir,Can't open it: {error},No se puede abrir: {error},{error} = el mensaje de error
+lista.nombre,Name,Nombre,
+lista.ordenar_relevancia,Sort by relevance,Ordenar por relevancia,
+lista.relevancia,Relevance,Relevancia,
+lista.resultados.uno,{n} result,{n} resultado,Cuando la cantidad es 1 · {n} = un número
+lista.resultados.varios,{n} results,{n} resultados,Cuando la cantidad no es 1 · {n} = un número
+lista.resultados_mejores,{n} results (top {mostrados}),{n} resultados (los {mostrados} mejores),{n} = un número
+lista.salir_vista_plana_esc,Leave flat view (Esc),Salir de la vista plana (Esc),
+lista.siempre_este_equipo,Always on this device,Siempre en este equipo,
+lista.sin_resultados,No results,Sin resultados,
+lista.solo_nube_descarga_abrirlo,Cloud-only: it downloads when opened,Solo en la nube: se descarga al abrirlo,
+lista.tipo,Type,Tipo,
+lista.ver_todos,show all,ver todos,
+lista.vista_plana_archivos_todas_subcarpetas.uno,Flat view: {n} file from every subfolder,Vista plana: {n} archivo de todas las subcarpetas,Cuando la cantidad es 1 · {n} = un número
+lista.vista_plana_archivos_todas_subcarpetas.varios,Flat view: {n} files from every subfolder,Vista plana: {n} archivos de todas las subcarpetas,Cuando la cantidad no es 1 · {n} = un número
+lista.vista_plana_juntando_archivos,Flat view: gathering files…,Vista plana: juntando archivos…,
+menu.1_opcion_oculta_mostrar,1 hidden option: show,1 opción oculta: mostrar,
+menu.buscar_opcion,Search for an option…,Buscar una opción…,
+menu.esconder_otra_vez_ocultas,Hide the hidden ones again,Esconder otra vez las ocultas,
+menu.herramientas,Tools,Herramientas,
+menu.nada_coincide,Nothing matches,Nada coincide,
+menu.opciones_ocultas_mostrar,{n} hidden options: show,{n} opciones ocultas: mostrar,{n} = un número
+menu.opciones_windows,Windows options…,Opciones de Windows…,
+menu.otro_panel,Other pane,Otro panel,
+menu.ver,View,Ver,
+nuevo.base_datos_access,Access Database,base de datos de Access,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.carpeta_comprimida,Compressed Folder,carpeta comprimida,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.contacto,Contact,contacto,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.dibujo_opendocument,OpenDocument Drawing,dibujo OpenDocument,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.dibujo_visio,Visio Drawing,dibujo de Visio,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.documento_markdown,Markdown Document,documento Markdown,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.documento_texto,Text Document,documento de texto,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.documento_texto_enriquecido,Rich Text Document,documento de texto enriquecido,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.documento_texto_opendocument,OpenDocument Text,documento de texto OpenDocument,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.documento_word,Word Document,documento de Word,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.hoja_calculo_excel,Excel Worksheet,hoja de cálculo de Excel,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.hoja_calculo_opendocument,OpenDocument Spreadsheet,hoja de cálculo OpenDocument,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.imagen_mapa_bits,Bitmap Image,imagen de mapa de bits,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.nombre_nuevo,New {tipo},Nuevo {tipo},"Nombre de un archivo nuevo: {tipo} = «documento de texto», «hoja de cálculo de Excel»… · {tipo} = el tipo de documento («documento de texto»)"
+nuevo.presentacion_opendocument,OpenDocument Presentation,presentación OpenDocument,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.presentacion_powerpoint,PowerPoint Presentation,presentación de PowerPoint,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+nuevo.publicacion_publisher,Publisher Publication,publicación de Publisher,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
+paleta.escribe,Type a command or a path…,Escribe un comando o una ruta…,
+paleta.ir_a,Go to {ruta},Ir a {ruta},{ruta} = una ruta
+paleta.sin_coincidencias,No matches,Sin coincidencias,
+plantilla.carpeta,folder,carpeta,"Pieza de la plantilla de «Renombrar en lote» (se escribe entre llaves): una sola palabra, sin espacios"
+plantilla.exif,exif,exif,"Pieza de la plantilla de «Renombrar en lote» (se escribe entre llaves): una sola palabra, sin espacios"
+plantilla.ext,ext,ext,"Pieza de la plantilla de «Renombrar en lote» (se escribe entre llaves): una sola palabra, sin espacios"
+plantilla.fecha,date,fecha,"Pieza de la plantilla de «Renombrar en lote» (se escribe entre llaves): una sola palabra, sin espacios"
+plantilla.n,n,n,"Pieza de la plantilla de «Renombrar en lote» (se escribe entre llaves): una sola palabra, sin espacios"
+plantilla.nombre,name,nombre,"Pieza de la plantilla de «Renombrar en lote» (se escribe entre llaves): una sola palabra, sin espacios"
+predet.abrir_rayo,Open in Rayo,Abrir en Rayo,
+predet.no_pudo_escribir,couldn't write {clave}: {error},no se pudo escribir {clave}: {error},{error} = el mensaje de error
+previa.antiguedad,Age,Antigüedad,
+previa.barra_espaciadora,Spacebar,Barra espaciadora,
+previa.cargando_vista_previa,Loading preview…,Cargando vista previa…,
+previa.contenido,Contents,Contenido,
+previa.creado,Created,Creado,
+previa.dimensiones,Dimensions,Dimensiones,
+previa.elementos_seleccionados,{n} items selected,{n} elementos seleccionados,{n} = un número
+previa.modificado,Modified {fecha},Modificado {fecha},{fecha} = una fecha
+previa.nube,Cloud,Nube,
+previa.paginas,Pages,Páginas,
+previa.selecciona_archivo,Select a file,Selecciona un archivo,
+previa.solo_nube_abrelo_descargarlo,Cloud-only: open it to download it,Solo en la nube: ábrelo para descargarlo,
+previa.tamano_bytes,{tamano} ({bytes} bytes),{tamano} ({bytes} bytes),"{tamano} = un tamaño (12,5 MB)"
+previa.ubicacion,Location,Ubicación,
+previa.vista_rapida,Quick look,Vista rápida,
+renombrar.dos_archivos_quedarian_mismo_nombre,two files would end up with the same name,dos archivos quedarían con el mismo nombre,
+renombrar.expresion_invalida,Invalid expression: {error},Expresión inválida: {error},{error} = el mensaje de error
+renombrar.no_puede_terminar_espacio_punto,can't end with a space or a period,no puede terminar en espacio o punto,
+renombrar.nombre_quedaria_vacio,the name would be empty,el nombre quedaría vacío,
+renombrar.tiene_caracteres_no_permitidos,"has characters that aren't allowed (\ / : * ? "" < > |)","tiene caracteres no permitidos (\ / : * ? "" < > |)",
+renombrar.ya_existe,{viejo}: “{nuevo}” already exists,{viejo}: ya existe «{nuevo}»,"{nuevo} = el nombre nuevo; {viejo} = el nombre de antes"
+renombrar.ya_existe_archivo_ese_nombre,a file with that name already exists,ya existe un archivo con ese nombre,
+revision.resumen,Language “{idioma}”: {hechos} of {total} texts translated ({porcentaje} %).,Idioma «{idioma}»: {hechos} de {total} textos traducidos ({porcentaje} %).,Revisión de traducciones: {idioma} = el código del idioma (pt) · {total} = un total (tamaño o cantidad)
+revision.sin_traducir,Not translated (shown in English):,Sin traducir (se muestran en inglés):,Revisión de traducciones
+revision.sobran,Keys that no longer exist (they can be deleted):,Claves que ya no existen (se pueden borrar):,Revisión de traducciones
+revision.variables_detalle,"the original uses {original}, the translation {traduccion}","el original usa {original}, la traducción {traduccion}",Revisión de traducciones: {original} y {traduccion} son listas de variables
+revision.variables_distintas,With different variables than the original (they would look wrong):,Con variables distintas al original (se verían mal):,Revisión de traducciones
+servicio.lee_mft_usn_journal_ntfs,Reads the NTFS MFT and USN Journal so Rayo finds files instantly and is always up to date. Read-only.,Lee la MFT y el USN Journal de NTFS para que Rayo encuentre archivos al instante y esté siempre al día. Solo lectura.,
+servicio.necesitan_permisos_administrador,administrator permissions are needed ({error}),se necesitan permisos de administrador ({error}),{error} = el mensaje de error
+servicio.no_pudo_copiar_ejecutable,couldn't copy the executable: {error},no se pudo copiar el ejecutable: {error},{error} = el mensaje de error
+servicio.rayo_indexador_instantaneo,Rayo - instant indexer,Rayo - indexador instantáneo,
+shell.cancelo_permiso_administrador,the administrator permission was canceled,se canceló el permiso de administrador,
+shell.explorador,File Explorer,el Explorador,
+shell.no_pudo_crear_carpeta,couldn't create the folder,no se pudo crear la carpeta,
+shell.nueva_carpeta,New folder,Nueva carpeta,
+shell.nueva_carpeta_n,New folder ({k}),Nueva carpeta ({k}),{k} = un número
+shell.ruta_invalida,invalid path,ruta inválida,
+shell.terminal,the terminal,la terminal,
+shell.unidad_esta_uso,the drive is in use,la unidad está en uso,
+tecla.clic_central,Middle-click,Clic central,Clic con la rueda del mouse
+tecla.enter,Enter,Enter,Nombre de la tecla Enter en los atajos
+tecla.espacio,Space,Espacio,Nombre de la barra espaciadora en los atajos
+tecla.mayus,Shift,Mayús,Nombre de la tecla Shift en los atajos
+tecla.supr,Del,Supr,Nombre de la tecla Delete en los atajos
+uso.no_hay_permiso_cerrarlo,no permission to close it,no hay permiso para cerrarlo,
+uso.no_pudo_consultar_windows_error,couldn't ask Windows (error {codigo}),no se pudo consultar a Windows (error {codigo}),
+uso.programa_ya_cerro,the program already closed,el programa ya se cerró,
