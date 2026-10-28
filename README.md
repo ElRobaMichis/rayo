@@ -37,6 +37,8 @@ with no runtime to install.
 - 🖱️ **One context menu for everything** — Rayo's actions plus Windows and app entries (7-Zip, VLC, “Send to”…),
   with a search box, pinning and the ability to hide what you never use.
 - ⌨️ **Command palette** (`Ctrl+K`) with every action, plus a path bar that also runs commands.
+- 🚀 **Copies up to 8× faster than File Explorer** — a drive-aware copy engine that copies many files at once
+  on NVMe and SSD, stays sequential on hard drives, and starts before it finishes counting.
 - 🧰 **Power tools included** — batch rename with live preview, duplicate finder, folder compare & sync,
   disk usage, hashes, “who is using this file?”, archives as folders, and undo for almost everything.
 - 🌍 **English and Spanish**, and translatable by anyone with a spreadsheet — no recompiling.
@@ -85,7 +87,14 @@ Requirements: Windows 10 or 11 (x64). Optional: [7-Zip](https://www.7-zip.org/) 
 - Scope a search to the current folder with one click, and reopen recent searches from history.
 
 ### Files and tools
-- **Copy queue** with speed, time left, pause, cancel and conflict handling (replace, skip, keep both).
+- **A faster copy engine**, aware of the drives involved:
+  - between NVMe/SSD drives it copies several files at once; with a hard drive or USB stick involved it goes
+    one by one, in folder order, so the disk head doesn't jump around;
+  - copying starts right away while files are still being counted — no “Calculating…” wait;
+  - two copies that share a physical disk run one after the other, while copies on different disks run in parallel;
+  - if it won't fit, it tells you while counting instead of halfway through;
+  - over the network it asks SMB to compress the traffic when the server supports it;
+  - plus speed, time left, pause, cancel and conflict handling (replace, skip, keep both).
 - **Undo** (`Ctrl+Z`) for renames, batch renames, deletes (restores from the Recycle Bin), copies, moves,
   extractions, new ZIPs and new folders.
 - **Batch rename** (`Ctrl+Shift+R`) with templates (`{name}`, `{n}`, `{date}`, `{exif}`, `{folder}`),
@@ -146,6 +155,21 @@ Measured on a Ryzen 7 9800X3D with 1.66 million files on `C:`:
 | Typical search | 0.13–0.3 ms (average 0.69 ms) |
 | CPU per frame | ~0.4 ms |
 
+**Copying vs File Explorer** (File Explorer's own engine, `IFileOperation`, against Rayo's; median of
+alternating runs with the disk idle in between; `cargo run --release --bin rayo-bench -- --copia <from> <to>`):
+
+| Copy | File Explorer | Rayo | |
+|---|---:|---:|---:|
+| 20,000 small files, NVMe → NVMe | 39.5 s | 5.0 s | **7.9× faster** |
+| 200 photos (850 MB), NVMe → NVMe | 0.62 s | 0.12 s | **5.1×** |
+| 20,000 small files, NVMe → hard drive | 41.1 s | 12.0 s | **3.4×** |
+| 20,000 small files, hard drive → NVMe | 29.5 s | 8.2 s | **3.6×** |
+| 200 photos, NVMe → hard drive | 0.73 s | 0.33 s | **2.2×** |
+| 2 GB file, NVMe → NVMe | 0.81 s | 0.76 s | 1.07× |
+
+A single big file is limited by the drives, so both end up close; the gains come from everything around the
+data — per-file overhead, waiting for the count, and using the drive the way it works best.
+
 Against **Everything 1.4.1** (same 17 queries, top 1000 results, measured over its IPC), Rayo was faster on
 every query: 0.69 ms vs 7.1 ms on average, 30–60× faster on text searches. Run the comparison yourself with
 `cargo run --release --bin rayo-bench -- --cache`.
@@ -182,6 +206,8 @@ To try changes without touching the Rayo you use every day, give the build its o
 set RAYO_DATA_DIR=%TEMP%\rayo-dev
 target\release\rayo.exe
 ```
+
+Copy engine diagnostics: `RAYO_COPY_THREADS=n` forces how many files are copied at once.
 
 Useful switches: `--quit`, `--background`, `--revisar-idiomas` (check translations), `--install-service` /
 `--uninstall-service` (as administrator). Diagnostics: `RAYO_DEBUG=1` writes timings to

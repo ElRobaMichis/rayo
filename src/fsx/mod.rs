@@ -4,6 +4,7 @@
 pub mod shell;
 pub mod thumbs;
 pub mod transfer;
+pub mod disks;
 pub mod rename;
 pub mod dupes;
 pub mod compare;

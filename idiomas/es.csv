@@ -142,6 +142,7 @@ archivo.imagenes,Imágenes,,
 archivo.inicio,Inicio,,
 archivo.musica,Música,,
 archivo.videos,Videos,,
+barra.a_la_vez, · {n} a la vez,,Al final del progreso de una copia: cuántos archivos se copian en paralelo (empieza con un espacio) · {n} = un número
 barra.abrir_otro_panel,Abrir en el otro panel,,
 barra.abrir_pestana_nueva,Abrir en pestaña nueva,,
 barra.abrir_terminal_aqui,Abrir terminal aquí,,
@@ -161,13 +162,14 @@ barra.cancelar_copia,Cancelar la copia,,
 barra.carpetas_anteriores,Carpetas anteriores,,
 barra.clic_escribir_ruta_comando_ctrl,Clic para escribir una ruta o un comando (Ctrl+L),,
 barra.conservar_ambos,Conservar ambos,,
+barra.contando, · contando…,,Al final del progreso de una copia: todavía se están contando los archivos (empieza con un espacio)
 barra.continuar,Continuar,,
 barra.copias,Copias,,
 barra.copias_terminadas,Copias terminadas,,
 barra.copias_terminadas_error,Copias terminadas · {errores} con error,,
 barra.disco_local,Disco local ({letra}:),,"{letra} = la letra de una unidad (C, D…)"
 barra.eliminar_grupo,Eliminar grupo,,
-barra.espera,En espera,,
+barra.espera,En espera: otra copia usa el mismo disco,,Una copia espera su turno porque otra está usando el mismo disco físico
 barra.esperando_tu_decision,Esperando tu decisión,,
 barra.este_archivo_ya_existe_destino,Este archivo ya existe en el destino,,
 barra.eta_horas,{horas} h {minutos} min,,"{horas} = un número de horas; {minutos} = un número de minutos"
@@ -376,6 +378,7 @@ copia.no_comprimido,No es un comprimido: {origen},,{origen} = una ruta
 copia.no_existe,No existe: {origen},,{origen} = una ruta
 copia.no_pudo_borrar_original,No se pudo borrar el original {origen}: {error},,"{error} = el mensaje de error; {origen} = una ruta"
 copia.no_puede_copiar_dentro_si,No se puede copiar «{nombre}» dentro de sí misma,,{nombre} = un nombre de archivo o carpeta
+copia.sin_espacio,No hay espacio suficiente en {destino}: quedan {libre} libres,,"Se detiene una copia que no entra en el destino; {destino} = el nombre del disco o carpeta, {libre} = un tamaño · {destino} = el nombre de la carpeta de destino; {libre} = un tamaño (espacio libre)"
 copia.sincronizando.uno,Sincronizando {n} elemento en {destino},,"Cuando la cantidad es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
 copia.sincronizando.varios,Sincronizando {n} elementos en {destino},,"Cuando la cantidad no es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
 enlace.enlace_duro,enlace duro,,

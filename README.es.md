@@ -11,8 +11,12 @@ Inspirado en la vista de columnas de Finder, OneCommander y Directory Opus, con 
 - **Vista de cuadrícula** con miniaturas (fotos, videos, PDF).
 - **Vista dividida en dos paneles** (`Ctrl+\`), cada uno con sus pestañas; arrastrar y soltar entre ellos
   (mismo disco = mover, otro disco = copiar; Ctrl fuerza copiar y Mayús fuerza mover).
-- **Cola de copias propia**: progreso, velocidad, tiempo restante, pausa, cancelar y conflictos
-  (reemplazar, omitir, conservar ambos). Mover en el mismo disco es instantáneo.
+- **Cola de copias propia, hasta 8 veces más rápida que el Explorador**: sabe qué discos toca.
+  Entre NVMe y SSD copia varios archivos a la vez; con un disco mecánico o un USB, de a uno y en el orden de
+  las carpetas. Empieza a copiar mientras cuenta (sin «Calculando…»), dos copias que comparten un disco físico
+  van una después de la otra y las de discos distintos a la vez, avisa al contar si no entra, y en la red pide
+  tráfico SMB comprimido. Progreso, velocidad, tiempo restante, pausa, cancelar y conflictos (reemplazar,
+  omitir, conservar ambos). Mover en el mismo disco es instantáneo.
 - **Paleta de comandos** (Ctrl+K): todas las acciones con búsqueda difusa sin acentos; escribir una ruta la abre.
   El menú de clic derecho sale del mismo catálogo, ordenado en submenús (Otro panel, Herramientas, Ver).
 - **Un solo menú de clic derecho, con todo**: las opciones de Rayo y, debajo, las de Windows y tus apps (7-Zip,
@@ -186,6 +190,18 @@ Código: `src/index` (índice y búsqueda), `src/fsx` (Windows: listados, shell,
 | Memoria | ~180 MB en total: ~80 interfaz + ~99 índice |
 | CPU por cuadro | ~0,4 ms (presupuesto a 144 Hz: 6,9 ms) |
 | Búsqueda típica | 0,13–0,3 ms; promedio 0,69 ms; una sola letra ~4 ms |
+
+**Copias contra el Explorador** (su propio motor, `IFileOperation`, contra el de Rayo; mediana de vueltas
+alternadas con el disco en reposo entre una y otra; `rayo-bench --copia <origen> <destino>`):
+
+| Copia | Explorador | Rayo | |
+|---|---:|---:|---:|
+| 20.000 archivos chicos, NVMe → NVMe | 39,5 s | 5,0 s | **7,9× más rápido** |
+| 200 fotos (850 MB), NVMe → NVMe | 0,62 s | 0,12 s | **5,1×** |
+| 20.000 archivos chicos, NVMe → disco mecánico | 41,1 s | 12,0 s | **3,4×** |
+| 20.000 archivos chicos, disco mecánico → NVMe | 29,5 s | 8,2 s | **3,6×** |
+| 200 fotos, NVMe → disco mecánico | 0,73 s | 0,33 s | **2,2×** |
+| Un archivo de 2 GB, NVMe → NVMe | 0,81 s | 0,76 s | 1,07× |
 
 Contra **Everything 1.4.1** (mismas 17 consultas, top 1000, medido por su IPC): Rayo gana en todas.
 Promedio 0,69 ms contra 7,1 ms; búsquedas de texto 30–60× más rápido, por ruta ~150×,

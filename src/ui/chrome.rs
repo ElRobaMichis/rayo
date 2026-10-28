@@ -1051,8 +1051,13 @@ fn job_line(j: &transfer::JobView) -> String {
         State::Paused => tf!("barra.pausa", hecho = fsx::human_size(j.done_bytes), total = fsx::human_size(j.total_bytes)),
         State::Running => {
             let mut s = tf!("barra.progreso_copia", hecho = fsx::human_size(j.done_bytes), total = fsx::human_size(j.total_bytes), velocidad = fsx::human_size(j.bytes_per_sec as u64));
-            if let Some(e) = j.eta_secs() {
+            if j.counting {
+                s.push_str(t!("barra.contando"));
+            } else if let Some(e) = j.eta_secs() {
                 s.push_str(&tf!("barra.faltan", tiempo = fmt_eta(e)));
+            }
+            if j.workers > 1 {
+                s.push_str(&tf!("barra.a_la_vez", n = j.workers));
             }
             s
         }

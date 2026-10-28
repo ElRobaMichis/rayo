@@ -65,6 +65,7 @@ features = [
     "Win32_System_Environment",
     "Win32_System_RestartManager",
     "Win32_System_Services",
+    "Win32_System_SystemInformation",
     "Win32_System_Pipes",
     "Win32_Security_Authorization",
     "Win32_Security_Cryptography",

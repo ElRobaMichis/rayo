@@ -1,6 +1,12 @@
 //! Cola de copias propia (en lugar del diálogo de copia del Explorador).
 //!
-//! - Los trabajos se ejecutan de a uno, en orden, en un hilo propio.
+//! - Cada trabajo sabe qué discos físicos toca: los que comparten un disco esperan su turno (dos
+//!   copias a la vez en un disco mecánico se estorban), y los que no comparten nada van a la vez.
+//! - Entre discos sin cabezal (NVMe, SSD) se copian varios archivos a la vez; con un disco
+//!   mecánico o un USB de por medio, de a uno y en el orden de las carpetas.
+//! - Empieza a copiar enseguida, mientras termina de contar (no hay "Calculando…").
+//! - Si lo que se copia no entra en el destino, avisa al contar, no a mitad de camino.
+//! - En la red pide que el tráfico vaya comprimido (SMB), si el servidor lo admite.
 //! - Pausa, cancelación, velocidad real y tiempo restante.
 //! - Si el destino ya existe, pregunta: reemplazar, omitir o conservar ambos
 //!   (con la opción de repetir la respuesta para el resto).
@@ -8,12 +14,13 @@
 //!   se copia y después se borra el original.
 //! - Rutas de más de 260 caracteres (formato `\\?\`).
 
-use super::{join, long_path, short_path};
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use super::{disks, join, long_path, short_path};
+use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
 use parking_lot::Mutex;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::*;
@@ -77,6 +84,10 @@ pub struct JobView {
     /// Lo que quedó creado en el destino (origen, destino), para poder deshacerlo.
     /// Solo elementos nuevos: no incluye archivos que reemplazaron a otros.
     pub created: Vec<(String, String)>,
+    /// Todavía se están contando los archivos (ya se copia, pero el total puede crecer).
+    pub counting: bool,
+    /// Cuántos archivos se copian a la vez (1 con discos mecánicos o USB).
+    pub workers: usize,
 }
 
 impl JobView {
@@ -89,7 +100,7 @@ impl JobView {
     }
 
     pub fn eta_secs(&self) -> Option<u64> {
-        (self.bytes_per_sec > 1.0 && self.total_bytes > self.done_bytes).then(|| ((self.total_bytes - self.done_bytes) as f64 / self.bytes_per_sec) as u64)
+        (!self.counting && self.bytes_per_sec > 1.0 && self.total_bytes > self.done_bytes).then(|| ((self.total_bytes - self.done_bytes) as f64 / self.bytes_per_sec) as u64)
     }
 
     pub fn finished(&self) -> bool {
@@ -99,6 +110,8 @@ impl JobView {
 
 struct Job {
     view: Mutex<JobView>,
+    /// Discos físicos que toca (fuentes y destino): define con qué otros trabajos puede ir a la vez.
+    disks: Vec<String>,
     sources: Vec<String>,
     /// Ruta relativa en el destino de cada fuente (vacío = su nombre, directo en el destino).
     rels: Vec<String>,
@@ -115,6 +128,8 @@ pub type OnDone = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 pub struct Transfers {
     jobs: Arc<Mutex<Vec<Arc<Job>>>>,
     tx: Sender<Arc<Job>>,
+    /// Avisa al planificador que algo cambió (un trabajo terminó o se canceló uno en espera).
+    nudge: Sender<()>,
     next_id: Mutex<u64>,
 }
 
@@ -122,22 +137,13 @@ impl Transfers {
     /// `wake` repinta la interfaz; `on_done` recibe las carpetas que cambiaron.
     pub fn new(wake: Arc<dyn Fn() + Send + Sync>, on_done: OnDone) -> Self {
         let (tx, rx): (Sender<Arc<Job>>, Receiver<Arc<Job>>) = unbounded();
+        let (nudge, nudged): (Sender<()>, Receiver<()>) = unbounded();
+        let nudge_done = nudge.clone();
         std::thread::Builder::new()
             .name("copias".into())
-            .spawn(move || {
-                while let Ok(job) = rx.recv() {
-                    if job.cancel.load(Ordering::Relaxed) {
-                        job.view.lock().state = State::Canceled;
-                        wake();
-                        continue;
-                    }
-                    let touched = run_job(&job, &*wake);
-                    wake();
-                    on_done(touched);
-                }
-            })
+            .spawn(move || schedule(rx, nudged, nudge_done, wake, on_done))
             .ok();
-        Transfers { jobs: Default::default(), tx, next_id: Mutex::new(1) }
+        Transfers { jobs: Default::default(), tx, nudge, next_id: Mutex::new(1) }
     }
 
     pub fn enqueue(&self, op: Op, sources: Vec<String>, dest_dir: String) -> u64 {
@@ -193,7 +199,9 @@ impl Transfers {
             *n += 1;
             *n
         };
+        let disks = disks::disks_of(sources.iter().map(String::as_str).chain([dest_dir.as_str()]));
         let job = Arc::new(Job {
+            disks,
             view: Mutex::new(JobView {
                 id,
                 op,
@@ -209,6 +217,8 @@ impl Transfers {
                 errors: Vec::new(),
                 conflict: None,
                 created: Vec::new(),
+                counting: false,
+                workers: 1,
             }),
             sources,
             rels,
@@ -249,6 +259,7 @@ impl Transfers {
             if j.view.lock().state == State::Conflict {
                 *j.answer.lock() = Some((Choice::Skip, true));
             }
+            let _ = self.nudge.send(());
         }
     }
 
@@ -269,8 +280,60 @@ impl Transfers {
     }
 }
 
+// ---------------------------------------------------------------- planificador
+
+/// Arranca cada trabajo en cuanto sus discos están libres: los que comparten un disco físico van
+/// uno después del otro (en el orden en que se pidieron) y los que no comparten nada, a la vez.
+fn schedule(rx: Receiver<Arc<Job>>, nudged: Receiver<()>, nudge: Sender<()>, wake: Arc<dyn Fn() + Send + Sync>, on_done: OnDone) {
+    let mut waiting: VecDeque<Arc<Job>> = VecDeque::new();
+    let mut running: Vec<Arc<Job>> = Vec::new();
+    let mut open = true;
+    loop {
+        select! {
+            recv(rx) -> j => match j {
+                Ok(j) => waiting.push_back(j),
+                Err(_) => open = false,
+            },
+            recv(nudged) -> _ => {}
+        }
+        running.retain(|j| !j.view.lock().finished());
+        let mut k = 0;
+        while k < waiting.len() {
+            let job = waiting[k].clone();
+            if job.cancel.load(Ordering::Relaxed) {
+                job.view.lock().state = State::Canceled;
+                waiting.remove(k);
+                wake();
+                continue;
+            }
+            let shares = |other: &Arc<Job>| other.disks.iter().any(|d| job.disks.contains(d));
+            // Ni con lo que está corriendo, ni adelantándose a uno anterior que espera el mismo disco.
+            if running.iter().any(shares) || waiting.iter().take(k).any(shares) {
+                k += 1;
+                continue;
+            }
+            waiting.remove(k);
+            running.push(job.clone());
+            let (wake, on_done, nudge) = (wake.clone(), on_done.clone(), nudge.clone());
+            let spawned = std::thread::Builder::new().name("copia".into()).spawn(move || {
+                let touched = run_job(&job, &*wake);
+                wake();
+                on_done(touched);
+                let _ = nudge.send(());
+            });
+            if spawned.is_err() {
+                running.pop();
+            }
+        }
+        if !open && waiting.is_empty() && running.is_empty() {
+            return;
+        }
+    }
+}
+
 // ---------------------------------------------------------------- ejecución
 
+#[derive(Clone)]
 struct Item {
     src: String,
     /// Ruta relativa dentro del destino.
@@ -300,6 +363,13 @@ fn volume_of(p: &str) -> String {
 /// Recorre las fuentes y arma la lista de carpetas y archivos a copiar.
 fn scan(sources: &[(String, String)], cancel: &AtomicBool, errors: &mut Vec<String>) -> Vec<Item> {
     let mut out = Vec::new();
+    scan_each(sources, cancel, errors, &mut |it| out.push(it));
+    out
+}
+
+/// Igual que `scan`, pero entrega cada elemento apenas lo encuentra (cada carpeta antes que lo de
+/// adentro), para empezar a copiar sin esperar a terminar de contar.
+fn scan_each(sources: &[(String, String)], cancel: &AtomicBool, errors: &mut Vec<String>, emit: &mut dyn FnMut(Item)) {
     for (src, name) in sources {
         let name = name.clone();
         let Some(m) = meta(src) else {
@@ -307,33 +377,45 @@ fn scan(sources: &[(String, String)], cancel: &AtomicBool, errors: &mut Vec<Stri
             continue;
         };
         if !m.is_dir() {
-            out.push(Item { src: src.clone(), rel: name, is_dir: false, size: m.len() });
+            emit(Item { src: src.clone(), rel: name, is_dir: false, size: m.len() });
             continue;
         }
-        out.push(Item { src: src.clone(), rel: name.clone(), is_dir: true, size: 0 });
+        emit(Item { src: src.clone(), rel: name.clone(), is_dir: true, size: 0 });
         let mut stack = vec![(src.clone(), name)];
         while let Some((dir, rel)) = stack.pop() {
             if cancel.load(Ordering::Relaxed) {
-                return out;
+                return;
             }
             match super::list_dir(&dir) {
                 Ok(list) => {
+                    // Primero los archivos de la carpeta, después las subcarpetas: en un disco
+                    // mecánico se lee cada carpeta de corrido.
+                    let mut subdirs = Vec::new();
                     for e in list {
                         let s = join(&dir, &e.name);
                         let r = format!("{rel}\\{}", e.name);
                         if e.is_dir {
-                            out.push(Item { src: s.clone(), rel: r.clone(), is_dir: true, size: 0 });
-                            stack.push((s, r));
+                            subdirs.push((s, r));
                         } else {
-                            out.push(Item { src: s, rel: r, is_dir: false, size: e.size });
+                            emit(Item { src: s, rel: r, is_dir: false, size: e.size });
                         }
+                    }
+                    for (s, r) in subdirs.into_iter().rev() {
+                        emit(Item { src: s.clone(), rel: r.clone(), is_dir: true, size: 0 });
+                        stack.push((s, r));
                     }
                 }
                 Err(e) => errors.push(format!("{dir}: {e}")),
             }
         }
     }
-    out
+}
+
+/// Espacio libre para el usuario en el disco de una ruta.
+fn free_space(path: &str) -> Option<u64> {
+    let w: Vec<u16> = long_path(path).encode_utf16().chain([0]).collect();
+    let mut free = 0u64;
+    unsafe { GetDiskFreeSpaceExW(PCWSTR(w.as_ptr()), Some(&mut free), None, None) }.ok().map(|_| free)
 }
 
 /// "foto.jpg" → "foto (2).jpg", "foto (3).jpg"… hasta encontrar un nombre libre.
@@ -355,8 +437,12 @@ pub fn free_name(dst: &str) -> String {
 
 struct Progress<'a> {
     job: &'a Job,
-    base: u64,
-    wake: &'a dyn Fn(),
+    /// Bytes copiados de todo el trabajo (lo suman todos los archivos en curso).
+    total: &'a AtomicU64,
+    /// Lo que ya se sumó de este archivo.
+    last: AtomicU64,
+    started: Instant,
+    wake: &'a (dyn Fn() + Sync),
     last_wake: Mutex<Instant>,
 }
 
@@ -372,7 +458,14 @@ unsafe extern "system" fn progress_cb(
     data: *const core::ffi::c_void,
 ) -> COPYPROGRESSROUTINE_PROGRESS {
     let p = unsafe { &*(data as *const Progress) };
-    p.job.view.lock().done_bytes = p.base + transferred as u64;
+    let t = transferred as u64;
+    let delta = t.saturating_sub(p.last.swap(t, Ordering::Relaxed));
+    let done = p.total.fetch_add(delta, Ordering::Relaxed) + delta;
+    {
+        let mut v = p.job.view.lock();
+        v.done_bytes = done;
+        v.bytes_per_sec = done as f64 / p.started.elapsed().as_secs_f64().max(0.001);
+    }
     // Pausa: se queda esperando aquí, en medio del archivo.
     while p.job.paused.load(Ordering::Relaxed) && !p.job.cancel.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(100));
@@ -388,13 +481,40 @@ unsafe extern "system" fn progress_cb(
     PROGRESS_CONTINUE
 }
 
-fn copy_file(job: &Job, src: &str, dst: &str, size: u64, base: u64, wake: &dyn Fn()) -> Result<(), String> {
+/// Desde qué tamaño se copia sin la caché de Windows. Con caché la copia termina antes (Windows
+/// sigue escribiendo por detrás, como hace el Explorador), pero un archivo enorme desplazaría de
+/// la memoria todo lo demás: sin caché solo los que pasan de la mitad de la memoria libre.
+fn unbuffered_from() -> u64 {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    if let Some(mb) = std::env::var("RAYO_COPY_UNBUFFERED_MB").ok().and_then(|v| v.parse::<u64>().ok()) {
+        return mb << 20;
+    }
+    let mut m = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
+    let free = if unsafe { GlobalMemoryStatusEx(&mut m) }.is_ok() { m.ullAvailPhys } else { 0 };
+    (free / 2).max(512 << 20)
+}
+
+/// Copia un archivo sumando lo copiado a `total`. Al volver, el archivo cuenta entero (también si
+/// falló: así la barra no se queda corta).
+fn copy_file(job: &Job, src: &str, dst: &str, size: u64, total: &AtomicU64, started: Instant, compress: bool, wake: &(dyn Fn() + Sync)) -> Result<(), String> {
     let s: Vec<u16> = long_path(src).encode_utf16().chain([0]).collect();
     let d: Vec<u16> = long_path(dst).encode_utf16().chain([0]).collect();
-    let progress = Progress { job, base, wake, last_wake: Mutex::new(Instant::now()) };
+    let progress = Progress { job, total, last: AtomicU64::new(0), started, wake, last_wake: Mutex::new(Instant::now()) };
     // Sin caché del sistema para archivos grandes: más rápido y no desplaza lo que hay en memoria.
-    let flags = if size > 256 << 20 { COPY_FILE_NO_BUFFERING } else { COPYFILE_FLAGS(0) };
-    unsafe { CopyFileExW(PCWSTR(s.as_ptr()), PCWSTR(d.as_ptr()), Some(progress_cb), Some(&progress as *const _ as *const _), None, flags) }.map_err(|e| e.message())
+    let mut flags = if size > unbuffered_from() { COPY_FILE_NO_BUFFERING } else { COPYFILE_FLAGS(0) };
+    if compress {
+        // En la red: que SMB comprima lo que viaja (si el servidor no sabe, se ignora).
+        flags |= COPY_FILE_REQUEST_COMPRESSED_TRAFFIC;
+    }
+    let run = |flags: COPYFILE_FLAGS| unsafe { CopyFileExW(PCWSTR(s.as_ptr()), PCWSTR(d.as_ptr()), Some(progress_cb), Some(&progress as *const _ as *const _), None, flags) };
+    let mut r = run(flags);
+    if compress && r.as_ref().is_err_and(|e| e.code() == windows::Win32::Foundation::ERROR_INVALID_PARAMETER.to_hresult()) {
+        // Windows viejo: sin compresión.
+        r = run(flags & !COPY_FILE_REQUEST_COMPRESSED_TRAFFIC);
+    }
+    let counted = progress.last.load(Ordering::Relaxed);
+    total.fetch_add(size.saturating_sub(counted), Ordering::Relaxed);
+    r.map_err(|e| e.message())
 }
 
 fn move_path(src: &str, dst: &str) -> Result<(), String> {
@@ -593,7 +713,7 @@ fn run_compress(job: &Job, wake: &dyn Fn()) -> Vec<String> {
     super::parent_of(&zip_path).into_iter().collect()
 }
 
-fn run_job(job: &Job, wake: &dyn Fn()) -> Vec<String> {
+fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
     // Leer la operación aparte: el candado no debe quedar tomado durante el trabajo.
     let op = job.view.lock().op;
     match op {
@@ -659,151 +779,239 @@ fn run_job(job: &Job, wake: &dyn Fn()) -> Vec<String> {
         });
     }
 
-    let items = scan(&pending, &job.cancel, &mut errors);
-    let total_bytes: u64 = items.iter().map(|i| i.size).sum();
-    let total_files = items.iter().filter(|i| !i.is_dir).count();
+    // Estrategia según los discos: varios archivos a la vez solo si ningún disco tiene cabezal
+    // (NVMe, SSD o red); con un disco mecánico o un USB, de a uno y en el orden de las carpetas.
+    let dst_vol = disks::volume(&dest);
+    let src_vols: Vec<disks::Volume> = pending.iter().map(|(s, _)| disks::volume(s)).collect();
+    let network = dst_vol.kind == disks::Kind::Network || src_vols.iter().any(|v| v.kind == disks::Kind::Network);
+    let parallel = dst_vol.kind.parallel_friendly() && src_vols.iter().all(|v| v.kind.parallel_friendly());
+    let auto = if !parallel {
+        1
+    } else if network {
+        4
+    } else {
+        std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(4, 8)
+    };
+    // RAYO_COPY_THREADS=n fuerza la cantidad (para medir y diagnosticar).
+    let workers = std::env::var("RAYO_COPY_THREADS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0).unwrap_or(auto);
+    // Si no entra, avisar al contar (no cuando el disco ya se llenó a mitad de camino).
+    let needs_space = op == Op::Copy || src_vols.iter().any(|v| v.disks != dst_vol.disks);
+    let free = if needs_space { free_space(&dest) } else { None };
     {
         let mut v = job.view.lock();
         v.state = State::Running;
-        v.total_bytes = total_bytes;
-        v.total_files = total_files;
+        v.counting = true;
+        v.workers = workers;
     }
     wake();
 
+    struct Task {
+        src: String,
+        rel: String,
+        target: String,
+        size: u64,
+        /// Anotarlo para deshacer (no si reemplazó a otro o si está dentro de una carpeta nueva).
+        record: bool,
+    }
+    struct Shared {
+        errors: Vec<String>,
+        created: Vec<(String, String)>,
+        /// Originales copiados bien (al mover, se borran al final).
+        copied: Vec<String>,
+        /// Carpetas de origen (al mover, se borran las que quedaron vacías).
+        dirs: Vec<String>,
+    }
     let started = Instant::now();
-    let mut done_bytes = 0u64;
-    let mut policy: Option<Choice> = job.policy;
-    let mut copied_ok: Vec<&Item> = Vec::new();
-    // Carpetas de destino ya renombradas por "conservar ambos": origen → destino.
-    let mut renamed_dirs: Vec<(String, String)> = Vec::new();
-    // Fuentes de primer nivel y carpetas nuevas que crearon (lo de adentro se deshace con ellas).
-    let tops: std::collections::HashSet<&str> = pending.iter().map(|(s, _)| s.as_str()).collect();
-    let mut created_tops: Vec<String> = Vec::new();
-    for it in &items {
-        if job.cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        let mut dst = join(&dest, &it.rel);
-        for (from, to) in &renamed_dirs {
-            if let Some(rest) = dst.strip_prefix(from.as_str()) {
-                if rest.starts_with('\\') {
-                    dst = format!("{to}{rest}");
-                    break;
+    let done = AtomicU64::new(0);
+    let out_of_space = AtomicBool::new(false);
+    let shared = Mutex::new(Shared { errors, created, copied: Vec::new(), dirs: Vec::new() });
+    let (job_r, done_r, shared_r, oos_r, pending_r, dest_r) = (job, &done, &shared, &out_of_space, &pending, dest.as_str());
+
+    std::thread::scope(|sc| {
+        // 1. Contar: entrega cada carpeta y archivo apenas lo encuentra.
+        let (item_tx, item_rx) = bounded::<Item>(4096);
+        sc.spawn(move || {
+            let mut errs = Vec::new();
+            let (mut bytes, mut files) = (0u64, 0usize);
+            scan_each(pending_r, &job_r.cancel, &mut errs, &mut |it: Item| {
+                if !it.is_dir {
+                    bytes += it.size;
+                    files += 1;
+                    let mut v = job_r.view.lock();
+                    v.total_bytes = bytes;
+                    v.total_files = files;
                 }
-            }
-        }
-        {
-            let mut v = job.view.lock();
-            v.current = it.rel.clone();
-        }
-        if it.is_dir {
-            let same = short_path(&it.src).eq_ignore_ascii_case(&short_path(&dst));
-            if same && op == Op::Copy {
-                // Copiar una carpeta en su misma ubicación: "Carpeta (2)".
-                let new_dst = free_name(&dst);
-                renamed_dirs.push((dst.clone(), new_dst.clone()));
-                dst = new_dst;
-            }
-            let existed = meta(&dst).is_some();
-            match std::fs::create_dir_all(long_path(&dst)) {
-                Err(e) => errors.push(format!("{dst}: {e}")),
-                Ok(()) if !existed && tops.contains(it.src.as_str()) => {
-                    created.push((it.src.clone(), dst.clone()));
-                    created_tops.push(format!("{}\\", dst.to_lowercase()));
+                if free.is_some_and(|f| bytes > f) && !oos_r.swap(true, Ordering::Relaxed) {
+                    let libre = super::human_size(free.unwrap_or(0));
+                    shared_r.lock().errors.push(tf!("copia.sin_espacio", destino = super::file_name(dest_r).trim_end_matches(':'), libre = libre));
+                    job_r.cancel.store(true, Ordering::Relaxed);
                 }
-                Ok(()) => {}
-            }
-            continue;
-        }
-        let mut target = dst.clone();
-        let mut replaced = false;
-        if let Some(dm) = meta(&dst) {
-            let same = short_path(&it.src).eq_ignore_ascii_case(&short_path(&dst));
-            let choice = if same {
-                // Pegar en la misma carpeta: siempre una copia nueva.
-                Choice::KeepBoth
-            } else if let Some(p) = policy {
-                p
-            } else {
-                let sm = meta(&it.src);
-                let (c, all) = ask(
-                    job,
-                    ConflictInfo {
-                        src: it.src.clone(),
-                        dst: dst.clone(),
-                        src_size: it.size,
-                        dst_size: dm.len(),
-                        src_mtime: sm.as_ref().map_or(0, mtime_of),
-                        dst_mtime: mtime_of(&dm),
-                    },
-                    wake,
-                );
-                if all {
-                    policy = Some(c);
-                }
-                c
-            };
-            match choice {
-                Choice::Skip => {
-                    done_bytes += it.size;
-                    let mut v = job.view.lock();
-                    v.done_bytes = done_bytes;
+                let _ = item_tx.send(it);
+            });
+            shared_r.lock().errors.extend(errs);
+            job_r.view.lock().counting = false;
+            wake();
+        });
+
+        // 2. Copiar: uno o varios a la vez.
+        let (task_tx, task_rx) = bounded::<Task>(workers * 4);
+        for _ in 0..workers {
+            let task_rx = task_rx.clone();
+            sc.spawn(move || {
+                for t in task_rx {
+                    // Con la tarea cancelada se vacía la cola sin copiar (quien reparte no se traba).
+                    while job_r.paused.load(Ordering::Relaxed) && !job_r.cancel.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    if job_r.cancel.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    job_r.view.lock().current = t.rel.clone();
+                    match copy_file(job_r, &t.src, &t.target, t.size, done_r, started, network, wake) {
+                        Ok(()) => {
+                            let mut sh = shared_r.lock();
+                            sh.copied.push(t.src.clone());
+                            if t.record {
+                                sh.created.push((t.src, t.target));
+                            }
+                        }
+                        Err(_) if job_r.cancel.load(Ordering::Relaxed) => {
+                            // Archivo a medias: se borra.
+                            let _ = std::fs::remove_file(long_path(&t.target));
+                        }
+                        Err(e) => shared_r.lock().errors.push(format!("{}: {e}", t.src)),
+                    }
+                    let d = done_r.load(Ordering::Relaxed);
+                    let mut v = job_r.view.lock();
                     v.done_files += 1;
-                    continue;
+                    v.done_bytes = d;
+                    v.bytes_per_sec = d as f64 / started.elapsed().as_secs_f64().max(0.001);
                 }
-                Choice::KeepBoth => target = free_name(&dst),
-                Choice::Replace => replaced = true,
-            }
+            });
         }
-        if let Some(parent) = super::parent_of(&target) {
-            let _ = std::fs::create_dir_all(long_path(&parent));
-        }
-        match copy_file(job, &it.src, &target, it.size, done_bytes, wake) {
-            Ok(()) => {
-                copied_ok.push(it);
-                let inside_new = created_tops.iter().any(|d| target.to_lowercase().starts_with(d.as_str()));
-                if !replaced && !inside_new {
-                    created.push((it.src.clone(), target.clone()));
-                }
-            }
-            Err(e) if job.cancel.load(Ordering::Relaxed) => {
-                // Archivo a medias: se borra.
-                let _ = std::fs::remove_file(long_path(&target));
-                let _ = e;
+        drop(task_rx);
+
+        // 3. Repartir (este hilo): carpetas, conflictos y nombres, en orden.
+        let mut policy: Option<Choice> = job.policy;
+        // Carpetas de destino ya renombradas por "conservar ambos": origen → destino.
+        let mut renamed_dirs: Vec<(String, String)> = Vec::new();
+        // Fuentes de primer nivel y carpetas nuevas que crearon (lo de adentro se deshace con ellas).
+        let tops: std::collections::HashSet<&str> = pending.iter().map(|(s, _)| s.as_str()).collect();
+        let mut created_tops: Vec<String> = Vec::new();
+        for it in item_rx {
+            if job.cancel.load(Ordering::Relaxed) {
                 break;
             }
-            Err(e) => errors.push(format!("{}: {e}", it.src)),
+            let mut dst = join(&dest, &it.rel);
+            for (from, to) in &renamed_dirs {
+                if let Some(rest) = dst.strip_prefix(from.as_str()) {
+                    if rest.starts_with('\\') {
+                        dst = format!("{to}{rest}");
+                        break;
+                    }
+                }
+            }
+            if it.is_dir {
+                shared.lock().dirs.push(it.src.clone());
+                let same = short_path(&it.src).eq_ignore_ascii_case(&short_path(&dst));
+                if same && op == Op::Copy {
+                    // Copiar una carpeta en su misma ubicación: "Carpeta (2)".
+                    let new_dst = free_name(&dst);
+                    renamed_dirs.push((dst.clone(), new_dst.clone()));
+                    dst = new_dst;
+                }
+                let existed = meta(&dst).is_some();
+                match std::fs::create_dir_all(long_path(&dst)) {
+                    Err(e) => shared.lock().errors.push(format!("{dst}: {e}")),
+                    Ok(()) if !existed && tops.contains(it.src.as_str()) => {
+                        shared.lock().created.push((it.src.clone(), dst.clone()));
+                        created_tops.push(format!("{}\\", dst.to_lowercase()));
+                    }
+                    Ok(()) => {}
+                }
+                continue;
+            }
+            let mut target = dst.clone();
+            let mut replaced = false;
+            if let Some(dm) = meta(&dst) {
+                let same = short_path(&it.src).eq_ignore_ascii_case(&short_path(&dst));
+                let choice = if same {
+                    // Pegar en la misma carpeta: siempre una copia nueva.
+                    Choice::KeepBoth
+                } else if let Some(p) = policy {
+                    p
+                } else {
+                    let sm = meta(&it.src);
+                    let (c, all) = ask(
+                        job,
+                        ConflictInfo {
+                            src: it.src.clone(),
+                            dst: dst.clone(),
+                            src_size: it.size,
+                            dst_size: dm.len(),
+                            src_mtime: sm.as_ref().map_or(0, mtime_of),
+                            dst_mtime: mtime_of(&dm),
+                        },
+                        wake,
+                    );
+                    if all {
+                        policy = Some(c);
+                    }
+                    c
+                };
+                match choice {
+                    Choice::Skip => {
+                        let d = done.fetch_add(it.size, Ordering::Relaxed) + it.size;
+                        let mut v = job.view.lock();
+                        v.done_bytes = d;
+                        v.done_files += 1;
+                        continue;
+                    }
+                    Choice::KeepBoth => target = free_name(&dst),
+                    Choice::Replace => replaced = true,
+                }
+            }
+            if let Some(parent) = super::parent_of(&target) {
+                let _ = std::fs::create_dir_all(long_path(&parent));
+            }
+            let inside_new = created_tops.iter().any(|d| target.to_lowercase().starts_with(d.as_str()));
+            let task = Task { src: it.src.clone(), rel: it.rel.clone(), target, size: it.size, record: !replaced && !inside_new };
+            if task_tx.send(task).is_err() {
+                break;
+            }
         }
-        done_bytes += it.size;
-        let secs = started.elapsed().as_secs_f64().max(0.001);
-        let mut v = job.view.lock();
-        v.done_bytes = done_bytes;
-        v.done_files += 1;
-        v.bytes_per_sec = done_bytes as f64 / secs;
-    }
+        drop(task_tx);
+    });
+
+    let Shared { mut errors, created, copied, dirs } = shared.into_inner();
+    let out_of_space = out_of_space.load(Ordering::Relaxed);
 
     // Mover entre discos: borrar los originales copiados bien y las carpetas que quedaron vacías.
     if op == Op::Move && !job.cancel.load(Ordering::Relaxed) {
-        for it in &copied_ok {
-            if let Err(e) = std::fs::remove_file(long_path(&it.src)) {
-                errors.push(tf!("copia.no_pudo_borrar_original", origen = it.src, error = e));
+        for src in &copied {
+            if let Err(e) = std::fs::remove_file(long_path(src)) {
+                errors.push(tf!("copia.no_pudo_borrar_original", origen = src, error = e));
             }
         }
-        let mut dirs: Vec<&Item> = items.iter().filter(|i| i.is_dir).collect();
-        dirs.sort_by_key(|d| std::cmp::Reverse(d.rel.len()));
+        let mut dirs = dirs;
+        dirs.sort_by_key(|d| std::cmp::Reverse(d.len()));
         for d in dirs {
-            let _ = std::fs::remove_dir(long_path(&d.src));
+            let _ = std::fs::remove_dir(long_path(&d));
         }
     }
 
     let mut v = job.view.lock();
-    v.state = if job.cancel.load(Ordering::Relaxed) { State::Canceled } else { State::Done };
+    // Sin espacio no es una cancelación del usuario: termina con su error a la vista.
+    v.state = if job.cancel.load(Ordering::Relaxed) && !out_of_space { State::Canceled } else { State::Done };
     v.current.clear();
+    v.counting = false;
     v.errors = errors;
     v.created = created;
-    v.done_bytes = v.done_bytes.max(if v.state == State::Done { total_bytes } else { 0 });
+    let total_bytes = v.total_bytes;
+    v.done_bytes = v.done_bytes.max(if v.state == State::Done && !out_of_space { total_bytes } else { 0 });
     touched
 }
+
 
 pub fn exists(p: &str) -> bool {
     Path::new(&long_path(p)).exists()
@@ -832,6 +1040,56 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("el trabajo no terminó");
+    }
+
+    /// Muchos archivos en carpetas anidadas (en un SSD se copian varios a la vez): llegan todos,
+    /// completos, y el progreso suma exactamente lo copiado.
+    #[test]
+    fn many_files_arrive_complete() {
+        let root = tmp("muchos");
+        let src = join(&root, "origen");
+        let mut expected = Vec::new();
+        for d in 0..12 {
+            let dir = join(&src, &format!(r"sub{d}\nivel"));
+            std::fs::create_dir_all(long_path(&dir)).unwrap();
+            for f in 0..40 {
+                let body = format!("archivo {d}-{f} ").repeat(1 + (f * 37) % 300);
+                std::fs::write(long_path(&join(&dir, &format!("f{f}.txt"))), &body).unwrap();
+                expected.push((format!(r"origen\sub{d}\nivel\f{f}.txt"), body));
+            }
+        }
+        let dest = join(&root, "destino");
+        let t = Transfers::new(Arc::new(|| {}), Arc::new(|_| {}));
+        let id = t.enqueue(Op::Copy, vec![src.clone()], dest.clone());
+        let v = wait(&t, id);
+        assert!(v.errors.is_empty(), "{:?}", v.errors);
+        assert_eq!(v.done_files, expected.len());
+        assert_eq!(v.done_bytes, v.total_bytes);
+        assert!(!v.counting);
+        for (rel, body) in &expected {
+            assert_eq!(&std::fs::read_to_string(long_path(&join(&dest, rel))).unwrap(), body, "{rel}");
+        }
+        // Deshacer quita la carpeta nueva entera (una sola entrada).
+        assert_eq!(v.created.len(), 1, "{:?}", v.created);
+        println!("{} archivos, {} a la vez", v.done_files, v.workers);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Dos trabajos sobre el mismo disco van uno después del otro y terminan los dos bien.
+    #[test]
+    fn jobs_on_the_same_disk_run_in_order() {
+        let root = tmp("orden");
+        let src = join(&root, "a.bin");
+        std::fs::write(long_path(&src), vec![7u8; 1 << 20]).unwrap();
+        let (d1, d2) = (join(&root, "uno"), join(&root, "dos"));
+        let t = Transfers::new(Arc::new(|| {}), Arc::new(|_| {}));
+        let a = t.enqueue(Op::Copy, vec![src.clone()], d1.clone());
+        let b = t.enqueue(Op::Copy, vec![src.clone()], d2.clone());
+        let (va, vb) = (wait(&t, a), wait(&t, b));
+        assert!(va.errors.is_empty() && vb.errors.is_empty(), "{:?} {:?}", va.errors, vb.errors);
+        assert_eq!(std::fs::read(long_path(&join(&d1, "a.bin"))).unwrap().len(), 1 << 20);
+        assert_eq!(std::fs::read(long_path(&join(&d2, "a.bin"))).unwrap().len(), 1 << 20);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
