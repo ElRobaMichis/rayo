@@ -220,6 +220,9 @@ impl App {
         let t = Theme::get(cfg.dark);
         theme::setup_fonts(&ctx);
         theme::apply_style(&ctx, &t);
+        // El doble clic dura lo que diga Windows (egui usa 0,3 s; Windows, 0,5 s por defecto).
+        let dbl = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() } as f64 / 1000.0;
+        ctx.options_mut(|o| o.input_options.max_double_click_delay = dbl.clamp(0.2, 1.0));
         let hwnd = hwnd_of(cc);
         if let Some(h) = hwnd {
             dark_title_bar(h, cfg.dark);

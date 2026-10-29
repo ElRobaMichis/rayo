@@ -430,7 +430,8 @@ fn slow_rename(cx: &mut Cx, resp: &egui::Response, dir: &str, e: &FileEntry, sel
         }
     }
     // `selected` es de antes de este clic: el clic que selecciona algo no lo renombra.
-    if !(resp.clicked() && selected && selection.len() == 1 && cx.rename.is_none() && ctx.input(|i| i.modifiers.is_none())) {
+    // El segundo clic de un doble clic también cuenta como clic (y el primero ya seleccionó): no.
+    if !(resp.clicked() && !resp.double_clicked() && selected && selection.len() == 1 && cx.rename.is_none() && ctx.input(|i| i.modifiers.is_none())) {
         return;
     }
     let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) else { return };
