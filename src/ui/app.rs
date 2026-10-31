@@ -1235,6 +1235,11 @@ impl App {
                 let tab = self.tab();
                 tab.search.text.clear();
                 tab.reveal(&p);
+                // Un listado nuevo: el archivo puede ser recién creado (una descarga que se acaba
+                // de "mostrar en carpeta") y no estar todavía en el que había.
+                if let Some(parent) = fsx::parent_of(&p) {
+                    self.dirs.reload(&parent);
+                }
             }
             Action::Select { col, name, is_dir, ctrl, shift } => {
                 self.rename = None;
@@ -2922,6 +2927,7 @@ impl eframe::App for App {
         let t = self.t;
         let mut actions: Vec<Action> = Vec::new();
         self.poll(&ctx);
+        views::track_clicks(&ctx);
         // Rutas que pidió abrir otra instancia de Rayo.
         for p in crate::instance::take_requests() {
             if p.is_empty() {

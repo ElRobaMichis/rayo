@@ -396,7 +396,7 @@ pub fn preview_pane(
                 p.text(area.center() + vec2(0.0, 64.0), Align2::CENTER_TOP, t!("previa.solo_nube_abrelo_descargarlo"), FontId::proportional(11.5), t.dim);
             }
         }
-        if resp.double_clicked() {
+        if super::views::double_clicked(&resp) {
             actions.push(Action::Open { path: item.path.clone(), is_dir: e.is_dir });
         }
         ui.add_space(10.0);

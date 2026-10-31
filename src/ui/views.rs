@@ -397,6 +397,63 @@ fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, sele
     resp
 }
 
+/// La fila del cursor a la que hay que llevar la vista. Si todavía no está en la lista (un archivo
+/// recién creado, p. ej. al "mostrar en carpeta" una descarga), se sigue esperando mientras se lista.
+fn scroll_target(col: &mut Col, entries: &[FileEntry], loading: bool) -> Option<usize> {
+    if !col.scroll_to_cursor {
+        return None;
+    }
+    let found = col.cursor.as_ref().and_then(|c| entries.iter().position(|e| &e.name == c));
+    if found.is_some() || !loading {
+        col.scroll_to_cursor = false;
+    }
+    found
+}
+
+/// Cuenta de clics como la de Windows: dos clics seguidos (dentro del tiempo y la distancia de un
+/// doble clic) forman un par, y el clic siguiente empieza de cero. egui, en cambio, cuenta un
+/// tercer clic rápido como triple (y no como doble): seleccionar algo y enseguida hacerle doble
+/// clic no lo abría.
+#[derive(Clone, Copy, Default)]
+struct Clicks {
+    /// Hora de la entrada ya contada (otra pasada del mismo cuadro no vuelve a contarla).
+    time: f64,
+    /// El último clic, si todavía puede formar par.
+    last: Option<(f64, Pos2)>,
+    double: bool,
+}
+
+fn clicks_id() -> Id {
+    Id::new("clics-windows")
+}
+
+/// Se llama una vez por cuadro, antes de dibujar.
+pub fn track_clicks(ctx: &egui::Context) {
+    let (clicked, pos, now) = ctx.input(|i| (i.pointer.button_clicked(egui::PointerButton::Primary), i.pointer.interact_pos(), i.time));
+    let (delay, dist) = ctx.options(|o| (o.input_options.max_double_click_delay, o.input_options.max_click_dist));
+    let mut c = ctx.data(|d| d.get_temp::<Clicks>(clicks_id())).unwrap_or_default();
+    if c.time == now {
+        return;
+    }
+    c.time = now;
+    c.double = false;
+    if let (true, Some(pos)) = (clicked, pos) {
+        match c.last {
+            Some((t, p)) if now - t < delay && p.distance(pos) < dist => {
+                c.double = true;
+                c.last = None;
+            }
+            _ => c.last = Some((now, pos)),
+        }
+    }
+    ctx.data_mut(|d| d.insert_temp(clicks_id(), c));
+}
+
+/// Doble clic sobre este elemento, contado como en Windows (ver `track_clicks`).
+pub fn double_clicked(resp: &egui::Response) -> bool {
+    resp.clicked() && resp.ctx.data(|d| d.get_temp::<Clicks>(clicks_id())).is_some_and(|c| c.double)
+}
+
 /// Un renombrado "lento" en espera: clic sobre el nombre de lo que ya estaba seleccionado.
 #[derive(Clone)]
 struct SlowRename {
@@ -418,7 +475,7 @@ fn slow_rename(cx: &mut Cx, resp: &egui::Response, dir: &str, e: &FileEntry, sel
     if let Some(p) = ctx.data(|d| d.get_temp::<SlowRename>(key)) {
         if p.row == resp.id {
             let interrupted = ctx.input(|i| i.pointer.any_pressed() || i.events.iter().any(|ev| matches!(ev, egui::Event::Key { pressed: true, .. })));
-            if interrupted || resp.double_clicked() || !selected || selection.len() != 1 || cx.rename.is_some() {
+            if interrupted || double_clicked(resp) || !selected || selection.len() != 1 || cx.rename.is_some() {
                 ctx.data_mut(|d| d.remove::<SlowRename>(key));
             } else if now - p.at >= wait {
                 ctx.data_mut(|d| d.remove::<SlowRename>(key));
@@ -431,7 +488,7 @@ fn slow_rename(cx: &mut Cx, resp: &egui::Response, dir: &str, e: &FileEntry, sel
     }
     // `selected` es de antes de este clic: el clic que selecciona algo no lo renombra.
     // El segundo clic de un doble clic también cuenta como clic (y el primero ya seleccionó): no.
-    if !(resp.clicked() && !resp.double_clicked() && selected && selection.len() == 1 && cx.rename.is_none() && ctx.input(|i| i.modifiers.is_none())) {
+    if !(resp.clicked() && !double_clicked(resp) && selected && selection.len() == 1 && cx.rename.is_none() && ctx.input(|i| i.modifiers.is_none())) {
         return;
     }
     let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) else { return };
@@ -471,7 +528,7 @@ fn handle_row_response(cx: &mut Cx, resp: &egui::Response, ci: usize, dir: &str,
         let mods = resp.ctx.input(|i| i.modifiers);
         cx.actions.push(Action::Select { col: ci, name: e.name.clone(), is_dir: e.is_dir, ctrl: mods.ctrl && resp.clicked(), shift: mods.shift && resp.clicked() });
     }
-    if resp.double_clicked() {
+    if double_clicked(resp) {
         cx.actions.push(Action::Open { path: path.clone(), is_dir: e.is_dir });
     }
     if resp.middle_clicked() && e.is_dir {
@@ -535,12 +592,7 @@ pub fn column(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, active: bool, 
         }
         return;
     }
-    let scroll_to = if col.scroll_to_cursor {
-        col.scroll_to_cursor = false;
-        col.cursor.as_ref().and_then(|c| data.entries.iter().position(|e| &e.name == c))
-    } else {
-        None
-    };
+    let scroll_to = scroll_target(col, data.entries, data.loading);
     let selection = col.selected();
     let out = virtual_list(ui, Id::new(("col", cx.tab_id, ci, &dir)), data.entries.len(), scroll_to, |ui, i, r| {
         let e = &data.entries[i];
@@ -624,12 +676,7 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
         empty_message(ui, &t, if data.loading { t!("lista.cargando") } else { t!("lista.carpeta_vacia") });
         return;
     }
-    let scroll_to = if col.scroll_to_cursor {
-        col.scroll_to_cursor = false;
-        col.cursor.as_ref().and_then(|c| data.entries.iter().position(|e| &e.name == c))
-    } else {
-        None
-    };
+    let scroll_to = scroll_target(col, data.entries, data.loading);
     let selection = col.selected();
     // Para las barras de "qué ocupa espacio": proporción de cada elemento sobre el total de la carpeta.
     let total: u64 = data.entries.iter().filter_map(|e| e.display_size()).sum();
@@ -796,7 +843,7 @@ pub fn search_results(ui: &mut Ui, cx: &mut Cx, res: Option<&Results>, cursor: &
         if resp.clicked() || resp.secondary_clicked() {
             *cursor = i;
         }
-        if resp.double_clicked() {
+        if double_clicked(&resp) {
             cx.actions.push(Action::Open { path: row.path(), is_dir: row.is_dir });
         }
         if resp.secondary_clicked() {
@@ -851,12 +898,7 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
     let cols = ((rest.width() - 12.0) / TILE_W).floor().max(1.0) as usize;
     ui.ctx().data_mut(|d| d.insert_temp(Id::new(("grid-cols", cx.tab_id)), cols));
     let rows = n.div_ceil(cols);
-    let scroll_to = if col.scroll_to_cursor {
-        col.scroll_to_cursor = false;
-        col.cursor.as_ref().and_then(|c| data.entries.iter().position(|e| &e.name == c))
-    } else {
-        None
-    };
+    let scroll_to = scroll_target(col, data.entries, data.loading);
     let selection = col.selected();
     let ppp = ui.ctx().pixels_per_point();
     let base = selection.clone();

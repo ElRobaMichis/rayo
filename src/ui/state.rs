@@ -21,6 +21,8 @@ pub struct DirState {
     pub last_used: u64,
     /// Aumenta con cada listado recibido.
     pub generation: u64,
+    /// Cambió mientras se listaba: al llegar ese listado (ya viejo) se lista otra vez.
+    again: bool,
 }
 
 type ListResult = (String, Result<Vec<FileEntry>, String>);
@@ -81,6 +83,7 @@ impl DirCache {
             error: None,
             last_used: frame,
             generation: 0,
+            again: false,
         });
         st.last_used = frame;
         if st.raw.is_none() && !st.loading && st.error.is_none() {
@@ -91,7 +94,11 @@ impl DirCache {
 
     pub fn reload(&mut self, path: &str) {
         if let Some(st) = self.map.get_mut(path) {
-            if !st.loading {
+            if st.loading {
+                // El listado en curso puede haber leído la carpeta antes de este cambio (p. ej. el
+                // ".crdownload" de una descarga que ya se renombró): no perderlo.
+                st.again = true;
+            } else {
                 st.loading = true;
                 st.error = None;
                 let _ = self.tx.send(path.to_string());
@@ -114,7 +121,11 @@ impl DirCache {
         while let Ok((path, r)) = self.rx.try_recv() {
             any = true;
             if let Some(st) = self.map.get_mut(&path) {
-                st.loading = false;
+                // Si cambió mientras tanto, se muestra este y se pide otro (sigue "cargando").
+                st.loading = std::mem::take(&mut st.again);
+                if st.loading {
+                    let _ = self.tx.send(path.clone());
+                }
                 match r {
                     Ok(list) => {
                         if self.frame < 60 {

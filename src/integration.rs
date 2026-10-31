@@ -572,7 +572,7 @@ fn take_over(hwnd: HWND) {
                 let first = found.as_ref().map_or(std::time::Instant::now(), |f| f.2);
                 // Inicio y los comprimidos no traen archivo marcado: no hace falta esperarlo.
                 let archive = !std::path::Path::new(&loc).is_dir() && !is_home(&loc);
-                let done = sel.is_some() || is_home(&loc) || archive || first.elapsed() > std::time::Duration::from_millis(350);
+                let done = sel.is_some() || is_home(&loc) || archive || first.elapsed() > std::time::Duration::from_millis(1200);
                 found = Some((loc, sel, first));
                 if done {
                     break;
