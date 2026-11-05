@@ -305,8 +305,9 @@ pub enum SortKey {
 
 pub fn sort_entries(v: &mut [FileEntry], key: SortKey, desc: bool) {
     v.sort_by(|a, b| {
-        // Por tamaño se mezclan carpetas y archivos: así se ve qué ocupa más espacio.
-        let dirs = if key == SortKey::Size { Ordering::Equal } else { b.is_dir.cmp(&a.is_dir) };
+        // Por tamaño y por fecha se mezclan carpetas y archivos: así se ve qué ocupa más espacio
+        // y qué es lo último (la descarga de hoy arriba, aunque haya mil carpetas).
+        let dirs = if matches!(key, SortKey::Size | SortKey::Modified) { Ordering::Equal } else { b.is_dir.cmp(&a.is_dir) };
         if dirs != Ordering::Equal {
             return dirs;
         }
