@@ -141,6 +141,8 @@ pub fn build(req: &MenuReq, b: &BuildCx) -> (Vec<Entry>, Option<Vec<Entry>>, usi
         MenuReq::Background { dir } => background_entries(dir, b),
     };
     let mut hidden_count = 0;
+    // Las opciones de Rayo también se pueden ocultar (como las de Windows).
+    let rayo = hide_own(rayo, b.hidden, b.show_hidden, &mut hidden_count);
     let native = b.native.map(|m| {
         let mut v = native_entries(m, b.hidden, b.show_hidden, &mut hidden_count);
         if matches!(req, MenuReq::Items { .. }) {
@@ -150,6 +152,37 @@ pub fn build(req: &MenuReq, b: &BuildCx) -> (Vec<Entry>, Option<Vec<Entry>>, usi
         tidy(v)
     });
     (tidy(rayo), native, hidden_count)
+}
+
+/// Marca como ocultables las opciones de Rayo y salta (o marca, si se pidió verlas) las ocultas.
+fn hide_own(entries: Vec<Entry>, hidden: &[String], show_hidden: bool, count: &mut usize) -> Vec<Entry> {
+    let mut out = Vec::new();
+    for mut e in entries {
+        if e.separator {
+            out.push(e);
+            continue;
+        }
+        if !e.children.is_empty() {
+            e.children = tidy(hide_own(std::mem::take(&mut e.children), hidden, show_hidden, count));
+            if e.children.is_empty() {
+                continue;
+            }
+            out.push(e);
+            continue;
+        }
+        if !e.key.is_empty() {
+            e.hideable = true;
+            if hidden.contains(&e.key) {
+                *count += 1;
+                if !show_hidden {
+                    continue;
+                }
+                e.hidden = true;
+            }
+        }
+        out.push(e);
+    }
+    tidy(out)
 }
 
 fn item_entries(paths: &[String], is_dir: bool, dir: &str, reveal: Option<&str>, b: &BuildCx) -> (Vec<Entry>, Target) {
@@ -639,7 +672,7 @@ fn row(ui: &mut Ui, t: &Theme, e: &Entry, label: Option<&str>, pinned: bool, hig
         p.text(pos2(right - 8.0, r.center().y), Align2::CENTER_CENTER, ic::CARET_RIGHT, theme::icon_font(11.0, false), t.faint);
         right -= 20.0;
     }
-    // Ocultar / volver a mostrar (opciones de Windows): se ve al pasar por encima.
+    // Ocultar / volver a mostrar (de Rayo o de Windows): se ve al pasar por encima.
     if e.hideable && !e.key.is_empty() {
         let hit = Rect::from_min_max(pos2(right - 22.0, r.top()), pos2(right + 4.0, r.bottom()));
         let hr = Rect::from_center_size(pos2(right - 9.0, r.center().y), vec2(20.0, 20.0));
