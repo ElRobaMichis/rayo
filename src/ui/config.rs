@@ -129,6 +129,8 @@ pub struct Config {
     pub tab_groups: Vec<TabGroup>,
     pub tab_group_of: Vec<u64>,
     pub tab_group_of_right: Vec<u64>,
+    /// Botones propios de la barra (comandos del catálogo, en orden).
+    pub toolbar: Vec<String>,
 }
 
 fn spanish_before_languages() -> Option<String> {
@@ -173,6 +175,7 @@ impl Default for Config {
             tab_groups: Vec::new(),
             tab_group_of: Vec::new(),
             tab_group_of_right: Vec::new(),
+            toolbar: Vec::new(),
         }
     }
 }

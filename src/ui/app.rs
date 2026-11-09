@@ -118,6 +118,8 @@ pub struct App {
     admin: Option<(String, crate::admin::AdminOp)>,
     /// Lo que quedó sin hacer por permisos en otro hilo (p. ej. al borrar).
     admin_report: Arc<Mutex<Option<crate::admin::AdminOp>>>,
+    /// Ventana para elegir los botones de la barra.
+    toolbar_dlg: bool,
     /// Última carpeta registrada en las recientes (para la paleta).
     last_dir: String,
     /// Secuencia de teclas en curso para los atajos propios (combinaciones, cuándo la última).
@@ -378,6 +380,7 @@ impl App {
             admin_report: Default::default(),
             menu_prefetch: (Vec::new(), 0.0, false),
             last_dir: String::new(),
+            toolbar_dlg: false,
             key_seq: (Vec::new(), 0.0),
             confirm_delete: None,
             deleting: Vec::new(),
@@ -675,7 +678,7 @@ impl App {
 
     fn keys(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         // Con un menú abierto, las teclas son del menú (Esc lo cierra).
-        if self.palette.open || self.batch.is_some() || self.pattern.is_some() || self.hash.is_some() || self.locks.is_some() || self.default_dlg.is_some() || self.lang_dlg.is_some() || self.admin.is_some() || self.confirm_delete.is_some() || self.first_run || egui::Popup::is_any_open(ctx) || chrome::overlay_open(ctx) {
+        if self.palette.open || self.batch.is_some() || self.pattern.is_some() || self.hash.is_some() || self.locks.is_some() || self.default_dlg.is_some() || self.lang_dlg.is_some() || self.admin.is_some() || self.confirm_delete.is_some() || self.toolbar_dlg || self.first_run || egui::Popup::is_any_open(ctx) || chrome::overlay_open(ctx) {
             return;
         }
         self.user_shortcuts(ctx, actions);
@@ -1286,6 +1289,15 @@ impl App {
             Action::TransferCancel(id) => self.xfer.cancel(id),
             Action::TransferResolve(id, c, all) => self.xfer.resolve(id, c, all),
             Action::OpenPalette => self.palette.show(),
+            Action::RunCommand(id) => {
+                if let Some(c) = super::commands::ALL.iter().find(|c| c.id == id) {
+                    let t = self.target();
+                    if super::commands::available(c, &t) {
+                        self.apply(ctx, Action::Command(c.id, t));
+                    }
+                }
+            }
+            Action::CustomizeToolbar => self.toolbar_dlg = true,
             Action::SaveWorkspace(name) => {
                 self.save_cfg();
                 let w = super::config::Workspace {
@@ -1813,6 +1825,10 @@ impl App {
 
     /// Ejecuta un comando del catálogo (menú o paleta).
     fn run_command(&mut self, ctx: &egui::Context, id: &'static str, t: super::commands::Target) {
+        if id == "customize_toolbar" {
+            self.toolbar_dlg = true;
+            return;
+        }
         use super::tools::{CompareTool, DupesTool, Tool};
         let first = t.paths.first().cloned();
         let is_dir = |p: &str| std::path::Path::new(&fsx::long_path(p)).is_dir();
@@ -2401,6 +2417,74 @@ impl App {
             }
             !done
         });
+    }
+
+    /// Elegir los botones de la barra (comandos del catálogo) y su orden.
+    fn toolbar_dialog(&mut self, ctx: &egui::Context) {
+        use egui::RichText;
+        let t = self.t;
+        let mut close = false;
+        let mut changed = false;
+        let mut list = self.cfg.toolbar.clone();
+        let modal = egui::Modal::new(Id::new("customize-toolbar")).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(egui_phosphor::regular::SLIDERS_HORIZONTAL).font(theme::icon_font(20.0, true)).color(t.accent));
+                ui.label(RichText::new(t!("cmd.customize_toolbar")).font(theme::semibold(17.0)).color(t.text));
+            });
+            ui.label(RichText::new(t!("app.barra_explicacion")).size(12.5).color(t.dim));
+            ui.add_space(8.0);
+            // Primero los elegidos (en su orden, con flechas), después el resto.
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                let chosen = list.clone();
+                for (k, id) in chosen.iter().enumerate() {
+                    let Some(c) = super::commands::ALL.iter().find(|c| c.id == id) else { continue };
+                    ui.horizontal(|ui| {
+                        let mut on = true;
+                        if ui.checkbox(&mut on, format!("{}  {}", c.icon, c.label())).changed() {
+                            list.retain(|x| x != id);
+                            changed = true;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add_enabled(k + 1 < chosen.len(), egui::Button::new(egui_phosphor::regular::ARROW_DOWN).small()).clicked() {
+                                list.swap(k, k + 1);
+                                changed = true;
+                            }
+                            if ui.add_enabled(k > 0, egui::Button::new(egui_phosphor::regular::ARROW_UP).small()).clicked() {
+                                list.swap(k, k - 1);
+                                changed = true;
+                            }
+                        });
+                    });
+                }
+                if !chosen.is_empty() {
+                    ui.separator();
+                }
+                for c in super::commands::ALL.iter().filter(|c| !chosen.iter().any(|x| x == c.id) && c.id != "customize_toolbar") {
+                    let mut on = false;
+                    if ui.checkbox(&mut on, format!("{}  {}", c.icon, c.label())).changed() {
+                        list.push(c.id.to_string());
+                        changed = true;
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(t!("comun.listo")).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if modal.should_close() {
+            close = true;
+        }
+        if changed {
+            self.cfg.toolbar = list;
+            self.save_cfg();
+        }
+        if close {
+            self.toolbar_dlg = false;
+        }
     }
 
     /// Reemplaza las pestañas por las de un espacio de trabajo.
@@ -3068,7 +3152,9 @@ impl App {
         let cfg_snapshot = self.cfg.clone();
         let search_id = Id::new(("search", self.tabs[ti].id));
         if bar_h > 0.0 {
-            chrome::toolbar(&mut bui, &t, &cfg_snapshot, &mut self.tabs[ti], search_id, actions);
+            let target = self.target();
+            let enabled: Vec<bool> = cfg_snapshot.toolbar.iter().map(|id| super::commands::ALL.iter().find(|c| c.id == id).is_some_and(|c| super::commands::available(c, &target))).collect();
+            chrome::toolbar(&mut bui, &t, &cfg_snapshot, &mut self.tabs[ti], search_id, &enabled, &cfg_snapshot.shortcuts, actions);
         }
         ui.painter().line_segment([bar_rect.left_bottom(), bar_rect.right_bottom()], egui::Stroke::new(1.0, t.border));
         // Con dos paneles, una línea de acento marca el panel activo.
@@ -3752,6 +3838,9 @@ impl eframe::App for App {
         }
         if self.confirm_delete.is_some() {
             self.confirm_delete_dialog(&ctx);
+        }
+        if self.toolbar_dlg {
+            self.toolbar_dialog(&ctx);
         }
         self.check_deletes();
         self.prefetch_menu(&ctx);

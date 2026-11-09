@@ -95,6 +95,10 @@ pub enum Action {
     Command(&'static str, super::commands::Target),
     /// Pide abrir la paleta de comandos.
     OpenPalette,
+    /// Un botón propio de la barra: el comando sobre lo seleccionado ahora.
+    RunCommand(String),
+    /// Abrir la ventana para elegir los botones de la barra.
+    CustomizeToolbar,
     /// Guardar las pestañas de ahora como espacio de trabajo (con este nombre).
     SaveWorkspace(String),
     OpenWorkspace(String),

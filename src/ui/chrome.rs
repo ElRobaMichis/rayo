@@ -708,21 +708,40 @@ pub fn window_buttons(ctx: &egui::Context, t: &Theme) -> Rect {
 
 // ---------------------------------------------------------------- barra de herramientas
 
-pub fn toolbar(ui: &mut Ui, t: &Theme, cfg: &Config, tab: &mut Tab, search_id: Id, actions: &mut Vec<Action>) {
+/// Clic derecho en un botón de la barra: personalizarla.
+fn customize_menu(resp: &Response, actions: &mut Vec<Action>) {
+    resp.context_menu(|ui| {
+        if ui.button(format!("{}  {}", ic::SLIDERS_HORIZONTAL, t!("cmd.customize_toolbar"))).clicked() {
+            actions.push(Action::CustomizeToolbar);
+            ui.close();
+        }
+    });
+}
+
+/// `enabled`: si cada botón propio (de `cfg.toolbar`) tiene sentido con lo seleccionado ahora.
+pub fn toolbar(ui: &mut Ui, t: &Theme, cfg: &Config, tab: &mut Tab, search_id: Id, enabled: &[bool], shortcuts: &[(String, String)], actions: &mut Vec<Action>) {
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         ui.add_space(8.0);
-        if icon_btn(ui, t, ic::ARROW_LEFT, !tab.back.is_empty(), false, t!("barra.atras_alt")).clicked() {
+        let r = icon_btn(ui, t, ic::ARROW_LEFT, !tab.back.is_empty(), false, t!("barra.atras_alt"));
+        customize_menu(&r, actions);
+        if r.clicked() {
             actions.push(Action::Back);
         }
-        if icon_btn(ui, t, ic::ARROW_RIGHT, !tab.fwd.is_empty(), false, t!("barra.adelante_alt")).clicked() {
+        let r = icon_btn(ui, t, ic::ARROW_RIGHT, !tab.fwd.is_empty(), false, t!("barra.adelante_alt"));
+        customize_menu(&r, actions);
+        if r.clicked() {
             actions.push(Action::Forward);
         }
         let can_up = fsx::parent_of(tab.path()).is_some();
-        if icon_btn(ui, t, ic::ARROW_UP, can_up, false, t!("barra.subir_alt")).clicked() {
+        let r = icon_btn(ui, t, ic::ARROW_UP, can_up, false, t!("barra.subir_alt"));
+        customize_menu(&r, actions);
+        if r.clicked() {
             actions.push(Action::Up);
         }
-        if icon_btn(ui, t, ic::ARROW_CLOCKWISE, true, false, t!("barra.actualizar_f5")).clicked() {
+        let r = icon_btn(ui, t, ic::ARROW_CLOCKWISE, true, false, t!("barra.actualizar_f5"));
+        customize_menu(&r, actions);
+        if r.clicked() {
             actions.push(Action::Refresh);
         }
         ui.add_space(6.0);
@@ -730,12 +749,30 @@ pub fn toolbar(ui: &mut Ui, t: &Theme, cfg: &Config, tab: &mut Tab, search_id: I
         // Lado derecho primero para saber cuánto espacio queda para la ruta.
         // En paneles angostos la búsqueda se achica para dejarle lugar a la ruta.
         let search_w = (ui.available_width() * 0.3).clamp(140.0, 300.0);
-        let right_w = 30.0 * 4.0 + search_w + 24.0;
+        let custom_w = if cfg.toolbar.is_empty() { 0.0 } else { 32.0 * cfg.toolbar.len() as f32 + 8.0 };
+        let right_w = 30.0 * 4.0 + search_w + 24.0 + custom_w;
         let crumb_w = (ui.available_width() - right_w).max(100.0);
         breadcrumb(ui, t, tab, crumb_w, actions);
         ui.add_space(8.0);
 
-        if icon_btn(ui, t, ic::COLUMNS, true, cfg.view == ViewMode::Columns, t!("barra.vista_columnas_ctrl_1")).clicked() {
+        // Botones propios (Ctrl+K → "Personalizar barra").
+        for (k, id) in cfg.toolbar.iter().enumerate() {
+            let Some(c) = super::commands::ALL.iter().find(|c| c.id == id) else { continue };
+            let keys = super::commands::shortcut_of(c.id, shortcuts);
+            let tip = if keys.is_empty() { c.label().to_string() } else { format!("{}  ({keys})", c.label()) };
+            let r = icon_btn(ui, t, c.icon, enabled.get(k).copied().unwrap_or(true), false, &tip);
+            customize_menu(&r, actions);
+            if r.clicked() {
+                actions.push(Action::RunCommand(c.id.to_string()));
+            }
+        }
+        if !cfg.toolbar.is_empty() {
+            ui.add_space(8.0);
+        }
+
+        let r = icon_btn(ui, t, ic::COLUMNS, true, cfg.view == ViewMode::Columns, t!("barra.vista_columnas_ctrl_1"));
+        customize_menu(&r, actions);
+        if r.clicked() {
             actions.push(Action::SetView(ViewMode::Columns));
         }
         if icon_btn(ui, t, ic::LIST_BULLETS, true, cfg.view == ViewMode::Details, t!("barra.vista_detalles_ctrl_2")).clicked() {

@@ -131,6 +131,7 @@ pub const ALL: &[Command] = &[
     cmd!("save_workspace", ic::BOOKMARKS, "", Nothing),
     cmd!("add_alias", ic::AT, "", Nothing),
     cmd!("assign_shortcut", ic::KEYBOARD, "", Nothing),
+    cmd!("customize_toolbar", ic::SLIDERS_HORIZONTAL, "", Nothing),
     // Vista
     cmd!("view_columns", ic::COLUMNS, "Ctrl+1", Nothing),
     cmd!("view_details", ic::LIST_BULLETS, "Ctrl+2", Nothing),
