@@ -20,6 +20,7 @@ $cfg.start_with_windows = $false; $cfg.default_explorer = $false
 $cfg | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $data "config.json") -Encoding utf8
 
 $env:RAYO_DATA_DIR = $data
+$env:RAYO_NO_ACTIVATE = "1"   # sin quitarle el foco a lo que se esté usando
 $fail = @()
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $p = Start-Process $exe -ArgumentList "`"$folder`"" -PassThru
