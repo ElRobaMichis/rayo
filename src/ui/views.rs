@@ -1147,11 +1147,57 @@ const TILE_W: f32 = 128.0;
 const TILE_H: f32 = 148.0;
 
 /// ¿Vale la pena pedir la miniatura real (foto, video, PDF, ícono del programa)?
+/// Archivos que se muestran con su contenido (fotos, videos, documentos). Lo demás (programas,
+/// accesos directos, zip, Word…) lleva su ícono de Windows, todos del mismo tamaño.
 fn wants_thumbnail(e: &FileEntry) -> bool {
-    // Las carpetas, como en el Explorador: con un vistazo de lo que tienen (fotos, videos…).
-    e.is_dir
-        || (fsx::thumbs::is_image_ext(&e.ext)
-            || matches!(e.ext.as_str(), "mp4" | "mkv" | "mov" | "avi" | "wmv" | "webm" | "m4v" | "mpg" | "pdf" | "exe" | "lnk" | "ico" | "psd" | "svg" | "msi"))
+    !e.is_dir && (fsx::thumbs::is_image_ext(&e.ext) || matches!(e.ext.as_str(), "mp4" | "mkv" | "mov" | "avi" | "wmv" | "webm" | "m4v" | "mpg" | "pdf" | "psd" | "svg"))
+}
+
+/// Emblema de las carpetas conocidas del usuario (Escritorio, Documentos…).
+fn folder_emblem(path: &str) -> Option<&'static str> {
+    let home = std::env::var("USERPROFILE").ok()?;
+    let rest = path.get(home.len()..).filter(|_| path.len() > home.len() && path[..home.len()].eq_ignore_ascii_case(&home))?;
+    Some(match rest.trim_start_matches('\\').to_lowercase().as_str() {
+        "desktop" => ic::DESKTOP,
+        "documents" => ic::FILE_TEXT,
+        "downloads" => ic::DOWNLOAD_SIMPLE,
+        "pictures" => ic::IMAGE,
+        "music" => ic::MUSIC_NOTES,
+        "videos" => ic::FILM_STRIP,
+        _ => return None,
+    })
+}
+
+/// Una carpeta en la cuadrícula: el ícono de Rayo y, si tiene fotos o videos, la primera asomándose.
+#[allow(clippy::too_many_arguments)]
+fn grid_folder(ui: &Ui, p: &Painter, t: &Theme, area: Rect, path: &str, tex: &mut super::preview::Textures, alpha: f32) {
+    let center = area.center();
+    p.text(center, Align2::CENTER_CENTER, ic::FOLDER, theme::icon_font(84.0, true), t.folder.gamma_multiply(alpha));
+    // Frente de la carpeta (el glifo deja la pestaña arriba): ahí va la foto o el emblema.
+    let front = Rect::from_center_size(center + vec2(0.0, 6.0), vec2(58.0, 40.0));
+    let ppp = ui.ctx().pixels_per_point();
+    let px = ((front.width().max(front.height()) * ppp).ceil() as u32 / 32 + 1) * 32;
+    let peek = tex.get(&format!("{}{path}", fsx::thumbs::PEEK_PREFIX), px).and_then(|te| te.tex.clone().map(|tx| (tx, te.at)));
+    if let Some((tx, at)) = peek {
+        let shown = super::motion::since(ui.ctx(), at, 0.22) * alpha;
+        // Recortada para llenar la tarjeta, con un borde claro, como una foto metida en la carpeta.
+        let size = tx.size_vec2();
+        let (fw, fh) = (front.width() / size.x, front.height() / size.y);
+        let uv = if fw > fh {
+            let k = fh / fw;
+            Rect::from_min_max(pos2(0.0, (1.0 - k) / 2.0), pos2(1.0, (1.0 + k) / 2.0))
+        } else {
+            let k = fw / fh;
+            Rect::from_min_max(pos2((1.0 - k) / 2.0, 0.0), pos2((1.0 + k) / 2.0, 1.0))
+        };
+        let card = front.expand(2.0);
+        p.rect_filled(card, 4.0, Color32::WHITE.gamma_multiply(0.92 * shown));
+        p.image(tx.id(), front, uv, Color32::WHITE.gamma_multiply(shown));
+        return;
+    }
+    if let Some(g) = folder_emblem(path) {
+        p.text(front.center(), Align2::CENTER_CENTER, g, theme::icon_font(22.0, true), Color32::WHITE.gamma_multiply(0.9 * alpha));
+    }
 }
 
 /// Columnas de la cuadrícula de una pestaña en el último cuadro (para moverse con las flechas).
@@ -1232,16 +1278,21 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                 // Miniatura (o ícono grande).
                 let thumb = Rect::from_min_size(r.min + vec2(8.0, 8.0), vec2(r.width() - 16.0, 92.0));
                 let mut drew = false;
-                if wants_thumbnail(e) {
+                if e.is_dir {
+                    let alpha = if e.hidden || cx.cut.contains(&path) { 0.5 } else { 1.0 };
+                    grid_folder(ui, &p, &t, thumb, &path, tex, alpha);
+                    drew = true;
+                } else if wants_thumbnail(e) {
                     if let Some(te) = tex.get(&path, (thumb.width().max(thumb.height()) * ppp).ceil() as u32 / 32 * 32 + 32) {
                         if let Some(tx) = &te.tex {
                             let size = tx.size_vec2();
-                            let s = (thumb.width() / size.x).min(thumb.height() / size.y).min(1.0 * ppp.recip() * 4.0);
+                            // Nunca más grande que sus píxeles: agrandada se vería borrosa.
+                            let s = (thumb.width() / size.x).min(thumb.height() / size.y).min(1.0 / ppp);
                             let img = Rect::from_center_size(thumb.center(), size * s);
                             // Recién llegada: aparece con un fundido sobre el ícono, que se desvanece.
                             let shown = super::motion::since(ui.ctx(), te.at, 0.22);
                             if shown < 1.0 {
-                                file_icon(&p, &t, thumb.center(), 48.0, 54.0, &path, e.is_dir, &e.ext, None, 1.0 - shown);
+                                file_icon(&p, &t, thumb.center(), 64.0, 58.0, &path, e.is_dir, &e.ext, None, 1.0 - shown);
                             }
                             p.image(tx.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE.gamma_multiply(shown));
                             drew = true;
@@ -1249,7 +1300,7 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                     }
                 }
                 if !drew {
-                    file_icon(&p, &t, thumb.center(), 48.0, 54.0, &path, e.is_dir, &e.ext, None, 1.0);
+                    file_icon(&p, &t, thumb.center(), 64.0, 58.0, &path, e.is_dir, &e.ext, None, 1.0);
                 }
                 let mask = fsx::tags::get(&path);
                 if mask != 0 {

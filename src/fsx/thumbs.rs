@@ -31,6 +31,9 @@ pub struct Rgba {
 
 pub const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff", "ico", "heic", "heif", "avif", "jfif", "dng", "jxr"];
 
+/// Pedido de "lo que se asoma" en el ícono de una carpeta (la ruta va después).
+pub const PEEK_PREFIX: &str = "\u{1}vistazo:";
+
 pub fn is_image_ext(ext: &str) -> bool {
     IMAGE_EXTS.contains(&ext)
 }
@@ -444,7 +447,16 @@ pub const ICON_PREFIX: &str = "\u{1}icono:";
 /// Carga una imagen: página de PDF, foto o miniatura del shell (o el ícono, con `ICON_PREFIX`).
 fn load(key: &ThumbKey) -> Option<Rgba> {
     if let Some(path) = key.path.strip_prefix(ICON_PREFIX) {
+        // Grandes (cuadrícula): Windows elige el mejor dibujo del ícono y lo entrega del tamaño
+        // pedido. Las listas de íconos del sistema solo tienen 16, 32, 48 y 256, y el de 256 de
+        // muchos programas es uno chico centrado en un lienzo vacío.
+        if key.size > 48 {
+            return shell_image(path, key.size as i32, true).or_else(|| system_icon(path, key.size));
+        }
         return system_icon(path, key.size).or_else(|| shell_image(path, key.size as i32, true));
+    }
+    if let Some(dir) = key.path.strip_prefix(PEEK_PREFIX) {
+        return folder_peek(dir, key.size);
     }
     // "C:\\doc.pdf|3" = página 3 de un PDF.
     let (path, page) = match key.path.rsplit_once(super::pdf::PAGE_SEP) {
@@ -475,6 +487,27 @@ fn load(key: &ThumbKey) -> Option<Rgba> {
         };
     }
     shell_image(&path, key.size as i32, false)
+}
+
+/// Lo que se asoma en el ícono de una carpeta: la miniatura de su primera foto (o video).
+fn folder_peek(dir: &str, size: u32) -> Option<Rgba> {
+    let rd = std::fs::read_dir(super::long_path(dir)).ok()?;
+    let mut video = None;
+    for e in rd.flatten().take(400) {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let ext = super::ext_of(&name).to_lowercase();
+        let path = super::join(dir, &name);
+        if is_image_ext(&ext) && ext != "ico" {
+            if super::is_online_only(&path) {
+                continue;
+            }
+            return shell_cached(&path, size as i32).or_else(|| shell_image(&path, size as i32, false)).or_else(|| wic_load(&path, size));
+        }
+        if video.is_none() && matches!(ext.as_str(), "mp4" | "mkv" | "mov" | "avi" | "wmv" | "webm" | "m4v") {
+            video = Some(path);
+        }
+    }
+    video.and_then(|v| shell_image(&v, size as i32, false))
 }
 
 /// Fecha en que se tomó la foto (EXIF DateTimeOriginal), como "2024-07-26 18.33.12".
@@ -648,4 +681,3 @@ pub fn system_icon(path: &str, size: u32) -> Option<Rgba> {
         Some(img)
     }
 }
-
