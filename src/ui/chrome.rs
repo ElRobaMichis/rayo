@@ -1227,6 +1227,7 @@ pub fn transfers_popup(ctx: &egui::Context, t: &Theme, jobs: &[transfer::JobView
                         transfer::Op::Copy => ic::COPY,
                         transfer::Op::Move => ic::ARROW_RIGHT,
                         transfer::Op::Extract | transfer::Op::Compress => ic::FILE_ZIP,
+                        transfer::Op::Delete => ic::TRASH,
                     };
                     ui.label(egui::RichText::new(icon).font(theme::icon_font(14.0, false)).color(t.accent));
                     ui.vertical(|ui| {

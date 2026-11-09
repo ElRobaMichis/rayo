@@ -697,3 +697,6 @@ tecla.supr,Supr,,Nombre de la tecla Delete en los atajos
 uso.no_hay_permiso_cerrarlo,no hay permiso para cerrarlo,,
 uso.no_pudo_consultar_windows_error,no se pudo consultar a Windows (error {codigo}),,
 uso.programa_ya_cerro,el programa ya se cerró,,
+copia.borrando,Borrando {que},,{que} = «nombre» o «N elementos»
+app.borrar_para_siempre,¿Borrar para siempre?,,
+app.borrar_para_siempre_detalle,{que} se borrará sin pasar por la papelera. No se puede deshacer.,,{que} = «nombre» o «N elementos»

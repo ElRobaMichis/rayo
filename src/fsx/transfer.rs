@@ -34,6 +34,8 @@ pub enum Op {
     Extract,
     /// Crear un ZIP (el destino es la ruta del ZIP).
     Compress,
+    /// Borrar para siempre (sin pasar por la papelera). El destino es la carpeta que los contiene.
+    Delete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +175,14 @@ impl Transfers {
     pub fn enqueue_compress(&self, sources: Vec<String>, zip_path: String) -> u64 {
         let label = tf!("comun.comprimiendo", nombre = super::file_name(&zip_path));
         self.push(Op::Compress, sources, Vec::new(), zip_path, None, label)
+    }
+
+    /// Borra para siempre, en paralelo y con progreso (el borrado de Windows es unas 3 veces más lento).
+    pub fn enqueue_delete(&self, sources: Vec<String>) -> u64 {
+        let what = if sources.len() == 1 { format!("«{}»", super::file_name(&sources[0])) } else { tf!("comun.elementos", n = sources.len()) };
+        let label = tf!("copia.borrando", que = what);
+        let dir = sources.first().and_then(|s| super::parent_of(s)).unwrap_or_default();
+        self.push(Op::Delete, sources, Vec::new(), dir, None, label)
     }
 
     /// Devuelve cada elemento a una ruta completa (para deshacer un movimiento).
@@ -713,12 +723,128 @@ fn run_compress(job: &Job, wake: &dyn Fn()) -> Vec<String> {
     super::parent_of(&zip_path).into_iter().collect()
 }
 
+/// Borrar para siempre: primero se listan archivos y carpetas, después se borran los archivos en
+/// paralelo y al final las carpetas, de la más profunda a la más alta. Lo de solo lectura también
+/// se borra; lo que está en uso queda en la lista de errores.
+fn run_delete(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
+    use rayon::prelude::*;
+    job.view.lock().state = State::Scanning;
+    wake();
+    let mut errors = Vec::new();
+    let mut files: Vec<String> = Vec::new();
+    let mut dirs: Vec<(usize, String)> = Vec::new();
+    for src in &job.sources {
+        let Some(m) = meta(src) else { continue };
+        // Un enlace a carpeta (o unión) se borra como enlace: nunca lo de adentro del destino.
+        if m.is_dir() && !m.file_type().is_symlink() {
+            let mut stack = vec![(0usize, src.clone())];
+            while let Some((depth, d)) = stack.pop() {
+                if job.cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                match std::fs::read_dir(long_path(&d)) {
+                    Ok(rd) => {
+                        for e in rd.flatten() {
+                            let p = join(&d, &e.file_name().to_string_lossy());
+                            use std::os::windows::fs::FileTypeExt;
+                            let Ok(ft) = e.file_type() else { continue };
+                            if ft.is_dir() && !ft.is_symlink() {
+                                stack.push((depth + 1, p));
+                            } else if ft.is_symlink_dir() {
+                                // Enlace o unión a una carpeta: se quita el enlace (como carpeta vacía).
+                                dirs.push((depth + 1, p));
+                            } else {
+                                files.push(p);
+                            }
+                        }
+                    }
+                    Err(e) => errors.push(format!("{}: {e}", super::file_name(&d))),
+                }
+                dirs.push((depth, d));
+            }
+        } else if std::os::windows::fs::FileTypeExt::is_symlink_dir(&m.file_type()) {
+            dirs.push((0, src.clone()));
+        } else {
+            files.push(src.clone());
+        }
+    }
+    {
+        let mut v = job.view.lock();
+        v.state = State::Running;
+        v.total_files = files.len();
+        v.workers = rayon::current_num_threads();
+    }
+    wake();
+    let done = AtomicU64::new(0);
+    let last = Mutex::new(Instant::now());
+    let errs = Mutex::new(Vec::new());
+    let remove = |p: &str, dir: bool| -> std::io::Result<()> {
+        let lp = long_path(p);
+        let r = if dir { std::fs::remove_dir(&lp) } else { std::fs::remove_file(&lp) };
+        match r {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                // De solo lectura: quitarle la marca y volver a intentar.
+                if let Ok(m) = std::fs::symlink_metadata(&lp) {
+                    let mut perm = m.permissions();
+                    #[allow(clippy::permissions_set_readonly_false)]
+                    perm.set_readonly(false);
+                    let _ = std::fs::set_permissions(&lp, perm);
+                }
+                if dir { std::fs::remove_dir(&lp) } else { std::fs::remove_file(&lp) }
+            }
+            r => r,
+        }
+    };
+    files.par_iter().for_each(|f| {
+        while job.paused.load(Ordering::Relaxed) && !job.cancel.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if job.cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Err(e) = remove(f, false) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                errs.lock().push(format!("{}: {e}", short_path(f)));
+            }
+        }
+        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut l = last.lock();
+        if l.elapsed() > Duration::from_millis(60) {
+            *l = Instant::now();
+            let mut v = job.view.lock();
+            v.done_files = n as usize;
+            v.current = super::file_name(f);
+            drop(v);
+            wake();
+        }
+    });
+    errors.extend(errs.into_inner());
+    // Carpetas: de la más profunda a la más alta (una carpeta solo se puede borrar vacía).
+    dirs.sort_by(|a, b| b.0.cmp(&a.0));
+    if !job.cancel.load(Ordering::Relaxed) {
+        for (_, d) in &dirs {
+            if let Err(e) = remove(d, true) {
+                // Si quedó algo adentro (un archivo en uso), ya está en los errores.
+                if e.kind() != std::io::ErrorKind::NotFound && e.raw_os_error() != Some(145) {
+                    errors.push(format!("{}: {e}", short_path(d)));
+                }
+            }
+        }
+    }
+    job.view.lock().done_files = done.load(Ordering::Relaxed) as usize;
+    finish(job, errors, Vec::new(), 0);
+    let mut touched: Vec<String> = job.sources.iter().filter_map(|s| super::parent_of(s)).collect();
+    touched.dedup();
+    touched
+}
+
 fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
     // Leer la operación aparte: el candado no debe quedar tomado durante el trabajo.
     let op = job.view.lock().op;
     match op {
         Op::Extract => return run_extract(job, wake),
         Op::Compress => return run_compress(job, wake),
+        Op::Delete => return run_delete(job, wake),
         Op::Copy | Op::Move => {}
     }
     let (op, dest) = {
@@ -1179,5 +1305,94 @@ mod tests {
         assert_eq!(std::fs::read(join(&out, r"sub\b.txt")).unwrap(), b"dos");
         assert_eq!(v.created.len(), 2);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Rutas de más de 260 caracteres: copiar, mover, renombrar, papelera y borrar del todo.
+    #[test]
+    fn long_paths_work() {
+        let root = tmp("larga");
+        let mut deep = root.clone();
+        for i in 0..6 {
+            deep = join(&deep, &format!("carpeta-con-un-nombre-bastante-largo-{i:02}"));
+        }
+        assert!(deep.len() > 300, "{}", deep.len());
+        std::fs::create_dir_all(long_path(&deep)).unwrap();
+        let file = join(&deep, "archivo.txt");
+        std::fs::write(long_path(&file), b"hola").unwrap();
+        // Listar.
+        let list = super::super::list_dir(&deep).expect("listar ruta larga");
+        assert_eq!(list.len(), 1);
+        // Copiar (a otra ruta larga) y mover.
+        let t = Transfers::new(Arc::new(|| {}), Arc::new(|_| {}));
+        let dest = join(&deep, "copia");
+        let v = wait(&t, t.enqueue(Op::Copy, vec![file.clone()], dest.clone()));
+        assert!(v.errors.is_empty(), "copiar: {:?}", v.errors);
+        assert_eq!(std::fs::read(long_path(&join(&dest, "archivo.txt"))).unwrap(), b"hola");
+        let moved_to = join(&deep, "movido");
+        let v = wait(&t, t.enqueue(Op::Move, vec![join(&dest, "archivo.txt")], moved_to.clone()));
+        assert!(v.errors.is_empty(), "mover: {:?}", v.errors);
+        assert!(std::fs::metadata(long_path(&join(&moved_to, "archivo.txt"))).is_ok());
+        // Renombrar.
+        let renamed = super::super::shell::rename(&file, "renombrado.txt").expect("renombrar ruta larga");
+        assert!(std::fs::metadata(long_path(&renamed)).is_ok());
+        // Papelera (sin diálogos: Rayo pide la confirmación por su cuenta).
+        super::super::shell::com_init();
+        let ok = super::super::shell::file_op_blocking(super::super::shell::FileOp::Recycle, vec![renamed.clone()], None);
+        println!("papelera: ok={ok} sigue={}", std::fs::symlink_metadata(long_path(&renamed)).is_ok());
+        assert!(std::fs::symlink_metadata(long_path(&renamed)).is_err(), "sigue ahí tras la papelera");
+        let _ = std::fs::remove_dir_all(long_path(&root));
+    }
+
+    /// Borrar para siempre: todo el árbol, también lo de solo lectura, sin seguir enlaces.
+    #[test]
+    fn delete_forever_tree() {
+        let root = tmp("borrar");
+        let tree = join(&root, "arbol");
+        for d in 0..5 {
+            let dir = join(&tree, &format!(r"sub{d}\mas"));
+            std::fs::create_dir_all(long_path(&dir)).unwrap();
+            for f in 0..20 {
+                std::fs::write(long_path(&join(&dir, &format!("f{f}.txt"))), b"x").unwrap();
+            }
+        }
+        let ro = join(&tree, "solo-lectura.txt");
+        std::fs::write(long_path(&ro), b"x").unwrap();
+        let mut perm = std::fs::metadata(long_path(&ro)).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(long_path(&ro), perm).unwrap();
+        // Un enlace dentro del árbol que apunta afuera: se borra el enlace, no lo de afuera.
+        let outside = join(&root, "afuera");
+        std::fs::create_dir_all(long_path(&outside)).unwrap();
+        std::fs::write(long_path(&join(&outside, "importante.txt")), b"x").unwrap();
+        let _ = std::process::Command::new("cmd").args(["/c", "mklink", "/J", &join(&tree, "enlace"), &outside]).output();
+        let t = Transfers::new(Arc::new(|| {}), Arc::new(|_| {}));
+        let v = wait(&t, t.enqueue_delete(vec![tree.clone()]));
+        assert!(v.errors.is_empty(), "{:?}", v.errors);
+        assert!(std::fs::symlink_metadata(long_path(&tree)).is_err(), "el árbol sigue ahí");
+        assert!(std::fs::metadata(long_path(&join(&outside, "importante.txt"))).is_ok(), "borró lo de afuera del enlace");
+        let _ = std::fs::remove_dir_all(long_path(&root));
+    }
+
+    /// Cuánto tarda borrar una carpeta grande (20.000 archivos en 200 subcarpetas). Medición, no prueba.
+    #[test]
+    #[ignore]
+    fn bench_delete_big_folder() {
+        let make = |name: &str| {
+            let root = tmp(name);
+            for d in 0..200 {
+                let dir = join(&root, &format!("sub{d}"));
+                std::fs::create_dir_all(long_path(&dir)).unwrap();
+                for f in 0..100 {
+                    std::fs::write(long_path(&join(&dir, &format!("f{f}.txt"))), b"x").unwrap();
+                }
+            }
+            root
+        };
+        let a = make("borrar-rayo");
+        let t = Transfers::new(Arc::new(|| {}), Arc::new(|_| {}));
+        let t0 = std::time::Instant::now();
+        let v = wait(&t, t.enqueue_delete(vec![a.clone()]));
+        println!("borrado permanente (Rayo): {:?} archivos={} errores={}", t0.elapsed(), v.done_files, v.errors.len());
+        assert!(std::fs::symlink_metadata(long_path(&a)).is_err());
     }
 }

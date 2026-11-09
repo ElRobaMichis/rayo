@@ -118,6 +118,10 @@ pub struct App {
     admin: Option<(String, crate::admin::AdminOp)>,
     /// Lo que quedó sin hacer por permisos en otro hilo (p. ej. al borrar).
     admin_report: Arc<Mutex<Option<crate::admin::AdminOp>>>,
+    /// "¿Borrar para siempre?": lo que espera confirmación.
+    confirm_delete: Option<Vec<String>>,
+    /// Borrados para siempre en curso (trabajo, rutas): al terminar se revisa qué quedó y por qué.
+    deleting: Vec<(u64, Vec<String>)>,
     /// El menú de Windows (opciones de otras apps) para el clic derecho.
     shell_menus: Option<fsx::ctxmenu::ShellMenus>,
     /// El menú de clic derecho abierto (en sus propias ventanas).
@@ -363,6 +367,8 @@ impl App {
             first_run: !crate::install::is_installed() && !crate::install::is_installed_copy() && !cfg_portable,
             admin: None,
             admin_report: Default::default(),
+            confirm_delete: None,
+            deleting: Vec::new(),
             admin_watch: Vec::new(),
             shell_menus,
             menu: None,
@@ -651,7 +657,7 @@ impl App {
 
     fn keys(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         // Con un menú abierto, las teclas son del menú (Esc lo cierra).
-        if self.palette.open || self.batch.is_some() || self.pattern.is_some() || self.hash.is_some() || self.locks.is_some() || self.default_dlg.is_some() || self.lang_dlg.is_some() || self.admin.is_some() || self.first_run || egui::Popup::is_any_open(ctx) || chrome::overlay_open(ctx) {
+        if self.palette.open || self.batch.is_some() || self.pattern.is_some() || self.hash.is_some() || self.locks.is_some() || self.default_dlg.is_some() || self.lang_dlg.is_some() || self.admin.is_some() || self.confirm_delete.is_some() || self.first_run || egui::Popup::is_any_open(ctx) || chrome::overlay_open(ctx) {
             return;
         }
         let typing = ctx.egui_wants_keyboard_input() || self.rename.is_some();
@@ -1497,29 +1503,23 @@ impl App {
                 ctx.copy_text(paths.join("\r\n"));
                 self.toast(ctx, t!("app.ruta_copiada"));
             }
-            Action::Delete(paths, forever) => {
-                if !forever {
-                    self.push_undo(Undo::Recycle(paths.clone()));
-                }
+            Action::Delete(paths, true) => {
+                // Para siempre: primero se confirma (en el diálogo de Rayo).
+                self.confirm_delete = Some(paths);
+            }
+            Action::Delete(paths, _) => {
+                self.push_undo(Undo::Recycle(paths.clone()));
                 if let Some(h) = &self.prevhost {
                     h.release(&paths);
                 }
                 let dirs: Vec<String> = paths.iter().filter_map(|p| fsx::parent_of(p)).collect();
                 let mgr = self.mgr.clone();
-                let (report, toast, admin_report) = (self.lock_report.clone(), self.service_result.clone(), self.admin_report.clone());
+                let (report, admin_report) = (self.lock_report.clone(), self.admin_report.clone());
                 let list = paths.clone();
-                shell::file_op(if forever { FileOp::DeleteForever } else { FileOp::Recycle }, paths, None, move |aborted| {
+                shell::file_op(FileOp::Recycle, paths, None, move |aborted| {
                     mgr.dirty.lock().extend(dirs.iter().map(|d| d.to_lowercase()));
-                    // Lo que sigue ahí sin que se haya cancelado: ¿quién lo tiene abierto?
-                    let left: Vec<String> = list.into_iter().filter(|p| std::fs::symlink_metadata(fsx::long_path(p)).is_ok()).collect();
-                    if !aborted && !left.is_empty() {
-                        if fsx::locks::who_uses(&left).is_ok_and(|l| !l.is_empty()) {
-                            *report.lock() = Some((left, forever));
-                        } else {
-                            // Nadie lo tiene abierto: lo más probable es que falte permiso.
-                            let _ = &toast;
-                            *admin_report.lock() = Some(crate::admin::AdminOp::Delete { paths: left, forever });
-                        }
+                    if !aborted {
+                        report_leftovers(list, false, &report, &admin_report);
                     }
                     mgr.wake_ui();
                 });
@@ -2224,6 +2224,69 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// "¿Borrar para siempre?" Enter borra, Esc cancela.
+    fn confirm_delete_dialog(&mut self, ctx: &egui::Context) {
+        use egui::RichText;
+        let t = self.t;
+        let Some(paths) = self.confirm_delete.clone() else { return };
+        let what = if paths.len() == 1 { format!("«{}»", fsx::file_name(&paths[0])) } else { tf!("comun.elementos", n = paths.len()) };
+        let (mut close, mut go) = (false, ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)));
+        let modal = egui::Modal::new(Id::new("confirm-delete")).show(ctx, |ui| {
+            ui.set_width(440.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(egui_phosphor::regular::WARNING).font(theme::icon_font(20.0, true)).color(t.danger));
+                ui.label(RichText::new(t!("app.borrar_para_siempre")).font(theme::semibold(17.0)).color(t.text));
+            });
+            ui.add_space(6.0);
+            ui.label(RichText::new(tf!("app.borrar_para_siempre_detalle", que = what)).color(t.dim));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(RichText::new(format!("{}  {}", egui_phosphor::regular::TRASH, t!("comun.eliminar_definitivamente"))).color(t.danger).strong()).clicked() {
+                        go = true;
+                    }
+                    if ui.button(t!("comun.cancelar")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        });
+        if modal.should_close() {
+            close = true;
+        }
+        if go {
+            self.confirm_delete = None;
+            if let Some(h) = &self.prevhost {
+                h.release(&paths);
+            }
+            let id = self.xfer.enqueue_delete(paths.clone());
+            self.deleting.push((id, paths));
+        } else if close {
+            self.confirm_delete = None;
+        }
+    }
+
+    /// Borrados para siempre que terminaron: si algo quedó, decir quién lo tiene abierto o
+    /// ofrecer repetirlo como administrador.
+    fn check_deletes(&mut self) {
+        if self.deleting.is_empty() {
+            return;
+        }
+        let jobs = self.xfer.snapshot();
+        let (report, admin_report, mgr) = (self.lock_report.clone(), self.admin_report.clone(), self.mgr.clone());
+        self.deleting.retain(|(id, paths)| {
+            let done = jobs.iter().find(|j| j.id == *id).is_none_or(|j| j.finished());
+            if done && jobs.iter().find(|j| j.id == *id).is_none_or(|j| j.state != transfer::State::Canceled) {
+                let (list, report, admin_report, mgr) = (paths.clone(), report.clone(), admin_report.clone(), mgr.clone());
+                std::thread::spawn(move || {
+                    report_leftovers(list, true, &report, &admin_report);
+                    mgr.wake_ui();
+                });
+            }
+            !done
+        });
     }
 
     /// "Continuar como administrador": repite solo la operación que Windows negó.
@@ -3434,6 +3497,8 @@ impl eframe::App for App {
         }
         if self.admin.is_some() {
             self.admin_dialog(&ctx);
+            self.confirm_delete_dialog(&ctx);
+            self.check_deletes();
         }
         if self.first_run {
             self.first_run_dialog(&ctx);
@@ -3564,4 +3629,20 @@ struct HScroll {
     from: f32,
     to: f32,
     start: f64,
+}
+
+type LockReport = Arc<Mutex<Option<(Vec<String>, bool)>>>;
+
+/// Lo que sigue ahí después de borrar: ¿quién lo tiene abierto? Si nadie, lo más probable es
+/// que falte permiso (se ofrece repetirlo como administrador).
+fn report_leftovers(list: Vec<String>, forever: bool, report: &LockReport, admin_report: &Arc<Mutex<Option<crate::admin::AdminOp>>>) {
+    let left: Vec<String> = list.into_iter().filter(|p| std::fs::symlink_metadata(fsx::long_path(p)).is_ok()).collect();
+    if left.is_empty() {
+        return;
+    }
+    if fsx::locks::who_uses(&left).is_ok_and(|l| !l.is_empty()) {
+        *report.lock() = Some((left, forever));
+    } else {
+        *admin_report.lock() = Some(crate::admin::AdminOp::Delete { paths: left, forever });
+    }
 }
