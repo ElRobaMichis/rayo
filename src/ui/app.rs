@@ -3773,7 +3773,6 @@ impl eframe::App for App {
             self.palette.ui(&ctx, &t, &target, &data, &mut actions);
         }
         self.track_recent();
-        if let Some(f) = std::env::var_os("RAYO_TEST_DUMP") { let (_, _, l) = self.active_list(); let c = self.tabs[self.cur].active_col().cursor.clone().unwrap_or_default(); let txt: String = l.iter().map(|e| format!("{}{}
         let outcome = self.batch.as_mut().map(|b| (b.ui(&ctx, &t), b.dir.clone()));
         match outcome {
             None | Some((super::tools::Outcome::Open, _)) => {}
