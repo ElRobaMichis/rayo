@@ -723,3 +723,12 @@ app.espacio_abierto,Espacio de trabajo «{nombre}»,,{nombre} = el nombre de un 
 app.espacio_borrado,Espacio de trabajo «{nombre}» borrado,,{nombre} = el nombre de un espacio de trabajo
 app.alias_guardado,Alias «{alias}» → {carpeta},,{alias} = lo que se escribe; {carpeta} = el nombre de una carpeta
 app.atajo_guardado,{teclas} → {comando},,{teclas} = un atajo de teclado; {comando} = el nombre de un comando
+barra.grupo_n,Grupo {n},,{n} = un número
+barra.nuevo_grupo_con_pestana,Agregar a un grupo nuevo,,
+barra.mover_a_grupo,Mover a «{nombre}»,,{nombre} = el nombre de un grupo de pestañas
+barra.quitar_del_grupo,Quitar del grupo,,
+barra.cerrar_pestana,Cerrar pestaña,,
+barra.renombrar_grupo,Cambiar nombre,,
+barra.desagrupar,Desagrupar,,
+barra.cerrar_grupo,Cerrar el grupo,,
+barra.grupo_plegar,Clic: plegar o desplegar · doble clic: cambiar nombre,,

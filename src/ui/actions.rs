@@ -10,6 +10,18 @@ pub enum Action {
     Prefetch(String),
     NewTab(Option<String>),
     CloseTab(usize),
+    // Grupos de pestañas
+    /// Grupo nuevo con esta pestaña.
+    NewTabGroup(usize),
+    /// Pasar una pestaña a un grupo (0 = sacarla del suyo).
+    SetTabGroup(usize, u64),
+    ToggleTabGroup(u64),
+    RenameTabGroup(u64, String),
+    RecolorTabGroup(u64, usize),
+    /// Deshacer el grupo (las pestañas quedan).
+    Ungroup(u64),
+    /// Cerrar todas las pestañas del grupo.
+    CloseTabGroup(u64),
     SwitchTab(usize),
     Reveal(String),
     Select { col: usize, name: String, is_dir: bool, ctrl: bool, shift: bool },

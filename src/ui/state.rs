@@ -360,6 +360,8 @@ pub struct Tab {
     pub view_seq: u64,
     /// Herramienta que ocupa la pestaña (duplicados, comparar) en lugar de la carpeta.
     pub tool: Option<Box<super::tools::Tool>>,
+    /// Grupo de pestañas al que pertenece (0 = ninguno).
+    pub group: u64,
 }
 
 fn chain(path: &str) -> Vec<Col> {
@@ -383,7 +385,7 @@ fn chain(path: &str) -> Vec<Col> {
 impl Tab {
     pub fn new(id: u64, path: &str) -> Self {
         let cols = chain(path);
-        Tab { id, pane: 0, filter: String::new(), active: cols.len() - 1, cols, back: Vec::new(), fwd: Vec::new(), search: SearchUi::default(), path_edit: None, tool: None, flat: false, nav_seq: 1, view: None, view_seq: 0 }
+        Tab { id, pane: 0, filter: String::new(), active: cols.len() - 1, cols, back: Vec::new(), fwd: Vec::new(), search: SearchUi::default(), path_edit: None, tool: None, flat: false, nav_seq: 1, view: None, view_seq: 0, group: 0 }
     }
 
     pub fn path(&self) -> &str {

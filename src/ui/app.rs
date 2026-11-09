@@ -293,12 +293,14 @@ impl App {
         let mut pane = [0usize; 2];
         for (p, (list, active)) in [(&cfg.tabs, cfg.active_tab), (&cfg.tabs_right, cfg.active_right)].into_iter().enumerate() {
             let first = tabs.len();
-            for path in list {
+            let groups_of = if p == 0 { &cfg.tab_group_of } else { &cfg.tab_group_of_right };
+            for (k, path) in list.iter().enumerate() {
                 // Una carpeta de red que no contesta (VPN apagada) se conserva: mostrará su error al listar,
                 // pero no deja a Rayo sin ventana esperando a la red.
                 if fsx::probe_dir(path, 250) != Some(false) {
                     let mut t = Tab::new(next_id, path);
                     t.pane = p as u8;
+                    t.group = groups_of.get(k).copied().filter(|g| cfg.tab_groups.iter().any(|x| x.id == *g)).unwrap_or(0);
                     tabs.push(t);
                     next_id += 1;
                 }
@@ -460,15 +462,21 @@ impl App {
                 .filter(|&i| matches!(self.tabs[i].tool.as_deref(), None | Some(super::tools::Tool::Recycle(_))))
                 .collect();
             let paths: Vec<String> = idx.iter().map(|&i| self.tabs[i].path().to_string()).collect();
+            let groups: Vec<u64> = idx.iter().map(|&i| self.tabs[i].group).collect();
             let active = idx.iter().position(|&i| i == self.pane[p]).unwrap_or(0);
             if p == 0 {
                 self.cfg.tabs = paths;
                 self.cfg.active_tab = active;
+                self.cfg.tab_group_of = groups;
             } else {
                 self.cfg.tabs_right = paths;
                 self.cfg.active_right = active;
+                self.cfg.tab_group_of_right = groups;
             }
         }
+        // Grupos que quedaron sin pestañas.
+        let used: Vec<u64> = self.tabs.iter().map(|t| t.group).collect();
+        self.cfg.tab_groups.retain(|g| used.contains(&g.id));
         self.cfg.save();
     }
 
@@ -1166,6 +1174,57 @@ impl App {
                         self.cur = self.pane[self.focus];
                     }
                 }
+            }
+            Action::NewTabGroup(i) if i < self.tabs.len() => {
+                let id = self.cfg.tab_groups.iter().map(|g| g.id).max().unwrap_or(0) + 1;
+                let color = self.cfg.tab_groups.len() % crate::fsx::tags::COLORS.len();
+                self.cfg.tab_groups.push(super::config::TabGroup { id, name: tf!("barra.grupo_n", n = id), color, collapsed: false });
+                self.tabs[i].group = id;
+                // Recién creado: listo para escribirle el nombre.
+                ctx.data_mut(|d| d.insert_temp(Id::new("group-rename"), (id, tf!("barra.grupo_n", n = id), true)));
+                self.save_cfg();
+            }
+            Action::SetTabGroup(i, g) if i < self.tabs.len() => {
+                self.tabs[i].group = g;
+                self.save_cfg();
+            }
+            Action::NewTabGroup(_) | Action::SetTabGroup(..) => {}
+            Action::ToggleTabGroup(g) => {
+                if let Some(x) = self.cfg.tab_groups.iter_mut().find(|x| x.id == g) {
+                    x.collapsed ^= true;
+                }
+                self.save_cfg();
+            }
+            Action::RenameTabGroup(g, name) => {
+                if let Some(x) = self.cfg.tab_groups.iter_mut().find(|x| x.id == g) {
+                    if !name.trim().is_empty() {
+                        x.name = name.trim().to_string();
+                    }
+                }
+                self.save_cfg();
+            }
+            Action::RecolorTabGroup(g, c) => {
+                if let Some(x) = self.cfg.tab_groups.iter_mut().find(|x| x.id == g) {
+                    x.color = c;
+                }
+                self.save_cfg();
+            }
+            Action::Ungroup(g) => {
+                for t in self.tabs.iter_mut().filter(|t| t.group == g) {
+                    t.group = 0;
+                }
+                self.save_cfg();
+            }
+            Action::CloseTabGroup(g) => {
+                let mut idx: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].group == g).collect();
+                idx.reverse();
+                for i in idx {
+                    self.apply(ctx, Action::CloseTab(i));
+                }
+                for t in self.tabs.iter_mut().filter(|t| t.group == g) {
+                    t.group = 0;
+                }
+                self.save_cfg();
             }
             Action::SwitchTab(i) => {
                 if i < self.tabs.len() {
@@ -2996,7 +3055,7 @@ impl App {
         // El panel de la derecha (sin vista previa) tiene arriba los botones de la ventana.
         let rightmost = p == if self.cfg.split { 1 } else { 0 };
         let reserve = if rightmost && !self.cfg.show_preview { chrome::WINDOW_BUTTONS_W } else { 0.0 };
-        let plus_end = chrome::tab_bar(&mut tui, &t, &self.tabs, &show, ti, reserve, actions);
+        let plus_end = chrome::tab_bar(&mut tui, &t, &self.tabs, &self.cfg.tab_groups, &show, ti, reserve, actions);
         // Lo que sobra a la derecha de las pestañas es barra de título (arrastrar, doble clic).
         let free = egui::Rect::from_min_max(egui::pos2(plus_end + 4.0, tabs_rect.top()), egui::pos2(tabs_rect.right() - reserve, tabs_rect.bottom()));
         if free.width() > 4.0 {

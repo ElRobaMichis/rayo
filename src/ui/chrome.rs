@@ -386,18 +386,138 @@ pub const WINDOW_BUTTONS_W: f32 = 3.0 * 46.0;
 /// Pestañas de un panel. `reserve`: espacio a la derecha que no se usa (ahí van los
 /// botones de la ventana). Devuelve dónde termina el botón "+" (lo que sigue es espacio
 /// libre: barra de título).
-pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], show: &[usize], cur: usize, reserve: f32, actions: &mut Vec<Action>) -> f32 {
+/// Lo que va en la barra de pestañas, en orden: etiquetas de grupo y pestañas.
+enum BarItem {
+    Group(usize),
+    Tab(usize),
+}
+
+/// Orden de la barra: las pestañas de un grupo van juntas, detrás de su etiqueta (en el lugar de la
+/// primera); las de un grupo plegado no se ven, salvo la activa.
+fn bar_items(tabs: &[Tab], groups: &[super::config::TabGroup], show: &[usize], cur: usize) -> Vec<BarItem> {
+    let mut out = Vec::new();
+    let mut done: Vec<u64> = Vec::new();
+    for &i in show {
+        let g = tabs[i].group;
+        let Some(gi) = groups.iter().position(|x| x.id == g).filter(|_| g != 0) else {
+            out.push(BarItem::Tab(i));
+            continue;
+        };
+        if done.contains(&g) {
+            continue;
+        }
+        done.push(g);
+        out.push(BarItem::Group(gi));
+        for &j in show.iter().filter(|&&j| tabs[j].group == g) {
+            if !groups[gi].collapsed || j == cur {
+                out.push(BarItem::Tab(j));
+            }
+        }
+    }
+    out
+}
+
+/// La etiqueta de un grupo: clic pliega o despliega, doble clic cambia el nombre, clic derecho
+/// ofrece color, nombre, desagrupar y cerrar.
+fn group_chip(ui: &mut Ui, t: &Theme, g: &super::config::TabGroup, r: Rect, actions: &mut Vec<Action>) {
+    let p = ui.painter().clone();
+    let color = crate::ui::views::tag_color(g.color);
+    let key = Id::new("group-rename");
+    let renaming: Option<(u64, String, bool)> = ui.data(|d| d.get_temp(key)).filter(|(id, _, _): &(u64, String, bool)| *id == g.id);
+    if let Some((id, mut buf, first)) = renaming {
+        p.rect_filled(r.shrink2(vec2(0.0, 6.0)), 6.0, color.gamma_multiply(0.25));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink2(vec2(6.0, 8.0))));
+        let out = egui::TextEdit::singleline(&mut buf).frame(egui::Frame::NONE).desired_width(r.width() - 12.0).font(theme::semibold(12.0)).show(&mut child);
+        if first {
+            out.response.request_focus();
+            let mut st = out.state.clone();
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()))));
+            st.store(ui.ctx(), out.response.id);
+        }
+        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if enter || (out.response.lost_focus() && !first) {
+            actions.push(Action::RenameTabGroup(id, buf));
+            ui.data_mut(|d| d.remove::<(u64, String, bool)>(key));
+        } else if esc {
+            ui.data_mut(|d| d.remove::<(u64, String, bool)>(key));
+        } else {
+            ui.data_mut(|d| d.insert_temp(key, (id, buf, false)));
+        }
+        return;
+    }
+    let resp = ui.interact(r, Id::new(("tabgroup", g.id)), Sense::click()).on_hover_text(t!("barra.grupo_plegar"));
+    let pill = r.shrink2(vec2(0.0, 7.0));
+    p.rect_filled(pill, 6.0, if resp.hovered() { color.gamma_multiply(0.38) } else { color.gamma_multiply(0.26) });
+    if g.collapsed {
+        p.rect_stroke(pill, 6.0, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
+    }
+    let gl = p.layout_no_wrap(g.name.clone(), theme::semibold(12.0), color);
+    p.galley(pos2(pill.center().x - gl.size().x / 2.0, pill.center().y - gl.size().y / 2.0), gl, color);
+    if resp.double_clicked() {
+        ui.data_mut(|d| d.insert_temp(key, (g.id, g.name.clone(), true)));
+    } else if resp.clicked() {
+        actions.push(Action::ToggleTabGroup(g.id));
+    }
+    resp.context_menu(|ui| {
+        ui.horizontal(|ui| {
+            for c in 0..crate::fsx::tags::COLORS.len() {
+                let (cr, cresp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
+                ui.painter().circle_filled(cr.center(), 7.0, crate::ui::views::tag_color(c));
+                if c == g.color {
+                    ui.painter().circle_stroke(cr.center(), 9.0, egui::Stroke::new(1.5, t.text));
+                }
+                if cresp.clicked() {
+                    actions.push(Action::RecolorTabGroup(g.id, c));
+                    ui.close();
+                }
+            }
+        });
+        ui.separator();
+        if ui.button(format!("{}  {}", ic::PENCIL_SIMPLE, t!("barra.renombrar_grupo"))).clicked() {
+            ui.data_mut(|d| d.insert_temp(key, (g.id, g.name.clone(), true)));
+            ui.close();
+        }
+        if ui.button(format!("{}  {}", ic::SQUARES_FOUR, t!("barra.desagrupar"))).clicked() {
+            actions.push(Action::Ungroup(g.id));
+            ui.close();
+        }
+        if ui.button(format!("{}  {}", ic::X, t!("barra.cerrar_grupo"))).clicked() {
+            actions.push(Action::CloseTabGroup(g.id));
+            ui.close();
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], groups: &[super::config::TabGroup], show: &[usize], cur: usize, reserve: f32, actions: &mut Vec<Action>) -> f32 {
     let full = ui.available_rect_before_wrap();
-    let n = show.len().max(1);
+    let items = bar_items(tabs, groups, show, cur);
+    let painter = ui.painter().clone();
+    let chip_w = |g: &super::config::TabGroup| (painter.layout_no_wrap(g.name.clone(), theme::semibold(12.0), t.text).size().x + 22.0).clamp(36.0, 160.0);
+    let chips: f32 = items.iter().map(|it| if let BarItem::Group(gi) = it { chip_w(&groups[*gi]) + 4.0 } else { 0.0 }).sum();
+    let n = items.iter().filter(|it| matches!(it, BarItem::Tab(_))).count().max(1);
     let plus_w = 36.0;
     // Se achican hasta caber (antes tenían un mínimo y, con muchas, tapaban los botones de la
     // ventana): primero se recorta el título, luego queda solo el ícono.
-    let tab_w = ((full.width() - reserve - plus_w - 12.0) / n as f32).clamp(34.0, 220.0);
+    let tab_w = ((full.width() - reserve - plus_w - 12.0 - chips) / n as f32).clamp(34.0, 220.0);
     let narrow = tab_w < 84.0;
     let tiny = tab_w < 58.0;
     let mut x = full.left() + 6.0;
     let p = ui.painter().clone();
-    for (k, &i) in show.iter().enumerate() {
+    let order: Vec<usize> = items.iter().filter_map(|it| if let BarItem::Tab(i) = it { Some(*i) } else { None }).collect();
+    for it in &items {
+        let i = match it {
+            BarItem::Group(gi) => {
+                let w = chip_w(&groups[*gi]);
+                group_chip(ui, t, &groups[*gi], Rect::from_min_size(pos2(x + 2.0, full.top() + 6.0), vec2(w, full.height() - 6.0)), actions);
+                x += w + 4.0;
+                continue;
+            }
+            BarItem::Tab(i) => *i,
+        };
+        let k = order.iter().position(|&j| j == i).unwrap_or(0);
+        let show = &order;
         let tab = &tabs[i];
         let r = Rect::from_min_size(pos2(x, full.top() + 6.0), vec2(tab_w - 4.0, full.height() - 6.0));
         let resp = ui.interact(r, Id::new(("tab", tab.id)), Sense::click());
@@ -473,6 +593,32 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], show: &[usize], cur: usize,
             p.galley(pos2(r.left() + 32.0, r.center().y - g.size().y / 2.0), g, t.text);
         }
         let resp = if narrow { resp.on_hover_text(&title) } else { resp };
+        if let Some(g) = groups.iter().find(|g| g.id == tab.group && tab.group != 0) {
+            // Las pestañas de un grupo llevan su color abajo.
+            let c = crate::ui::views::tag_color(g.color);
+            p.line_segment([pos2(r.left() + 6.0, r.bottom() - 1.5), pos2(r.right() - 6.0, r.bottom() - 1.5)], egui::Stroke::new(2.0, c));
+        }
+        resp.context_menu(|ui| {
+            if ui.button(format!("{}  {}", ic::PLUS_SQUARE, t!("barra.nuevo_grupo_con_pestana"))).clicked() {
+                actions.push(Action::NewTabGroup(i));
+                ui.close();
+            }
+            for g in groups.iter().filter(|g| g.id != tab.group) {
+                if ui.button(format!("{}  {}", ic::ARROW_SQUARE_RIGHT, tf!("barra.mover_a_grupo", nombre = g.name))).clicked() {
+                    actions.push(Action::SetTabGroup(i, g.id));
+                    ui.close();
+                }
+            }
+            if tab.group != 0 && ui.button(format!("{}  {}", ic::MINUS_SQUARE, t!("barra.quitar_del_grupo"))).clicked() {
+                actions.push(Action::SetTabGroup(i, 0));
+                ui.close();
+            }
+            ui.separator();
+            if ui.button(format!("{}  {}", ic::X, t!("barra.cerrar_pestana"))).clicked() {
+                actions.push(Action::CloseTab(i));
+                ui.close();
+            }
+        });
         if resp.clicked() {
             actions.push(Action::SwitchTab(i));
         }

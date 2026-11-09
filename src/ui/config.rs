@@ -40,6 +40,16 @@ pub struct Workspace {
     pub split: bool,
 }
 
+/// Un grupo de pestañas: nombre, color (índice de las etiquetas) y si está plegado.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct TabGroup {
+    pub id: u64,
+    pub name: String,
+    pub color: usize,
+    pub collapsed: bool,
+}
+
 /// Anchos de columnas que se ajustan arrastrando su borde.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -115,6 +125,10 @@ pub struct Config {
     pub aliases: Vec<(String, String)>,
     /// Atajos propios: teclas ("Ctrl+Shift+D", o una secuencia "Ctrl+K D") → comando.
     pub shortcuts: Vec<(String, String)>,
+    /// Grupos de pestañas, y el grupo de cada pestaña guardada (0 = ninguno), por panel.
+    pub tab_groups: Vec<TabGroup>,
+    pub tab_group_of: Vec<u64>,
+    pub tab_group_of_right: Vec<u64>,
 }
 
 fn spanish_before_languages() -> Option<String> {
@@ -156,6 +170,9 @@ impl Default for Config {
             recent_dirs: Vec::new(),
             aliases: Vec::new(),
             shortcuts: Vec::new(),
+            tab_groups: Vec::new(),
+            tab_group_of: Vec::new(),
+            tab_group_of_right: Vec::new(),
         }
     }
 }
