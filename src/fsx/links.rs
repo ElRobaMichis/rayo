@@ -67,7 +67,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("carpeta")).unwrap();
         std::fs::write(d.join("carpeta").join("a.txt"), "hola").unwrap();
-        crate::i18n::init(Some("es"));
+        // Sin fijar el idioma: otras pruebas corren a la vez y lo comparten.
         let base = d.to_string_lossy().into_owned();
         let target = super::super::join(&base, r"carpeta\a.txt");
         let link = super::link_path(&base, &target);
@@ -75,7 +75,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&link).unwrap(), "hola", "{kind}");
         let dir_target = super::super::join(&base, "carpeta");
         let dir_link = super::link_path(&base, &dir_target);
-        assert!(dir_link.ends_with("carpeta - enlace"), "{dir_link}");
+        // "carpeta - enlace" (o "carpeta - link", según el idioma).
+        assert!(dir_link.starts_with(&super::super::join(&base, "carpeta - ")) && dir_link != dir_target, "{dir_link}");
         let kind = super::make(&dir_target, &dir_link).unwrap();
         assert!(std::path::Path::new(&dir_link).join("a.txt").is_file(), "{kind}");
         println!("archivo y carpeta enlazados ({kind})");

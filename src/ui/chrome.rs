@@ -199,6 +199,10 @@ pub struct SidebarIn<'a> {
     /// Lugar especial que muestra la pestaña actual: "recientes", "papelera" o "".
     pub special: &'a str,
     pub group_edit: &'a mut Option<(usize, String)>,
+    /// Colección que muestra la pestaña actual ("" si no es una).
+    pub collection: &'a str,
+    /// Lo que está en el estante.
+    pub shelf: &'a [String],
 }
 
 pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
@@ -270,6 +274,84 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
                         actions.push(Action::OpenTag(i));
                     }
                 }
+            }
+        }
+
+        // Colecciones: carpetas virtuales (soltar archivos en una los agrega).
+        let colls = fsx::collections::list();
+        if !colls.is_empty() {
+            let (h, _) = section_header(ui, t, t!("barra.colecciones"), s.cfg.collections_collapsed);
+            if h.clicked() {
+                s.cfg.collections_collapsed ^= true;
+            }
+            if !s.cfg.collections_collapsed {
+                for (name, n) in &colls {
+                    let r = side_item(ui, t, ic::BOOKMARKS_SIMPLE, t.dim, false, name, s.collection == name).on_hover_text(tp!(*n, "comun.elementos_n", n = fsx::thousands(*n)));
+                    if let Some(files) = sidebar_drop(ui, t, &r) {
+                        actions.push(Action::AddToCollection(name.clone(), files));
+                    }
+                    if r.clicked() || r.middle_clicked() {
+                        actions.push(Action::OpenCollection(name.clone()));
+                    }
+                    r.context_menu(|ui| {
+                        if ui.button(format!("{}  {}", ic::TRASH, t!("barra.borrar_coleccion"))).clicked() {
+                            actions.push(Action::DeleteCollection(name.clone()));
+                            ui.close();
+                        }
+                    });
+                }
+            }
+        }
+
+        // Estante: un lugar donde juntar archivos de varias carpetas para llevarlos juntos a otro
+        // lado. Se ve si tiene algo, o mientras se arrastran archivos (para soltarlos ahí).
+        let dragging = egui::DragAndDrop::has_payload_of_type::<crate::ui::views::DragFiles>(ui.ctx()) || ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
+        if !s.shelf.is_empty() || dragging {
+            let (_, hrect) = section_header(ui, t, &format!("{}  ·  {}", t!("barra.estante"), s.shelf.len()), false);
+            let h = ui.interact(hrect, Id::new("shelf-drag"), Sense::click_and_drag());
+            if let Some(files) = sidebar_drop(ui, t, &h) {
+                actions.push(Action::ShelfAdd(files));
+            }
+            // Arrastrar el título lleva todo lo del estante.
+            if h.drag_started() && !s.shelf.is_empty() {
+                h.dnd_set_drag_payload(crate::ui::views::DragFiles(s.shelf.to_vec()));
+            }
+            if s.shelf.is_empty() {
+                let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::hover());
+                ui.painter().rect_stroke(r.shrink2(vec2(10.0, 4.0)), 6.0, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+                ui.painter().text(r.center(), Align2::CENTER_CENTER, t!("barra.suelta_estante"), FontId::proportional(12.0), t.faint);
+                if let Some(files) = sidebar_drop(ui, t, &resp) {
+                    actions.push(Action::ShelfAdd(files));
+                }
+            } else {
+                for p in s.shelf.iter().take(8) {
+                    let (g, c) = crate::ui::icons::for_entry(t, fsx::is_dir_like(p), &fsx::ext_of(p));
+                    let r = side_item(ui, t, g, c, true, &fsx::file_name(p), false).on_hover_text(p);
+                    if r.drag_started() {
+                        r.dnd_set_drag_payload(crate::ui::views::DragFiles(vec![p.clone()]));
+                    }
+                    r.context_menu(|ui| {
+                        if ui.button(format!("{}  {}", ic::X, t!("barra.quitar_estante"))).clicked() {
+                            actions.push(Action::ShelfRemove(p.clone()));
+                            ui.close();
+                        }
+                    });
+                }
+                if s.shelf.len() > 8 {
+                    ui.label(egui::RichText::new(tf!("barra.y_mas", n = s.shelf.len() - 8)).size(11.5).color(t.faint));
+                }
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    if icon_btn(ui, t, ic::COPY, !s.current.is_empty(), false, t!("barra.estante_copiar_aqui")).clicked() {
+                        actions.push(Action::ShelfToHere(false));
+                    }
+                    if icon_btn(ui, t, ic::ARROW_BEND_DOWN_RIGHT, !s.current.is_empty(), false, t!("barra.estante_mover_aqui")).clicked() {
+                        actions.push(Action::ShelfToHere(true));
+                    }
+                    if icon_btn(ui, t, ic::X, true, false, t!("barra.vaciar_estante")).clicked() {
+                        actions.push(Action::ShelfClear);
+                    }
+                });
             }
         }
 
@@ -565,6 +647,8 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], groups: &[super::config::Ta
             ic::CLOCK_COUNTER_CLOCKWISE
         } else if fsx::tags::query_color(&tab.search.text).is_some() {
             ic::TAG
+        } else if fsx::collections::query_name(&tab.search.text).is_some() {
+            ic::BOOKMARKS_SIMPLE
         } else if tab.search.active() {
             ic::MAGNIFYING_GLASS
         } else {
@@ -579,10 +663,13 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], groups: &[super::config::Ta
         }
         let recent = tab.search.text.trim_start().to_lowercase().starts_with("recientes:");
         let tag = fsx::tags::query_color(&tab.search.text).filter(|_| tab.tool.is_none());
+        let coll = fsx::collections::query_name(&tab.search.text).filter(|_| tab.tool.is_none());
         let title = if recent && tab.tool.is_none() {
             t!("barra.recientes").to_string()
         } else if let Some(c) = tag {
             crate::ui::views::tag_label(c).to_string()
+        } else if let Some(n) = coll {
+            n
         } else if tab.search.active() && tab.tool.is_none() {
             format!("“{}”", tab.search.text.trim())
         } else {

@@ -747,3 +747,23 @@ previa.agregar,Agregar…,,
 herr.editar_texto,Editar como texto,,
 herr.editar_texto_ayuda,Una línea por archivo y en el mismo orden: cambia los nombres como en un editor de texto.,,
 renombrar.lineas_no_coinciden,Hay {lineas} líneas para {archivos} archivos: tiene que haber una por archivo.,,{lineas} y {archivos} = números
+cmd.add_to_shelf,Agregar al estante,,
+cmd.add_to_shelf.buscar,estante juntar llevar drop stack shelf,,
+menu.coleccion,Colección,,
+menu.nueva_coleccion,Nueva colección…,,
+barra.colecciones,Colecciones,,
+barra.borrar_coleccion,Borrar la colección (no borra los archivos),,
+barra.estante,Estante,,
+barra.suelta_estante,Suelta archivos aquí,,
+barra.quitar_estante,Quitar del estante,,
+barra.y_mas,y {n} más,,{n} = un número
+barra.estante_copiar_aqui,Copiar todo a la carpeta actual,,
+barra.estante_mover_aqui,Mover todo a la carpeta actual,,
+barra.vaciar_estante,Vaciar el estante (no borra nada),,
+paleta.nombre_coleccion,Nombre de la colección,,
+paleta.enter_crea_coleccion,Enter crea la colección con lo seleccionado. Los archivos no se mueven.,,
+app.agregado_coleccion.uno,Agregado a «{nombre}»,,Cuando la cantidad es 1 · {nombre} = el nombre de una colección
+app.agregado_coleccion.varios,{n} agregados a «{nombre}»,,Cuando la cantidad no es 1 · {nombre} = el nombre de una colección
+app.coleccion_borrada,Colección «{nombre}» borrada (los archivos siguen donde estaban),,{nombre} = el nombre de una colección
+cmd.new_collection,Nueva colección con lo seleccionado…,,
+cmd.new_collection.buscar,colección carpeta virtual agrupar juntar,,

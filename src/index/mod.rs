@@ -634,12 +634,14 @@ impl IndexManager {
 
     pub fn search(&self, text: &str, within: Option<&str>, opts: SearchOpts) -> SearchOutcome {
         let t = Instant::now();
-        // "etiqueta:rojo": lo que tiene esa etiqueta de color, esté donde esté.
-        if let Some(color) = crate::fsx::tags::query_color(text) {
+        // "etiqueta:rojo" (lo que tiene esa etiqueta) o "coleccion:Viaje" (lo de esa colección),
+        // esté donde esté.
+        let listed = crate::fsx::tags::query_color(text).map(crate::fsx::tags::paths).or_else(|| crate::fsx::collections::query_name(text).map(|n| crate::fsx::collections::paths(&n)));
+        if let Some(listed) = listed {
             let guards: Vec<_> = self.slots.iter().map(|s| s.index.read()).collect();
             let epochs = self.slots.iter().map(|s| s.epoch.load(Ordering::Relaxed)).collect();
             let mut hits = Vec::new();
-            for p in crate::fsx::tags::paths(color) {
+            for p in listed {
                 let letter = p.chars().next().map(|c| c.to_ascii_uppercase());
                 if let Some(k) = self.slots.iter().position(|s| Some(s.letter) == letter) {
                     if let Some(id) = guards[k].find_path(&p).filter(|&id| id != 0) {

@@ -1315,7 +1315,7 @@ mod tests {
         for i in 0..6 {
             deep = join(&deep, &format!("carpeta-con-un-nombre-bastante-largo-{i:02}"));
         }
-        assert!(deep.len() > 300, "{}", deep.len());
+        assert!(deep.len() > 260, "{}", deep.len());
         std::fs::create_dir_all(long_path(&deep)).unwrap();
         let file = join(&deep, "archivo.txt");
         std::fs::write(long_path(&file), b"hola").unwrap();

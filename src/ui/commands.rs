@@ -132,6 +132,8 @@ pub const ALL: &[Command] = &[
     cmd!("add_alias", ic::AT, "", Nothing),
     cmd!("assign_shortcut", ic::KEYBOARD, "", Nothing),
     cmd!("customize_toolbar", ic::SLIDERS_HORIZONTAL, "", Nothing),
+    cmd!("add_to_shelf", ic::TRAY, "", Selection),
+    cmd!("new_collection", ic::BOOKMARKS_SIMPLE, "", Selection),
     // Vista
     cmd!("view_columns", ic::COLUMNS, "Ctrl+1", Nothing),
     cmd!("view_details", ic::LIST_BULLETS, "Ctrl+2", Nothing),
@@ -247,6 +249,8 @@ pub enum Mode {
     PickCommand,
     /// Grabando el atajo de este comando: las combinaciones apretadas y cuándo la última.
     Record(&'static str, Vec<String>, f64),
+    /// Nombre de una colección nueva para estos elementos.
+    NewCollection(Vec<String>),
 }
 
 #[derive(Default)]
@@ -299,6 +303,12 @@ impl Palette {
         self.cursor = 0;
         self.first_frame = true;
         self.mode = Mode::Commands;
+    }
+
+    /// Abrir pidiendo el nombre de una colección nueva.
+    pub fn ask_collection(&mut self, paths: Vec<String>) {
+        self.show();
+        self.mode = Mode::NewCollection(paths);
     }
 
     fn enter_mode(&mut self, mode: Mode) {
@@ -362,7 +372,7 @@ impl Palette {
             Mode::PickCommand => {
                 entries.extend(ALL.iter().filter_map(|c| score(c, &query).map(|s| (Entry::Cmd(c), s))));
             }
-            Mode::SaveWorkspace | Mode::AddAlias | Mode::Record(..) => {}
+            Mode::SaveWorkspace | Mode::AddAlias | Mode::Record(..) | Mode::NewCollection(_) => {}
         }
         entries.sort_by(|a, b| b.1.cmp(&a.1));
         let total = entries.len();
@@ -385,6 +395,7 @@ impl Palette {
             Mode::SaveWorkspace => (ic::BOOKMARKS, t!("paleta.nombre_espacio").to_string()),
             Mode::AddAlias => (ic::AT, tf!("paleta.alias_para", carpeta = crate::fsx::file_name(&target.dir))),
             Mode::PickCommand => (ic::KEYBOARD, t!("paleta.elige_comando_atajo").to_string()),
+            Mode::NewCollection(_) => (ic::BOOKMARKS_SIMPLE, t!("paleta.nombre_coleccion").to_string()),
             _ => (if entries.first().is_some_and(|e| matches!(e.0, Entry::Go(_))) && !raw.is_empty() { ic::FOLDER_OPEN } else { ic::COMMAND }, t!("paleta.escribe").to_string()),
         };
         let screen = ctx.content_rect();
@@ -400,6 +411,14 @@ impl Palette {
                 }
                 if r.changed() {
                     self.cursor = 0;
+                }
+                if let Mode::NewCollection(paths) = &self.mode {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(t!("paleta.enter_crea_coleccion")).size(12.0).color(theme.faint));
+                    if enter && !raw.is_empty() {
+                        run = Some(Action::AddToCollection(raw.clone(), paths.clone()));
+                    }
+                    return;
                 }
                 match self.mode {
                     Mode::SaveWorkspace | Mode::AddAlias => {
@@ -432,6 +451,7 @@ impl Palette {
                                 Entry::Cmd(c) if c.id == "save_workspace" => next_mode = Some(Mode::SaveWorkspace),
                                 Entry::Cmd(c) if c.id == "add_alias" => next_mode = Some(Mode::AddAlias),
                                 Entry::Cmd(c) if c.id == "assign_shortcut" => next_mode = Some(Mode::PickCommand),
+                                Entry::Cmd(c) if c.id == "new_collection" => next_mode = Some(Mode::NewCollection(target.paths.clone())),
                                 Entry::Cmd(c) => run = Some(Action::Command(c.id, target.clone())),
                                 Entry::Go(d) => run = Some(Action::Navigate(d.clone())),
                                 Entry::Workspace(n) => run = Some(Action::OpenWorkspace(n.to_string())),

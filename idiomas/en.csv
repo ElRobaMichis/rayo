@@ -753,3 +753,23 @@ previa.agregar,Add…,Agregar…,
 herr.editar_texto,Edit as text,Editar como texto,
 herr.editar_texto_ayuda,One line per file in the same order: change the names as in a text editor.,Una línea por archivo y en el mismo orden: cambia los nombres como en un editor de texto.,
 renombrar.lineas_no_coinciden,There are {lineas} lines for {archivos} files: there must be one per file.,Hay {lineas} líneas para {archivos} archivos: tiene que haber una por archivo.,{lineas} y {archivos} = números
+cmd.add_to_shelf,Add to shelf,Agregar al estante,
+cmd.add_to_shelf.buscar,shelf gather carry drop stack,estante juntar llevar drop stack shelf,
+menu.coleccion,Collection,Colección,
+menu.nueva_coleccion,New collection…,Nueva colección…,
+barra.colecciones,Collections,Colecciones,
+barra.borrar_coleccion,Delete collection (files stay),Borrar la colección (no borra los archivos),
+barra.estante,Shelf,Estante,
+barra.suelta_estante,Drop files here,Suelta archivos aquí,
+barra.quitar_estante,Remove from shelf,Quitar del estante,
+barra.y_mas,and {n} more,y {n} más,{n} = un número
+barra.estante_copiar_aqui,Copy everything to the current folder,Copiar todo a la carpeta actual,
+barra.estante_mover_aqui,Move everything to the current folder,Mover todo a la carpeta actual,
+barra.vaciar_estante,Empty the shelf (nothing is deleted),Vaciar el estante (no borra nada),
+paleta.nombre_coleccion,Collection name,Nombre de la colección,
+paleta.enter_crea_coleccion,Enter creates the collection with the selection. Files aren't moved.,Enter crea la colección con lo seleccionado. Los archivos no se mueven.,
+app.agregado_coleccion.uno,Added to “{nombre}”,Agregado a «{nombre}»,Cuando la cantidad es 1 · {nombre} = el nombre de una colección
+app.agregado_coleccion.varios,{n} added to “{nombre}”,{n} agregados a «{nombre}»,Cuando la cantidad no es 1 · {nombre} = el nombre de una colección
+app.coleccion_borrada,Collection “{nombre}” deleted (files stay where they were),Colección «{nombre}» borrada (los archivos siguen donde estaban),{nombre} = el nombre de una colección
+cmd.new_collection,New collection from selection…,Nueva colección con lo seleccionado…,
+cmd.new_collection.buscar,collection virtual folder group gather,colección carpeta virtual agrupar juntar,

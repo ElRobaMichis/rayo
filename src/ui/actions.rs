@@ -128,4 +128,16 @@ pub enum Action {
     /// Poner o quitar una etiqueta de color.
     ToggleTag(Vec<String>, usize),
     ClearTags(Vec<String>),
+    // Colecciones (carpetas virtuales) y estante
+    OpenCollection(String),
+    AddToCollection(String, Vec<String>),
+    RemoveFromCollection(String, Vec<String>),
+    /// Pedir el nombre de una colección nueva para estos elementos.
+    NewCollection(Vec<String>),
+    DeleteCollection(String),
+    ShelfAdd(Vec<String>),
+    ShelfRemove(String),
+    ShelfClear,
+    /// Copiar (o mover, con true) lo del estante a la carpeta actual.
+    ShelfToHere(bool),
 }

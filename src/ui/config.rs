@@ -117,6 +117,7 @@ pub struct Config {
     pub lang: Option<String>,
     pub columns: ColumnWidths,
     pub tags_collapsed: bool,
+    pub collections_collapsed: bool,
     /// Espacios de trabajo guardados (Ctrl+K → "Guardar espacio de trabajo").
     pub workspaces: Vec<Workspace>,
     /// Carpetas visitadas, de la más reciente a la más vieja (para ir rápido desde la paleta).
@@ -176,6 +177,7 @@ impl Default for Config {
             lang: None,
             columns: ColumnWidths::DEFAULT,
             tags_collapsed: false,
+            collections_collapsed: false,
             workspaces: Vec::new(),
             recent_dirs: Vec::new(),
             aliases: Vec::new(),

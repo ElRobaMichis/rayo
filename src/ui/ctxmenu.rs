@@ -227,6 +227,23 @@ fn item_entries(paths: &[String], is_dir: bool, dir: &str, reveal: Option<&str>,
     if !is_dir {
         push(&mut e, Entry::cmd("hash", &t));
     }
+    // Colecciones: agregar o quitar (✓ si todo lo elegido ya está), o una nueva.
+    {
+        let mut subs: Vec<Entry> = crate::fsx::collections::list()
+            .into_iter()
+            .map(|(name, _)| {
+                let all = crate::fsx::collections::contains_all(&name, paths);
+                let a = if all { Action::RemoveFromCollection(name.clone(), paths.to_vec()) } else { Action::AddToCollection(name.clone(), paths.to_vec()) };
+                Entry::act(&format!("coll:{name}"), if all { ic::CHECK } else { ic::BOOKMARKS_SIMPLE }, &name, a)
+            })
+            .collect();
+        if !subs.is_empty() {
+            subs.push(Entry::sep());
+        }
+        subs.push(Entry::act("coll-new", ic::PLUS, t!("menu.nueva_coleccion"), Action::NewCollection(paths.to_vec())));
+        push(&mut e, Entry::sub(ic::BOOKMARKS_SIMPLE, t!("menu.coleccion"), subs));
+        push(&mut e, Entry::cmd("add_to_shelf", &t));
+    }
     push(&mut e, Entry::cmd("who_uses", &t));
     // Etiquetas de color: marcadas las que ya tiene todo lo elegido.
     let mut tags: Vec<Entry> = (0..7)

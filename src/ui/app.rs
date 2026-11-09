@@ -120,6 +120,8 @@ pub struct App {
     admin_report: Arc<Mutex<Option<crate::admin::AdminOp>>>,
     /// Ventana para elegir los botones de la barra.
     toolbar_dlg: bool,
+    /// Estante: archivos juntados de varias carpetas para llevarlos juntos.
+    shelf: Vec<String>,
     /// Última carpeta registrada en las recientes (para la paleta).
     last_dir: String,
     /// Secuencia de teclas en curso para los atajos propios (combinaciones, cuándo la última).
@@ -389,6 +391,7 @@ impl App {
             menu_prefetch: (Vec::new(), 0.0, false),
             last_dir: String::new(),
             toolbar_dlg: false,
+            shelf: Vec::new(),
             key_seq: (Vec::new(), 0.0),
             confirm_delete: None,
             deleting: Vec::new(),
@@ -1516,6 +1519,48 @@ impl App {
                     self.open_tool(ctx, dir, tool);
                 }
             }
+            Action::OpenCollection(name) => {
+                if self.tabs[self.cur].tool.is_some() {
+                    let home = self.places.first().map(|p| p.path.clone()).unwrap_or_else(|| "C:\\".into());
+                    self.apply(ctx, Action::NewTab(Some(home)));
+                }
+                let s = &mut self.tabs[self.cur].search;
+                s.text = fsx::collections::query_for(&name);
+                s.here = false;
+                s.sort = crate::index::ResultSort::Name;
+                s.desc = false;
+            }
+            Action::AddToCollection(name, paths) => {
+                let n = paths.len();
+                fsx::collections::add(&name, &paths);
+                self.toast(ctx, tp!(n, "app.agregado_coleccion", nombre = name));
+                self.refresh_collection_tab();
+            }
+            Action::RemoveFromCollection(name, paths) => {
+                fsx::collections::remove(&name, &paths);
+                self.refresh_collection_tab();
+            }
+            Action::NewCollection(paths) => self.palette.ask_collection(paths),
+            Action::DeleteCollection(name) => {
+                fsx::collections::delete(&name);
+                self.toast(ctx, tf!("app.coleccion_borrada", nombre = name));
+            }
+            Action::ShelfAdd(paths) => {
+                for p in paths {
+                    if !self.shelf.iter().any(|x| x.eq_ignore_ascii_case(&p)) {
+                        self.shelf.push(p);
+                    }
+                }
+            }
+            Action::ShelfRemove(p) => self.shelf.retain(|x| *x != p),
+            Action::ShelfClear => self.shelf.clear(),
+            Action::ShelfToHere(mv) => {
+                let dest = self.tabs[self.cur].active_col().path.clone();
+                if !self.shelf.is_empty() && self.tabs[self.cur].tool.is_none() && !self.read_only(ctx, &dest) {
+                    let paths = std::mem::take(&mut self.shelf);
+                    self.transfer(ctx, paths, dest, mv);
+                }
+            }
             Action::OpenTag(color) => {
                 if matches!(self.tabs[self.cur].tool.as_deref(), Some(super::tools::Tool::Recycle(_))) {
                     self.tabs[self.cur].tool = None;
@@ -1956,6 +2001,12 @@ impl App {
 
     /// Ejecuta un comando del catálogo (menú o paleta).
     fn run_command(&mut self, ctx: &egui::Context, id: &'static str, t: super::commands::Target) {
+        if id == "new_collection" {
+            return self.apply(ctx, Action::NewCollection(t.paths));
+        }
+        if id == "add_to_shelf" {
+            return self.apply(ctx, Action::ShelfAdd(t.paths));
+        }
         if id == "customize_toolbar" {
             self.toolbar_dlg = true;
             return;
@@ -2618,6 +2669,15 @@ impl App {
         }
         if close {
             self.toolbar_dlg = false;
+        }
+    }
+
+    /// Si la pestaña muestra una colección, se vuelve a buscar (cambió lo que tiene).
+    fn refresh_collection_tab(&mut self) {
+        for tab in self.tabs.iter_mut() {
+            if fsx::collections::query_name(&tab.search.text).is_some() {
+                tab.search.sent = None;
+            }
         }
     }
 
@@ -3668,6 +3728,7 @@ impl eframe::App for App {
         self.dispatch_search();
 
         let search_id = Id::new(("search", self.tabs[self.cur].id));
+        let collection = fsx::collections::query_name(&self.tabs[self.cur].search.text).unwrap_or_default();
         // Qué marcar en la barra lateral: la carpeta de la pestaña, o Recientes / Papelera
         // (esas pestañas no son una carpeta: no se marca la carpeta desde donde se abrieron).
         let (current_path, special) = {
@@ -3704,7 +3765,7 @@ impl eframe::App for App {
                 let drives = self.drives.lock().clone();
                 chrome::sidebar(
                     ui,
-                    chrome::SidebarIn { t: &t, cfg: &mut self.cfg, places: &self.places, drives: &drives, current: &current_path, special, group_edit: &mut self.group_edit },
+                    chrome::SidebarIn { t: &t, cfg: &mut self.cfg, places: &self.places, drives: &drives, current: &current_path, special, group_edit: &mut self.group_edit, collection: &collection, shelf: &self.shelf },
                     &mut actions,
                 );
                 // Botones al pie.
