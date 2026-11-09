@@ -122,6 +122,11 @@ pub struct App {
     toolbar_dlg: bool,
     /// Estante: archivos juntados de varias carpetas para llevarlos juntos.
     shelf: Vec<String>,
+    /// Terminal integrada (abajo), si tiene el teclado, su alto y dónde se dibujó.
+    terminal: Option<super::terminal::Terminal>,
+    term_focus: bool,
+    term_h: f32,
+    term_rect: egui::Rect,
     /// Última carpeta registrada en las recientes (para la paleta).
     last_dir: String,
     /// Secuencia de teclas en curso para los atajos propios (combinaciones, cuándo la última).
@@ -392,6 +397,10 @@ impl App {
             last_dir: String::new(),
             toolbar_dlg: false,
             shelf: Vec::new(),
+            terminal: None,
+            term_focus: false,
+            term_h: 260.0,
+            term_rect: egui::Rect::NOTHING,
             key_seq: (Vec::new(), 0.0),
             confirm_delete: None,
             deleting: Vec::new(),
@@ -749,6 +758,12 @@ impl App {
     fn keys(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         // Con un menú abierto, las teclas son del menú (Esc lo cierra).
         if self.palette.open || self.batch.is_some() || self.pattern.is_some() || self.hash.is_some() || self.locks.is_some() || self.default_dlg.is_some() || self.lang_dlg.is_some() || self.admin.is_some() || self.confirm_delete.is_some() || self.toolbar_dlg || self.first_run || egui::Popup::is_any_open(ctx) || chrome::overlay_open(ctx) {
+            return;
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Backtick)) {
+            actions.push(Action::ToggleTerminal);
+        }
+        if self.term_focus && self.terminal.is_some() {
             return;
         }
         self.user_shortcuts(ctx, actions);
@@ -1343,6 +1358,22 @@ impl App {
                     self.set_focus(1);
                 }
                 self.save_cfg();
+            }
+            Action::ToggleTerminal => {
+                if self.terminal.is_some() {
+                    self.terminal = None;
+                    self.term_focus = false;
+                } else {
+                    let dir = self.tabs[self.cur].active_col().path.clone();
+                    let dir = if self.tabs[self.cur].tool.is_some() || dir.is_empty() || fsx::archive::split(&dir).is_some() { self.places.first().map(|p| p.path.clone()).unwrap_or_default() } else { dir };
+                    match super::terminal::Terminal::spawn(&dir, ctx) {
+                        Ok(term) => {
+                            self.terminal = Some(term);
+                            self.term_focus = true;
+                        }
+                        Err(e) => self.toast(ctx, tf!("app.no_pudo", error = e)),
+                    }
+                }
             }
             Action::ToggleQuad => {
                 if self.cfg.quad {
@@ -2013,6 +2044,9 @@ impl App {
         }
         if id == "quad" {
             return self.apply(ctx, Action::ToggleQuad);
+        }
+        if id == "terminal_panel" {
+            return self.apply(ctx, Action::ToggleTerminal);
         }
         use super::tools::{CompareTool, DupesTool, Tool};
         let first = t.paths.first().cloned();
@@ -3693,6 +3727,12 @@ impl eframe::App for App {
                 egui::Popup::close_all(&ctx);
             }
         }
+        // Un clic fuera de la terminal le quita el teclado (uno adentro se lo da al dibujarla).
+        if let Some(pos) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.interact_pos() } else { None }) {
+            if !self.term_rect.contains(pos) {
+                self.term_focus = false;
+            }
+        }
         // Un clic dentro de un panel lo enfoca (antes de procesar acciones y teclas).
         if self.cfg.split {
             let press = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.interact_pos() } else { None });
@@ -3842,7 +3882,51 @@ impl eframe::App for App {
 
         // ---- contenido: uno o dos paneles, cada uno con sus pestañas y su barra
         egui::CentralPanel::default().frame(Frame::new().fill(t.bg)).show(ui, |ui| {
-            let full = ui.max_rect();
+            let mut full = ui.max_rect();
+            // Terminal integrada: abajo, con su barra (carpeta, ir a la actual, cerrar).
+            if self.terminal.as_ref().is_some_and(|t| t.exited()) {
+                self.terminal = None;
+                self.term_focus = false;
+            }
+            self.term_rect = egui::Rect::NOTHING;
+            if self.terminal.is_some() {
+                let h = self.term_h.clamp(120.0, (full.height() - 200.0).max(120.0));
+                let area = egui::Rect::from_min_max(egui::pos2(full.left(), full.bottom() - h), full.max);
+                full.max.y = area.top() - 1.0;
+                self.term_rect = area;
+                // Borde de arriba: se arrastra para cambiar el alto.
+                let edge = egui::Rect::from_min_max(egui::pos2(area.left(), area.top() - 3.0), egui::pos2(area.right(), area.top() + 3.0));
+                let er = ui.interact(edge, Id::new("term-edge"), Sense::drag());
+                if er.hovered() || er.dragged() {
+                    ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                }
+                if er.dragged() {
+                    self.term_h = (self.term_h - er.drag_delta().y).clamp(120.0, 900.0);
+                }
+                ui.painter().line_segment([area.left_top(), area.right_top()], egui::Stroke::new(1.0, if self.term_focus { t.accent } else { t.border }));
+                let bar = egui::Rect::from_min_size(area.min + vec2(0.0, 1.0), vec2(area.width(), 26.0));
+                ui.painter().rect_filled(bar, 0.0, t.chrome);
+                ui.painter().text(egui::pos2(bar.left() + 10.0, bar.center().y), egui::Align2::LEFT_CENTER, format!("{}  {}", egui_phosphor::regular::TERMINAL_WINDOW, t!("app.terminal")), egui::FontId::proportional(12.0), t.dim);
+                let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(egui::pos2(bar.right() - 70.0, bar.top()), bar.max)).layout(egui::Layout::right_to_left(egui::Align::Center)));
+                if chrome::icon_btn(&mut bui, &t, egui_phosphor::regular::X, true, false, t!("app.cerrar_terminal")).clicked() {
+                    actions.push(Action::ToggleTerminal);
+                }
+                if chrome::icon_btn(&mut bui, &t, egui_phosphor::regular::FOLDER_OPEN, true, false, t!("app.terminal_ir_carpeta")).clicked() {
+                    let dir = self.tabs[self.cur].active_col().path.clone();
+                    if let Some(term) = self.terminal.as_mut() {
+                        term.cd(&dir);
+                    }
+                    self.term_focus = true;
+                }
+                let body = egui::Rect::from_min_max(egui::pos2(area.left(), bar.bottom()), area.max);
+                let focus = self.term_focus;
+                if let Some(term) = self.terminal.as_mut() {
+                    let r = term.ui(ui, &t, body, focus);
+                    if r.clicked() {
+                        self.term_focus = true;
+                    }
+                }
+            }
             let panes = self.panes();
             let (mx, my) = (full.center().x, full.center().y);
             let none = egui::Rect::NOTHING;

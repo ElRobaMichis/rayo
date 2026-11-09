@@ -15,6 +15,7 @@ pub mod state;
 pub mod prevhost;
 pub mod richtext;
 pub mod theme;
+pub mod terminal;
 pub mod tools;
 pub mod views;
 pub mod widgets;

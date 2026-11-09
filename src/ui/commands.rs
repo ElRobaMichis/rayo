@@ -126,6 +126,7 @@ pub const ALL: &[Command] = &[
     cmd!("compare", ic::ARROWS_LEFT_RIGHT, "", Nothing),
     cmd!("transfers", ic::LIST_BULLETS, "", Nothing),
     cmd!("terminal", ic::TERMINAL, "", Nothing),
+    cmd!("terminal_panel", ic::TERMINAL_WINDOW, "Ctrl+`", Nothing),
     cmd!("explorer", ic::FOLDER_OPEN, "", Nothing),
     cmd!("favorite", ic::STAR, "", Nothing),
     cmd!("save_workspace", ic::BOOKMARKS, "", Nothing),

@@ -767,3 +767,8 @@ app.agregado_coleccion.varios,{n} agregados a «{nombre}»,,Cuando la cantidad n
 app.coleccion_borrada,Colección «{nombre}» borrada (los archivos siguen donde estaban),,{nombre} = el nombre de una colección
 cmd.new_collection,Nueva colección con lo seleccionado…,,
 cmd.new_collection.buscar,colección carpeta virtual agrupar juntar,,
+cmd.terminal_panel,Terminal integrada,,
+cmd.terminal_panel.buscar,consola powershell comandos panel abajo,,
+app.terminal,Terminal,,
+app.cerrar_terminal,Cerrar la terminal (Ctrl+`),,
+app.terminal_ir_carpeta,Ir a la carpeta actual,,

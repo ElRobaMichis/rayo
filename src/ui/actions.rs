@@ -78,6 +78,8 @@ pub enum Action {
     ToggleSplit,
     /// Cuatro paneles (2 × 2) o dos.
     ToggleQuad,
+    /// Abrir o cerrar la terminal integrada (abajo).
+    ToggleTerminal,
     /// Copiar (o mover) al panel de enfrente.
     SendToOther { paths: Vec<String>, mv: bool },
     /// Archivos soltados sobre una carpeta. `force`: Some(true) = mover, Some(false) = copiar.
