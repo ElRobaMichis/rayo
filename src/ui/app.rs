@@ -118,6 +118,8 @@ pub struct App {
     admin: Option<(String, crate::admin::AdminOp)>,
     /// Lo que quedó sin hacer por permisos en otro hilo (p. ej. al borrar).
     admin_report: Arc<Mutex<Option<crate::admin::AdminOp>>>,
+    /// Selección para la que se lee por adelantado el menú de Windows: (rutas, desde cuándo, pedido).
+    menu_prefetch: (Vec<String>, f64, bool),
     /// "¿Borrar para siempre?": lo que espera confirmación.
     confirm_delete: Option<Vec<String>>,
     /// Borrados para siempre en curso (trabajo, rutas): al terminar se revisa qué quedó y por qué.
@@ -367,6 +369,7 @@ impl App {
             first_run: !crate::install::is_installed() && !crate::install::is_installed_copy() && !cfg_portable,
             admin: None,
             admin_report: Default::default(),
+            menu_prefetch: (Vec::new(), 0.0, false),
             confirm_delete: None,
             deleting: Vec::new(),
             admin_watch: Vec::new(),
@@ -1085,8 +1088,12 @@ impl App {
             Action::OpenMenu(req) => {
                 let (paths, background) = req.shell_key();
                 if let Some(s) = &self.shell_menus {
-                    // Con Mayús, también las opciones "extendidas" de Windows.
-                    s.build(paths, background, ctx.input(|i| i.modifiers.shift));
+                    // Con Mayús, también las opciones "extendidas" de Windows. Si ya se leyó por
+                    // adelantado (la selección estaba quieta), se usa ese: abre completo al instante.
+                    let shift = ctx.input(|i| i.modifiers.shift);
+                    if shift || s.get(&paths, background).is_none() {
+                        s.build(paths, background, shift);
+                    }
                 }
                 self.menu = Some(MenuWin { req, anchor: shell::cursor_pos(), opened: ctx.input(|i| i.time), query: String::new(), show_hidden: false, subs: Vec::new(), styled: 0 });
             }
@@ -2287,6 +2294,34 @@ impl App {
             }
             !done
         });
+    }
+
+    /// Con la selección quieta un momento, el menú de Windows (las opciones de otras apps) se lee
+    /// por adelantado: al hacer clic derecho ya está completo, sin que aparezcan opciones de golpe.
+    fn prefetch_menu(&mut self, ctx: &egui::Context) {
+        let Some(s) = &self.shell_menus else { return };
+        if self.menu.is_some() {
+            return;
+        }
+        let tab = &self.tabs[self.cur];
+        let paths = if tab.search.active() || tab.tool.is_some() { Vec::new() } else { tab.selected_paths() };
+        let now = ctx.input(|i| i.time);
+        if paths != self.menu_prefetch.0 {
+            self.menu_prefetch = (paths, now, false);
+            if !self.menu_prefetch.0.is_empty() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(260));
+            }
+            return;
+        }
+        let (paths, since, sent) = &mut self.menu_prefetch;
+        if *sent || paths.is_empty() || now - *since < 0.25 {
+            return;
+        }
+        *sent = true;
+        if paths.iter().any(|p| fsx::is_remote(p) || fsx::archive::is_inside(p)) || s.get(paths, false).is_some() {
+            return;
+        }
+        s.build(paths.clone(), false, false);
     }
 
     /// "Continuar como administrador": repite solo la operación que Windows negó.
@@ -3497,9 +3532,12 @@ impl eframe::App for App {
         }
         if self.admin.is_some() {
             self.admin_dialog(&ctx);
-            self.confirm_delete_dialog(&ctx);
-            self.check_deletes();
         }
+        if self.confirm_delete.is_some() {
+            self.confirm_delete_dialog(&ctx);
+        }
+        self.check_deletes();
+        self.prefetch_menu(&ctx);
         if self.first_run {
             self.first_run_dialog(&ctx);
         }

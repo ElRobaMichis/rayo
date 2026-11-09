@@ -169,8 +169,8 @@ barra.conservar_ambos,Conservar ambos,,
 barra.contando, · contando…,,Al final del progreso de una copia: todavía se están contando los archivos (empieza con un espacio)
 barra.continuar,Continuar,,
 barra.copias,Copias,,
-barra.copias_terminadas,Copias terminadas,,
-barra.copias_terminadas_error,Copias terminadas · {errores} con error,,
+barra.copias_terminadas,Transferencias terminadas,,
+barra.copias_terminadas_error,Transferencias terminadas · {errores} con error,,
 barra.disco_local,Disco local ({letra}:),,"{letra} = la letra de una unidad (C, D…)"
 barra.eliminar_grupo,Eliminar grupo,,
 barra.espera,En espera: otra copia usa el mismo disco,,Una copia espera su turno porque otra está usando el mismo disco físico

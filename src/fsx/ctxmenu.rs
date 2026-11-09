@@ -53,27 +53,46 @@ enum Req {
 }
 
 pub struct ShellMenus {
-    tx: Sender<Req>,
+    tx: Mutex<Sender<Req>>,
     next: AtomicU64,
     ready: Arc<Mutex<Option<Arc<ShellMenu>>>>,
     outcome: Arc<Mutex<Option<Outcome>>>,
+    /// Desde cuándo está leyendo un menú el hilo (None: libre).
+    busy: Arc<Mutex<Option<std::time::Instant>>>,
+    owner: isize,
+    wake: Arc<dyn Fn() + Send + Sync>,
 }
+
+/// Un complemento que tarda más que esto se da por colgado: se sigue con un hilo nuevo.
+const HUNG: std::time::Duration = std::time::Duration::from_secs(4);
 
 impl ShellMenus {
     /// `owner`: la ventana de Rayo (la usan los complementos para sus diálogos).
     pub fn new(owner: HWND, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
-        let (tx, rx) = unbounded();
         let ready: Arc<Mutex<Option<Arc<ShellMenu>>>> = Default::default();
         let outcome: Arc<Mutex<Option<Outcome>>> = Default::default();
-        let (r, o, owner) = (ready.clone(), outcome.clone(), owner.0 as isize);
-        let _ = std::thread::Builder::new().name("menu-windows".into()).spawn(move || worker(HWND(owner as *mut _), rx, r, o, wake));
-        ShellMenus { tx, next: AtomicU64::new(1), ready, outcome }
+        let busy: Arc<Mutex<Option<std::time::Instant>>> = Default::default();
+        let owner = owner.0 as isize;
+        let tx = Self::spawn(owner, &ready, &outcome, &busy, &wake);
+        ShellMenus { tx: Mutex::new(tx), next: AtomicU64::new(1), ready, outcome, busy, owner, wake }
+    }
+
+    fn spawn(owner: isize, ready: &Arc<Mutex<Option<Arc<ShellMenu>>>>, outcome: &Arc<Mutex<Option<Outcome>>>, busy: &Arc<Mutex<Option<std::time::Instant>>>, wake: &Arc<dyn Fn() + Send + Sync>) -> Sender<Req> {
+        let (tx, rx) = unbounded();
+        let (r, o, b, w) = (ready.clone(), outcome.clone(), busy.clone(), wake.clone());
+        let _ = std::thread::Builder::new().name("menu-windows".into()).spawn(move || worker(HWND(owner as *mut _), rx, r, o, b, w));
+        tx
     }
 
     /// Pide el menú de Windows para estos elementos (o para el fondo de la carpeta `paths[0]`).
     pub fn build(&self, paths: Vec<String>, background: bool, extended: bool) {
+        // Un complemento de otra app colgado no deja a Rayo sin menú: se abandona ese hilo.
+        if self.busy.lock().is_some_and(|t| t.elapsed() > HUNG) {
+            *self.busy.lock() = None;
+            *self.tx.lock() = Self::spawn(self.owner, &self.ready, &self.outcome, &self.busy, &self.wake);
+        }
         let token = self.next.fetch_add(1, Ordering::Relaxed);
-        let _ = self.tx.send(Req::Build { token, paths, background, extended });
+        let _ = self.tx.lock().send(Req::Build { token, paths, background, extended });
     }
 
     /// El último menú listo, si es para estos elementos.
@@ -82,7 +101,7 @@ impl ShellMenus {
     }
 
     pub fn invoke(&self, token: u64, id: u32) {
-        let _ = self.tx.send(Req::Invoke { token, id, pos: super::shell::cursor_pos() });
+        let _ = self.tx.lock().send(Req::Invoke { token, id, pos: super::shell::cursor_pos() });
     }
 
     pub fn take_outcome(&self) -> Option<Outcome> {
@@ -106,7 +125,7 @@ impl Drop for Live {
     }
 }
 
-fn worker(owner: HWND, rx: Receiver<Req>, ready: Arc<Mutex<Option<Arc<ShellMenu>>>>, outcome: Arc<Mutex<Option<Outcome>>>, wake: Arc<dyn Fn() + Send + Sync>) {
+fn worker(owner: HWND, rx: Receiver<Req>, ready: Arc<Mutex<Option<Arc<ShellMenu>>>>, outcome: Arc<Mutex<Option<Outcome>>>, busy: Arc<Mutex<Option<std::time::Instant>>>, wake: Arc<dyn Fn() + Send + Sync>) {
     super::shell::com_init();
     let mut live: Option<Live> = None;
     loop {
@@ -122,7 +141,10 @@ fn worker(owner: HWND, rx: Receiver<Req>, ready: Arc<Mutex<Option<Arc<ShellMenu>
             Req::Build { token, paths, background, extended } => {
                 // Si llegaron varios pedidos seguidos, solo importa el último.
                 live = None;
-                let items = match unsafe { build(owner, &paths, background, extended) } {
+                *busy.lock() = Some(std::time::Instant::now());
+                let built = unsafe { build(owner, &paths, background, extended) };
+                *busy.lock() = None;
+                let items = match built {
                     Ok((cm, menu, items)) => {
                         live = Some(Live { token, cm, menu, paths: paths.clone() });
                         items
