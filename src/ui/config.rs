@@ -28,6 +28,28 @@ pub struct FavGroup {
     pub collapsed: bool,
 }
 
+/// Anchos de columnas que se ajustan arrastrando su borde.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColumnWidths {
+    /// Vista de detalles: Modificado (fecha y antigüedad), Tipo y Tamaño. El nombre toma el resto.
+    pub date: f32,
+    pub kind: f32,
+    pub size: f32,
+    /// Resultados de búsqueda: ancho del nombre (0 = automático).
+    pub search_name: f32,
+}
+
+impl ColumnWidths {
+    pub const DEFAULT: ColumnWidths = ColumnWidths { date: 196.0, kind: 120.0, size: 86.0, search_name: 0.0 };
+}
+
+impl Default for ColumnWidths {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -71,6 +93,7 @@ pub struct Config {
     /// de que hubiera idiomas no lo tiene: esa persona usaba Rayo en español y así sigue.
     #[serde(default = "spanish_before_languages")]
     pub lang: Option<String>,
+    pub columns: ColumnWidths,
 }
 
 fn spanish_before_languages() -> Option<String> {
@@ -106,6 +129,7 @@ impl Default for Config {
             menu_pins: Vec::new(),
             menu_hidden: Vec::new(),
             lang: None,
+            columns: ColumnWidths::DEFAULT,
         }
     }
 }

@@ -193,6 +193,10 @@ fn item_entries(paths: &[String], is_dir: bool, dir: &str, reveal: Option<&str>,
         push(&mut e, Entry::cmd("hash", &t));
     }
     push(&mut e, Entry::cmd("who_uses", &t));
+    // Solo si algo de lo elegido viene de Internet (es lo que bloquea la vista previa).
+    if paths.iter().take(32).any(|p| crate::fsx::props::is_blocked(p)) {
+        push(&mut e, Entry::cmd("unblock", &t));
+    }
     if t.split {
         push(&mut e, Entry::cmd("link_other", &t));
     }

@@ -296,6 +296,22 @@ fn fit(tex_size: egui::Vec2, area: Rect) -> Rect {
     Rect::from_center_size(area.center(), size)
 }
 
+fn field_label(f: fsx::props::Field) -> &'static str {
+    use fsx::props::Field;
+    match f {
+        Field::Camera => t!("previa.camara"),
+        Field::Lens => t!("previa.lente"),
+        Field::Exposure => t!("previa.exposicion"),
+        Field::Taken => t!("previa.tomada"),
+        Field::Duration => t!("previa.duracion"),
+        Field::Resolution => t!("previa.resolucion"),
+        Field::FrameRate => t!("previa.fotogramas"),
+        Field::Bitrate => t!("previa.calidad"),
+        Field::Artist => t!("previa.artista"),
+        Field::Album => t!("previa.album"),
+    }
+}
+
 fn info_row(ui: &mut Ui, t: &Theme, k: &str, v: &str) {
     // El valor se acomoda en su columna (si no entra, sigue debajo de sí mismo, no del rótulo).
     ui.horizontal(|ui| {
@@ -419,6 +435,23 @@ pub fn preview_pane(
                         actions.push(Action::QuickLook);
                     }
                 });
+                let props = if e.is_dir { None } else { fsx::props::info(&item.path) };
+                if props.as_ref().is_some_and(|p| p.blocked) {
+                    // Descargado de Internet: Windows no deja ver PDF ni Office en la vista previa.
+                    ui.add_space(10.0);
+                    let warn = Color32::from_rgb(0xF5, 0x9E, 0x42);
+                    egui::Frame::new().fill(warn.gamma_multiply(0.12)).corner_radius(6).inner_margin(8).show(ui, |ui| {
+                        ui.set_width(w - 16.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new(ic::SHIELD_WARNING).font(theme::icon_font(14.0, false)).color(warn));
+                            ui.label(egui::RichText::new(t!("previa.descargado_internet")).size(12.0).color(t.text));
+                        });
+                        ui.add_space(4.0);
+                        if ui.button(format!("{}  {}", ic::LOCK_SIMPLE_OPEN, t!("previa.desbloquear"))).on_hover_text(t!("previa.desbloquear_ayuda")).clicked() {
+                            actions.push(Action::Unblock(vec![item.path.clone()]));
+                        }
+                    });
+                }
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(6.0);
@@ -426,6 +459,9 @@ pub fn preview_pane(
                     info_row(ui, t, t!("previa.paginas"), &n.to_string());
                 } else if let Some((dw, dh)) = dims {
                     info_row(ui, t, t!("previa.dimensiones"), &format!("{dw} × {dh}"));
+                }
+                for (f, v) in props.iter().flat_map(|p| p.rows.iter()) {
+                    info_row(ui, t, field_label(*f), v);
                 }
                 if let Some(n) = item.children {
                     info_row(ui, t, t!("previa.contenido"), &tp!(n, "comun.elementos_n", n = fsx::thousands(n)));

@@ -41,6 +41,10 @@ pub enum Action {
     Eject(char),
     SetView(ViewMode),
     SetSort(SortKey),
+    /// Quitar la marca de "descargado de Internet" (de estos archivos y de lo de adentro de estas carpetas).
+    Unblock(Vec<String>),
+    /// Se terminó de ajustar el ancho de una columna: guardarlo.
+    SaveColumns(super::config::ColumnWidths),
     ToggleTheme,
     TogglePreview,
     ToggleHidden,

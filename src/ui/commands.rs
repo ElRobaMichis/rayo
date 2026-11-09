@@ -106,6 +106,7 @@ pub const ALL: &[Command] = &[
     cmd!("recycle", ic::TRASH_SIMPLE, "", Nothing),
     cmd!("recent", ic::CLOCK_COUNTER_CLOCKWISE, "", Nothing),
     cmd!("who_uses", ic::LOCK_SIMPLE, "", Selection),
+    cmd!("unblock", ic::LOCK_SIMPLE_OPEN, "", Nothing),
     cmd!("hash", ic::FINGERPRINT, "", Selection),
     cmd!("paste_link", ic::LINK_SIMPLE, "", Nothing),
     cmd!("link_other", ic::LINK_SIMPLE, "", SelectionSplit),

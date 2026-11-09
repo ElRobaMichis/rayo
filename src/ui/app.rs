@@ -220,6 +220,7 @@ impl App {
         let t = Theme::get(cfg.dark);
         theme::setup_fonts(&ctx);
         theme::apply_style(&ctx, &t);
+        views::set_columns(cfg.columns);
         // El doble clic dura lo que diga Windows (egui usa 0,3 s; Windows, 0,5 s por defecto).
         let dbl = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() } as f64 / 1000.0;
         ctx.options_mut(|o| o.input_options.max_double_click_delay = dbl.clamp(0.2, 1.0));
@@ -232,6 +233,7 @@ impl App {
             let ctx = ctx.clone();
             Arc::new(move || ctx.request_repaint())
         };
+        fsx::props::set_wake(wake.clone());
         if let Some(h) = hwnd {
             let w = wake.clone();
             crate::instance::listen(h, move || w());
@@ -1535,6 +1537,24 @@ impl App {
                     }
                 }
             }
+            Action::Unblock(paths) => {
+                let n = fsx::props::unblock_all(&paths);
+                // El visor (PDF, Office) se vuelve a abrir, ahora sin el bloqueo.
+                if let Some(h) = &self.prevhost {
+                    h.release(&paths);
+                    let mut st = h.status.lock();
+                    st.retain(|k, _| !paths.iter().any(|p| k.eq_ignore_ascii_case(p) || k.to_lowercase().starts_with(&format!("{}\\", p.to_lowercase()))));
+                }
+                if n == 0 {
+                    self.toast(ctx, t!("app.nada_bloqueado"));
+                } else {
+                    self.toast(ctx, tp!(n, "app.desbloqueados", n = fsx::thousands(n)));
+                }
+            }
+            Action::SaveColumns(c) => {
+                self.cfg.columns = c;
+                self.save_cfg();
+            }
             Action::SetSort(k) => {
                 if self.cfg.sort == k {
                     self.cfg.sort_desc ^= true;
@@ -1652,6 +1672,7 @@ impl App {
             "batch_rename" => return self.open_batch(ctx, &t),
             "undo" => return self.undo(ctx),
             "recycle" => Action::OpenRecycle,
+            "unblock" => Action::Unblock(if t.paths.is_empty() { vec![t.dir.clone()] } else { t.paths.clone() }),
             "who_uses" => {
                 if !t.paths.is_empty() {
                     self.locks = Some(super::tools::LocksDialog::new(t.paths, None, None, ctx));

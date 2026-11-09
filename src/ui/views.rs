@@ -2,6 +2,7 @@
 
 use super::actions::Action;
 use super::icons;
+use super::config::ColumnWidths;
 use super::state::{Col, Results};
 use crate::index::ResultSort;
 use super::theme::{self, Theme};
@@ -609,10 +610,53 @@ pub fn column(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, active: bool, 
 
 // ---------------------------------------------------------------- detalles
 
-const W_DATE: f32 = 140.0;
-const W_AGE: f32 = 56.0;
-const W_KIND: f32 = 120.0;
-const W_SIZE: f32 = 86.0;
+/// Anchos de columnas vigentes (los de la configuración; cambian mientras se arrastra un borde).
+static COLUMNS: parking_lot::Mutex<ColumnWidths> = parking_lot::Mutex::new(ColumnWidths::DEFAULT);
+
+pub fn set_columns(c: ColumnWidths) {
+    *COLUMNS.lock() = c;
+}
+
+fn columns() -> ColumnWidths {
+    *COLUMNS.lock()
+}
+
+/// Por debajo de este ancho de "Modificado" no entra la píldora de antigüedad junto a la fecha.
+const DATE_WITH_AGE: f32 = 176.0;
+
+/// Borde arrastrable entre dos columnas (en el encabezado): una línea tenue que se resalta.
+fn column_handle(ui: &Ui, t: &Theme, id: Id, x: f32, rows: egui::Rangef) -> egui::Response {
+    let r = Rect::from_x_y_ranges(x - 4.0..=x + 4.0, rows);
+    let resp = ui.interact(r, id, Sense::click_and_drag()).on_hover_text(t!("lista.ajustar_columna"));
+    let active = resp.hovered() || resp.dragged();
+    if active {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+    }
+    let (c, inset) = if active { (t.accent, 4.0) } else { (t.border, 7.0) };
+    ui.painter().line_segment([pos2(x, r.top() + inset), pos2(x, r.bottom() - inset)], egui::Stroke::new(if active { 2.0 } else { 1.0 }, c));
+    resp
+}
+
+/// Lee un borde de columna: arrastrarlo cambia los anchos (con `apply`), soltarlo o hacerle
+/// doble clic (vuelve al ancho original, con `reset`) los guarda.
+fn drive_handle(cx: &mut Cx, h: &egui::Response, apply: impl Fn(&mut ColumnWidths, f32), reset: impl Fn(&mut ColumnWidths)) {
+    let mut c = columns();
+    if h.dragged() && h.drag_delta().x != 0.0 {
+        apply(&mut c, h.drag_delta().x);
+    }
+    if h.double_clicked() {
+        reset(&mut c);
+    }
+    c.date = c.date.clamp(110.0, 420.0);
+    c.kind = c.kind.clamp(50.0, 320.0);
+    c.size = c.size.clamp(60.0, 260.0);
+    if c != columns() {
+        set_columns(c);
+    }
+    if h.drag_stopped() || h.double_clicked() {
+        cx.actions.push(Action::SaveColumns(columns()));
+    }
+}
 
 fn age_pill(p: &Painter, t: &Theme, x_right: f32, cy: f32, mtime: u32, now: u32) {
     if mtime == 0 {
@@ -657,6 +701,30 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
     header(SortKey::Modified, t!("comun.modificado"), cols_x.1, cols_x.2, false, cx);
     header(SortKey::Kind, t!("lista.tipo"), cols_x.2, cols_x.3, false, cx);
     header(SortKey::Size, t!("comun.tamano"), cols_x.3, cols_x.4, true, cx);
+    // Bordes entre columnas: se arrastran para cambiar el ancho (el nombre toma lo que queda).
+    let d = ColumnWidths::DEFAULT;
+    let h = column_handle(ui, &t, Id::new("col-borde-0"), cols_x.1, hrect.y_range());
+    drive_handle(cx, &h, |c, dx| c.date -= dx, |c| c.date = d.date);
+    let h = column_handle(ui, &t, Id::new("col-borde-1"), cols_x.2, hrect.y_range());
+    drive_handle(
+        cx,
+        &h,
+        |c, dx| {
+            c.date += dx;
+            c.kind -= dx;
+        },
+        |c| (c.date, c.kind) = (d.date, d.kind),
+    );
+    let h = column_handle(ui, &t, Id::new("col-borde-2"), cols_x.3, hrect.y_range());
+    drive_handle(
+        cx,
+        &h,
+        |c, dx| {
+            c.kind += dx;
+            c.size -= dx;
+        },
+        |c| (c.kind, c.size) = (d.kind, d.size),
+    );
 
     let rest = ui.available_rect_before_wrap();
     let bg = ui.interact(rest, Id::new(("detbg", cx.tab_id)), Sense::click_and_drag());
@@ -696,7 +764,9 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
             }
         }
         p.text(pos2(x1 + 10.0, r.center().y), Align2::LEFT_CENTER, fsx::fmt_date(e.mtime), FontId::proportional(12.0), dim_c);
-        age_pill(&p, &t, x2 - 8.0, r.center().y, e.mtime, cx.now);
+        if x2 - x1 >= DATE_WITH_AGE {
+            age_pill(&p, &t, x2 - 8.0, r.center().y, e.mtime, cx.now);
+        }
         let kind = if e.is_dir { t!("comun.carpeta").to_string() } else if e.ext.is_empty() { t!("comun.archivo").into() } else { e.ext.to_uppercase() };
         p.text(pos2(x2 + 10.0, r.center().y), Align2::LEFT_CENTER, kind, FontId::proportional(12.0), dim_c);
         if let Some(s) = size_text(e) {
@@ -716,9 +786,10 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
 /// Bordes x de las columnas de la vista de detalles: (nombre, fecha, tipo, tamaño, fin).
 fn details_columns(r: Rect) -> (f32, f32, f32, f32, f32) {
     let x4 = r.right();
-    let x3 = x4 - W_SIZE;
-    let x2 = x3 - W_KIND;
-    let x1 = x2 - W_DATE - W_AGE;
+    let c = columns();
+    let x3 = x4 - c.size;
+    let x2 = x3 - c.kind;
+    let x1 = x2 - c.date;
     (r.left(), x1.max(r.left() + 160.0), x2, x3, x4)
 }
 
@@ -729,7 +800,9 @@ fn search_columns(r: Rect) -> (f32, f32, f32, f32) {
     let nx = r.left() + 36.0;
     let date_x = r.right() - 150.0;
     let size_r = date_x - 14.0;
-    let name_w = ((size_r - 90.0 - nx) * 0.42).max(140.0);
+    let auto = ((size_r - 90.0 - nx) * 0.42).max(140.0);
+    let set = columns().search_name;
+    let name_w = if set > 0.0 { set.clamp(140.0, (size_r - 90.0 - nx - 120.0).max(140.0)) } else { auto };
     (nx, nx + name_w + 12.0, size_r, date_x)
 }
 
@@ -794,6 +867,10 @@ pub fn search_results(ui: &mut Ui, cx: &mut Cx, res: Option<&Results>, cursor: &
                 cx.actions.push(Action::SetResultSort(key));
             }
         }
+        // Borde entre Nombre y Carpeta: se arrastra para repartir el ancho.
+        let name_w = dir_x - 12.0 - nx;
+        let h = column_handle(ui, &t, Id::new(("res-borde", cx.tab_id)), dir_x - 8.0, hrect.y_range());
+        drive_handle(cx, &h, move |c, dx| c.search_name = (if c.search_name > 0.0 { c.search_name } else { name_w }) + dx, |c| c.search_name = 0.0);
     }
     if res.is_empty() {
         empty_message(ui, &t, t!("lista.sin_resultados"));

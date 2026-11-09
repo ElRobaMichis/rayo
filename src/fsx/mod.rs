@@ -15,6 +15,7 @@ pub mod recycle;
 pub mod hash;
 pub mod links;
 pub mod locks;
+pub mod props;
 pub mod ctxmenu;
 
 use crate::index::store::filetime_to_unix;

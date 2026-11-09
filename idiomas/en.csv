@@ -40,6 +40,8 @@ app.cortado_n.uno,Cut {n} item,Cortado {n} elemento,Cuando la cantidad es 1 · a
 app.cortado_n.varios,Cut {n} items,Cortados {n} elementos,Cuando la cantidad no es 1 · al portapapeles · {n} = un número
 app.cpu_cuadro_ms_peor_ms,CPU per frame: {promedio} ms (worst {peor} ms),CPU por cuadro: {promedio} ms (peor {peor} ms),
 app.cuadros_s,{fps} frames/s,{fps} cuadros/s,
+app.desbloqueados.uno,{n} file unblocked,{n} archivo desbloqueado,Cuando la cantidad es 1 · {n} = un número
+app.desbloqueados.varios,{n} files unblocked,{n} archivos desbloqueados,Cuando la cantidad no es 1 · {n} = un número
 app.deshaciendo_devolviendo.uno,Undoing: moving {n} item back,Deshaciendo: devolviendo {n} elemento,Cuando la cantidad es 1 · {n} = un número
 app.deshaciendo_devolviendo.varios,Undoing: moving {n} items back,Deshaciendo: devolviendo {n} elementos,Cuando la cantidad no es 1 · {n} = un número
 app.deshecho_carpeta_nueva_eliminada,Undone: new folder removed,Deshecho: carpeta nueva eliminada,
@@ -78,6 +80,7 @@ app.moviendo_a.uno,Moving {n} item to “{destino}”,Moviendo {n} elemento a «
 app.moviendo_a.varios,Moving {n} items to “{destino}”,Moviendo {n} elementos a «{destino}»,"Cuando la cantidad no es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
 app.moviendo_n.uno,Moving {n} item,Moviendo {n} elemento,Cuando la cantidad es 1 · {n} = un número
 app.moviendo_n.varios,Moving {n} items,Moviendo {n} elementos,Cuando la cantidad no es 1 · {n} = un número
+app.nada_bloqueado,Nothing was blocked,No había nada bloqueado,
 app.ninguno_coincide,Nothing matches,Ninguno coincide,
 app.no_carpeta_ni_programa,Not a folder or a program: “{texto}”,No es una carpeta ni un programa: «{texto}»,
 app.no_encontro_papelera,Not found in the Recycle Bin,No se encontró en la papelera,
@@ -326,6 +329,8 @@ cmd.theme,Switch light / dark theme,Cambiar tema claro / oscuro,Comando (paleta 
 cmd.theme.buscar,dark light mode,dark light modo,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
 cmd.transfers,Show copies in progress,Ver copias en curso,Comando (paleta Ctrl+K y menú de clic derecho)
 cmd.transfers.buscar,queue transfers progress,cola transferencias progreso,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.unblock,Unblock downloaded files,Desbloquear archivos descargados,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.unblock.buscar,downloaded internet blocked preview security mark remove zone identifier,descargado internet bloqueado vista previa seguridad marca quitar zone identifier,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
 cmd.undo,Undo,Deshacer,Comando (paleta Ctrl+K y menú de clic derecho)
 cmd.undo.buscar,revert go back,revertir volver atras,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
 cmd.view_columns,Columns view,Vista de columnas,Comando (paleta Ctrl+K y menú de clic derecho)
@@ -560,6 +565,7 @@ Windows will ask for administrator permission.","¿Quitar también el servicio d
 
 Windows va a pedir permiso de administrador.",
 instalar.rayo_desinstalo,Rayo was uninstalled.,Rayo se desinstaló.,
+lista.ajustar_columna,Drag to resize · double-click: original width,Arrastra para cambiar el ancho · doble clic: ancho original,
 lista.buscando,Searching…,Buscando…,
 lista.cargando,Loading…,Cargando…,
 lista.carpeta_vacia,Empty folder,Carpeta vacía,
@@ -620,19 +626,32 @@ plantilla.n,n,n,"Pieza de la plantilla de «Renombrar en lote» (se escribe entr
 plantilla.nombre,name,nombre,"Pieza de la plantilla de «Renombrar en lote» (se escribe entre llaves): una sola palabra, sin espacios"
 predet.abrir_rayo,Open in Rayo,Abrir en Rayo,
 predet.no_pudo_escribir,couldn't write {clave}: {error},no se pudo escribir {clave}: {error},{error} = el mensaje de error
+previa.album,Album,Álbum,
 previa.antiguedad,Age,Antigüedad,
+previa.artista,Artist,Artista,
 previa.barra_espaciadora,Spacebar,Barra espaciadora,
+previa.calidad,Bitrate,Calidad,Calidad del audio (por ejemplo «320 kbps»)
+previa.camara,Camera,Cámara,
 previa.cargando_vista_previa,Loading preview…,Cargando vista previa…,
 previa.contenido,Contents,Contenido,
 previa.creado,Created,Creado,
+previa.desbloquear,Unblock,Desbloquear,
+previa.desbloquear_ayuda,Removes the “downloaded from the internet” mark. Only do this if you trust the file.,Quita la marca de «descargado de Internet». Hazlo solo si confías en el archivo.,
+previa.descargado_internet,Downloaded from the internet: Windows blocks its preview.,Descargado de Internet: Windows bloquea su vista previa.,
 previa.dimensiones,Dimensions,Dimensiones,
+previa.duracion,Duration,Duración,
 previa.elementos_seleccionados,{n} items selected,{n} elementos seleccionados,{n} = un número
+previa.exposicion,Exposure,Exposición,"Apertura, velocidad, ISO y distancia focal de una foto"
+previa.fotogramas,Frame rate,Fotogramas,Fotogramas por segundo de un video
+previa.lente,Lens,Lente,
 previa.modificado,Modified {fecha},Modificado {fecha},{fecha} = una fecha
 previa.nube,Cloud,Nube,
 previa.paginas,Pages,Páginas,
+previa.resolucion,Resolution,Resolución,
 previa.selecciona_archivo,Select a file,Selecciona un archivo,
 previa.solo_nube_abrelo_descargarlo,Cloud-only: open it to download it,Solo en la nube: ábrelo para descargarlo,
 previa.tamano_bytes,{tamano} ({bytes} bytes),{tamano} ({bytes} bytes),"{tamano} = un tamaño (12,5 MB)"
+previa.tomada,Taken,Tomada,Fecha en que se tomó la foto
 previa.ubicacion,Location,Ubicación,
 previa.vista_rapida,Quick look,Vista rápida,
 renombrar.dos_archivos_quedarian_mismo_nombre,two files would end up with the same name,dos archivos quedarían con el mismo nombre,

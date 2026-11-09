@@ -722,7 +722,8 @@ fn breadcrumb(ui: &mut Ui, t: &Theme, tab: &mut Tab, width: f32, actions: &mut V
     if start > 0 {
         // "…": los tramos que no entran, en una lista.
         let r = Rect::from_min_size(pos2(x, rect.top() + 3.0), vec2(24.0, rect.height() - 6.0));
-        let resp = ui.interact(r, menu_id.with("more"), Sense::click()).on_hover_text(t!("barra.carpetas_anteriores"));
+        let hit = Rect::from_x_y_ranges(x..=x + 26.0, rect.y_range());
+        let resp = ui.interact(hit, menu_id.with("more"), Sense::click()).on_hover_text(t!("barra.carpetas_anteriores"));
         if resp.hovered() || open_key == Some(usize::MAX) {
             p.rect_filled(r, 5.0, t.hover);
         }
@@ -736,8 +737,10 @@ fn breadcrumb(ui: &mut Ui, t: &Theme, tab: &mut Tab, width: f32, actions: &mut V
     let n = segs.len();
     for (i, (label, full)) in segs.iter().enumerate().skip(start) {
         let w = widths[i];
+        // Se dibuja con aire arriba y abajo, pero el clic vale en toda la altura: antes esos 3 px
+        // abrían el modo de escribir la ruta.
         let r = Rect::from_min_size(pos2(x, rect.top() + 3.0), vec2(w, rect.height() - 6.0));
-        let resp = ui.interact(r, Id::new(("crumb", tab.id, i)), Sense::click_and_drag());
+        let resp = ui.interact(Rect::from_x_y_ranges(r.x_range(), rect.y_range()), Id::new(("crumb", tab.id, i)), Sense::click_and_drag());
         // Soltar archivos sobre un tramo los lleva a esa carpeta (como en el Explorador de antes).
         if crate::ui::views::drag_hovering(&resp) {
             p.rect_filled(r, 5.0, t.accent.gamma_multiply(0.18));
@@ -771,7 +774,7 @@ fn breadcrumb(ui: &mut Ui, t: &Theme, tab: &mut Tab, width: f32, actions: &mut V
         x += w;
         // ▸: las subcarpetas de este tramo, con la siguiente marcada.
         let cr = Rect::from_min_size(pos2(x, rect.top() + 3.0), vec2(sep_w, rect.height() - 6.0));
-        let cresp = ui.interact(cr, Id::new(("crumb-sep", tab.id, i)), Sense::click());
+        let cresp = ui.interact(Rect::from_x_y_ranges(cr.x_range(), rect.y_range()), Id::new(("crumb-sep", tab.id, i)), Sense::click());
         let open_here = open_key == Some(i);
         if cresp.hovered() || open_here {
             p.rect_filled(cr, 5.0, t.hover);

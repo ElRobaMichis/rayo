@@ -40,6 +40,8 @@ app.cortado_n.uno,Cortado {n} elemento,,Cuando la cantidad es 1 · al portapapel
 app.cortado_n.varios,Cortados {n} elementos,,Cuando la cantidad no es 1 · al portapapeles · {n} = un número
 app.cpu_cuadro_ms_peor_ms,CPU por cuadro: {promedio} ms (peor {peor} ms),,
 app.cuadros_s,{fps} cuadros/s,,
+app.desbloqueados.uno,{n} archivo desbloqueado,,Cuando la cantidad es 1 · {n} = un número
+app.desbloqueados.varios,{n} archivos desbloqueados,,Cuando la cantidad no es 1 · {n} = un número
 app.deshaciendo_devolviendo.uno,Deshaciendo: devolviendo {n} elemento,,Cuando la cantidad es 1 · {n} = un número
 app.deshaciendo_devolviendo.varios,Deshaciendo: devolviendo {n} elementos,,Cuando la cantidad no es 1 · {n} = un número
 app.deshecho_carpeta_nueva_eliminada,Deshecho: carpeta nueva eliminada,,
@@ -78,6 +80,7 @@ app.moviendo_a.uno,Moviendo {n} elemento a «{destino}»,,"Cuando la cantidad es
 app.moviendo_a.varios,Moviendo {n} elementos a «{destino}»,,"Cuando la cantidad no es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
 app.moviendo_n.uno,Moviendo {n} elemento,,Cuando la cantidad es 1 · {n} = un número
 app.moviendo_n.varios,Moviendo {n} elementos,,Cuando la cantidad no es 1 · {n} = un número
+app.nada_bloqueado,No había nada bloqueado,,
 app.ninguno_coincide,Ninguno coincide,,
 app.no_carpeta_ni_programa,No es una carpeta ni un programa: «{texto}»,,
 app.no_encontro_papelera,No se encontró en la papelera,,
@@ -326,6 +329,8 @@ cmd.theme,Cambiar tema claro / oscuro,,Comando (paleta Ctrl+K y menú de clic de
 cmd.theme.buscar,dark light modo,,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
 cmd.transfers,Ver copias en curso,,Comando (paleta Ctrl+K y menú de clic derecho)
 cmd.transfers.buscar,cola transferencias progreso,,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.unblock,Desbloquear archivos descargados,,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.unblock.buscar,descargado internet bloqueado vista previa seguridad marca quitar zone identifier,,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
 cmd.undo,Deshacer,,Comando (paleta Ctrl+K y menú de clic derecho)
 cmd.undo.buscar,revertir volver atras,,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
 cmd.view_columns,Vista de columnas,,Comando (paleta Ctrl+K y menú de clic derecho)
@@ -554,6 +559,7 @@ instalar.quitar_tambien_servicio_indice_instantan,"¿Quitar también el servicio
 
 Windows va a pedir permiso de administrador.",,
 instalar.rayo_desinstalo,Rayo se desinstaló.,,
+lista.ajustar_columna,Arrastra para cambiar el ancho · doble clic: ancho original,,
 lista.buscando,Buscando…,,
 lista.cargando,Cargando…,,
 lista.carpeta_vacia,Carpeta vacía,,
@@ -614,19 +620,32 @@ plantilla.n,n,,"Pieza de la plantilla de «Renombrar en lote» (se escribe entre
 plantilla.nombre,nombre,,"Pieza de la plantilla de «Renombrar en lote» (se escribe entre llaves): una sola palabra, sin espacios"
 predet.abrir_rayo,Abrir en Rayo,,
 predet.no_pudo_escribir,no se pudo escribir {clave}: {error},,{error} = el mensaje de error
+previa.album,Álbum,,
 previa.antiguedad,Antigüedad,,
+previa.artista,Artista,,
 previa.barra_espaciadora,Barra espaciadora,,
+previa.calidad,Calidad,,Calidad del audio (por ejemplo «320 kbps»)
+previa.camara,Cámara,,
 previa.cargando_vista_previa,Cargando vista previa…,,
 previa.contenido,Contenido,,
 previa.creado,Creado,,
+previa.desbloquear,Desbloquear,,
+previa.desbloquear_ayuda,Quita la marca de «descargado de Internet». Hazlo solo si confías en el archivo.,,
+previa.descargado_internet,Descargado de Internet: Windows bloquea su vista previa.,,
 previa.dimensiones,Dimensiones,,
+previa.duracion,Duración,,
 previa.elementos_seleccionados,{n} elementos seleccionados,,{n} = un número
+previa.exposicion,Exposición,,"Apertura, velocidad, ISO y distancia focal de una foto"
+previa.fotogramas,Fotogramas,,Fotogramas por segundo de un video
+previa.lente,Lente,,
 previa.modificado,Modificado {fecha},,{fecha} = una fecha
 previa.nube,Nube,,
 previa.paginas,Páginas,,
+previa.resolucion,Resolución,,
 previa.selecciona_archivo,Selecciona un archivo,,
 previa.solo_nube_abrelo_descargarlo,Solo en la nube: ábrelo para descargarlo,,
 previa.tamano_bytes,{tamano} ({bytes} bytes),,"{tamano} = un tamaño (12,5 MB)"
+previa.tomada,Tomada,,Fecha en que se tomó la foto
 previa.ubicacion,Ubicación,,
 previa.vista_rapida,Vista rápida,,
 renombrar.dos_archivos_quedarian_mismo_nombre,dos archivos quedarían con el mismo nombre,,
