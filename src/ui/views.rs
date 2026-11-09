@@ -849,6 +849,70 @@ pub fn set_columns(c: ColumnWidths) {
     *COLUMNS.lock() = c;
 }
 
+/// Columnas extra que se pueden mostrar en la vista de detalles (clic derecho en el encabezado).
+pub const EXTRA_COLUMNS: &[(&str, f32)] = &[("created", 150.0), ("ext", 70.0), ("dims", 110.0), ("duration", 80.0), ("tags", 70.0)];
+
+static EXTRA: parking_lot::Mutex<Vec<&'static str>> = parking_lot::Mutex::new(Vec::new());
+
+pub fn set_extra_columns(ids: &[String]) {
+    *EXTRA.lock() = EXTRA_COLUMNS.iter().filter(|(id, _)| ids.iter().any(|x| x == id)).map(|(id, _)| *id).collect();
+}
+
+fn extra_columns() -> Vec<(&'static str, f32)> {
+    let on = EXTRA.lock();
+    EXTRA_COLUMNS.iter().filter(|(id, _)| on.contains(id)).copied().collect()
+}
+
+pub fn extra_label(id: &str) -> &'static str {
+    match id {
+        "created" => t!("previa.creado"),
+        "ext" => t!("lista.extension"),
+        "dims" => t!("previa.dimensiones"),
+        "duration" => t!("previa.duracion"),
+        _ => t!("lista.etiquetas"),
+    }
+}
+
+/// Clic derecho en un encabezado: casillas para mostrar u ocultar las columnas extra.
+fn column_menu(resp: &egui::Response, cx: &mut Cx) {
+    let on_now: Vec<&str> = extra_columns().iter().map(|(id, _)| *id).collect();
+    resp.context_menu(|ui| {
+        for (id, _) in EXTRA_COLUMNS {
+            let mut on = on_now.contains(id);
+            if ui.checkbox(&mut on, extra_label(id)).clicked() {
+                cx.actions.push(Action::ToggleColumn(id.to_string()));
+            }
+        }
+    });
+}
+
+/// El valor de una columna extra para un archivo.
+fn extra_cell(p: &Painter, t: &Theme, id: &str, e: &FileEntry, path: &str, x: f32, w: f32, cy: f32, color: Color32) {
+    let text = match id {
+        "created" => (e.ctime != 0).then(|| fsx::fmt_date(e.ctime)),
+        "ext" => (!e.is_dir && !e.ext.is_empty()).then(|| e.ext.to_uppercase()),
+        "dims" | "duration" if !e.is_dir => fsx::props::info(path).and_then(|i| {
+            if id == "dims" {
+                i.dims.clone()
+            } else {
+                i.rows.iter().find(|(f, _)| *f == fsx::props::Field::Duration).map(|(_, v)| v.clone())
+            }
+        }),
+        "tags" => {
+            let mask = fsx::tags::get(path);
+            if mask != 0 {
+                tag_dots(p, t, x + 10.0, cy, mask);
+            }
+            None
+        }
+        _ => None,
+    };
+    if let Some(s) = text {
+        let g = elided(p, &s, FontId::proportional(12.0), color, w - 16.0);
+        p.galley(pos2(x + 10.0, cy - g.size().y / 2.0), g, color);
+    }
+}
+
 fn columns() -> ColumnWidths {
     *COLUMNS.lock()
 }
@@ -928,8 +992,24 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
         if resp.clicked() {
             cx.actions.push(Action::SetSort(key));
         }
+        // Clic derecho en un encabezado: qué columnas extra mostrar.
+        column_menu(&resp, cx);
     };
-    header(SortKey::Name, t!("lista.nombre"), cols_x.0, cols_x.1, false, cx);
+    let extras = extra_columns_fit(hrect);
+    let name_end = cols_x.1 - extras.iter().map(|(_, w)| w).sum::<f32>();
+    header(SortKey::Name, t!("lista.nombre"), cols_x.0, name_end, false, cx);
+    let mut ex = name_end;
+    for (id, w) in &extras {
+        p.text(pos2(ex + 10.0, hrect.center().y), Align2::LEFT_CENTER, extra_label(id), theme::semibold(12.0), t.dim);
+        ex += w;
+    }
+    // Los encabezados de las columnas extra también abren el menú.
+    let mut ex = name_end;
+    for (id, w) in &extras {
+        let resp = ui.interact(Rect::from_x_y_ranges(ex..=ex + w, hrect.y_range()), Id::new(("hdr-extra", cx.tab_id, *id)), Sense::click());
+        column_menu(&resp, cx);
+        ex += w;
+    }
     header(SortKey::Modified, t!("comun.modificado"), cols_x.1, cols_x.2, false, cx);
     header(SortKey::Kind, t!("lista.tipo"), cols_x.2, cols_x.3, false, cx);
     header(SortKey::Size, t!("comun.tamano"), cols_x.3, cols_x.4, true, cx);
@@ -971,7 +1051,8 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
         let e = &data.entries[i];
         let selected = col.is_selected(&e.name);
         let (_, x1, x2, x3, x4) = details_columns(r);
-        let resp = file_row(ui, cx, r, e, &dir, selected, focused, None, false, Some(x1 - 8.0));
+        let name_end = x1 - extras.iter().map(|(_, w)| w).sum::<f32>();
+        let resp = file_row(ui, cx, r, e, &dir, selected, focused, None, false, Some(name_end - 8.0));
         let p = ui.painter_at(r);
         let (_, dim_c, on_sel) = row_fg(&t, pill, r, selected, focused);
         // Triángulo para desplegar la carpeta aquí mismo (encima de la fila: recibe el clic).
@@ -995,6 +1076,12 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
                 p.rect_filled(bar, 1.5, c.gamma_multiply(if selected && focused { 0.9 } else { 0.7 }));
             }
         }
+        let mut ex = name_end;
+        let full = fsx::join(&dir, &e.name);
+        for (id, w) in &extras {
+            extra_cell(&p, &t, id, e, &full, ex, *w, r.center().y, dim_c);
+            ex += w;
+        }
         p.text(pos2(x1 + 10.0, r.center().y), Align2::LEFT_CENTER, fsx::fmt_date(e.mtime), FontId::proportional(12.0), dim_c);
         if x2 - x1 >= DATE_WITH_AGE {
             age_pill(&p, &t, x2 - 8.0, r.center().y, e.mtime, cx.now);
@@ -1014,7 +1101,7 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
             p.text(pos2(r.right() - 14.0, r.center().y), Align2::RIGHT_CENTER, txt, FontId::proportional(12.0), dim_c);
         }
         // Arrastrar desde fuera del nombre (fecha, tipo, tamaño) dibuja un rectángulo, como en el Explorador.
-        let name_area = Rect::from_min_max(pos2(r.left() + 36.0, r.top()), pos2(x1, r.bottom()));
+        let name_area = Rect::from_min_max(pos2(r.left() + 36.0, r.top()), pos2(name_end, r.bottom()));
         if handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), Some(x1), name_area, true) {
             start = resp.ctx.input(|i| i.pointer.press_origin());
         }
@@ -1032,6 +1119,21 @@ fn details_columns(r: Rect) -> (f32, f32, f32, f32, f32) {
     let x2 = x3 - c.kind;
     let x1 = x2 - c.date;
     (r.left(), x1.max(r.left() + 160.0), x2, x3, x4)
+}
+
+/// Las columnas extra que entran entre el nombre (que conserva al menos 220 px) y la fecha.
+fn extra_columns_fit(r: Rect) -> Vec<(&'static str, f32)> {
+    let (_, x1, ..) = details_columns(r);
+    let mut room = x1 - r.left() - 220.0;
+    let mut out = Vec::new();
+    for (id, w) in extra_columns() {
+        if w > room {
+            break;
+        }
+        room -= w;
+        out.push((id, w));
+    }
+    out
 }
 
 // ---------------------------------------------------------------- resultados de búsqueda

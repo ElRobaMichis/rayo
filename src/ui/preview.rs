@@ -210,6 +210,58 @@ fn fit(tex_size: egui::Vec2, area: Rect) -> Rect {
     Rect::from_center_size(area.center(), size)
 }
 
+/// Un dato editable: muestra el valor y, al hacer clic, un campo. Devuelve el texto nuevo al
+/// confirmar (Enter o al salir del campo) si cambió.
+fn edit_row(ui: &mut Ui, t: &Theme, path: &str, field: &str, label: &str, value: &str) -> Option<String> {
+    let id = egui::Id::new(("meta-edit", path, field));
+    let mut out = None;
+    ui.horizontal(|ui| {
+        let (lr, _) = ui.allocate_exact_size(vec2(70.0, 20.0), Sense::hover());
+        ui.painter().text(egui::pos2(lr.right() - 4.0, lr.center().y), Align2::RIGHT_CENTER, label, FontId::proportional(12.0), t.faint);
+        let mut buf: String = ui.data(|d| d.get_temp(id)).unwrap_or_else(|| value.to_string());
+        let r = ui.add(egui::TextEdit::singleline(&mut buf).id(id.with("te")).hint_text(egui::RichText::new(t!("previa.agregar")).color(t.faint)).desired_width(ui.available_width() - 6.0).frame(egui::Frame::NONE.fill(t.hover).corner_radius(4).inner_margin(egui::Margin::symmetric(4, 2))));
+        if r.has_focus() {
+            ui.data_mut(|d| d.insert_temp(id, buf.clone()));
+        }
+        if r.lost_focus() {
+            ui.data_mut(|d| d.remove::<String>(id));
+            if buf.trim() != value {
+                out = Some(buf.trim().to_string());
+            }
+        }
+    });
+    out
+}
+
+/// Calificación con estrellas (como en las propiedades de Windows). Devuelve la nueva al hacer clic.
+fn rating_row(ui: &mut Ui, t: &Theme, rating: u32) -> Option<u32> {
+    let stars = match rating {
+        0 => 0,
+        1..=12 => 1,
+        13..=37 => 2,
+        38..=62 => 3,
+        63..=87 => 4,
+        _ => 5,
+    };
+    let mut out = None;
+    ui.horizontal(|ui| {
+        let (lr, _) = ui.allocate_exact_size(vec2(70.0, 20.0), Sense::hover());
+        ui.painter().text(egui::pos2(lr.right() - 4.0, lr.center().y), Align2::RIGHT_CENTER, t!("previa.calificacion"), FontId::proportional(12.0), t.faint);
+        for k in 1..=5u32 {
+            let (r, resp) = ui.allocate_exact_size(vec2(18.0, 20.0), Sense::click());
+            let on = k <= stars;
+            let glyph = if on { egui_phosphor::fill::STAR } else { egui_phosphor::regular::STAR };
+            let c = if on { egui::Color32::from_rgb(0xF5, 0xB3, 0x2E) } else if resp.hovered() { t.dim } else { t.faint };
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, glyph, super::theme::icon_font(13.0, on), c);
+            if resp.clicked() {
+                // Un clic en la estrella que ya era la última la quita (0 estrellas).
+                out = Some(if k == stars { 0 } else { [1, 25, 50, 75, 99][k as usize - 1] });
+            }
+        }
+    });
+    out
+}
+
 fn field_label(f: fsx::props::Field) -> &'static str {
     use fsx::props::Field;
     match f {
@@ -383,6 +435,18 @@ pub fn preview_pane(
                 }
                 for (f, v) in props.iter().flat_map(|p| p.rows.iter()) {
                     info_row(ui, t, field_label(*f), v);
+                }
+                // Título, comentarios y calificación: se editan aquí y se guardan en el archivo.
+                if let Some(info) = props.as_ref().filter(|i| i.editable && item.real.is_none()) {
+                    if let Some(v) = edit_row(ui, t, &item.path, "titulo", t!("previa.titulo"), &info.title) {
+                        actions.push(Action::SetProperty(item.path.clone(), "System.Title", fsx::props::Value::Text(v)));
+                    }
+                    if let Some(v) = edit_row(ui, t, &item.path, "comentario", t!("previa.comentarios"), &info.comment) {
+                        actions.push(Action::SetProperty(item.path.clone(), "System.Comment", fsx::props::Value::Text(v)));
+                    }
+                    if let Some(r) = rating_row(ui, t, info.rating) {
+                        actions.push(Action::SetProperty(item.path.clone(), "System.Rating", fsx::props::Value::Number(r)));
+                    }
                 }
                 if let Some(n) = item.children {
                     info_row(ui, t, t!("previa.contenido"), &tp!(n, "comun.elementos_n", n = fsx::thousands(n)));

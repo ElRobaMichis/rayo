@@ -31,6 +31,63 @@ pub struct Info {
     pub rows: Vec<(Field, String)>,
     /// Descargado de Internet (Windows bloquea su vista previa).
     pub blocked: bool,
+    /// Ancho × alto (fotos y videos), para la columna Dimensiones.
+    pub dims: Option<String>,
+    /// Se le pueden cambiar título, comentarios y calificación (fotos, música, video, Office).
+    pub editable: bool,
+    pub title: String,
+    pub comment: String,
+    /// Calificación de Windows (0, 1, 25, 50, 75 o 99 = 0 a 5 estrellas).
+    pub rating: u32,
+}
+
+/// Tipos en los que Windows guarda título, comentarios y calificación dentro del archivo.
+const EDITABLE: &[&str] = &["jpg", "jpeg", "jfif", "tif", "tiff", "heic", "mp3", "wma", "m4a", "flac", "mp4", "m4v", "mov", "wmv", "docx", "xlsx", "pptx"];
+
+/// Un valor para escribir en las propiedades de un archivo.
+#[derive(Debug, Clone)]
+pub enum Value {
+    Text(String),
+    Number(u32),
+}
+
+/// Escribe una propiedad ("System.Title", "System.Comment", "System.Rating") en el archivo.
+/// El hilo que llama debe tener COM iniciado.
+pub fn set(path: &str, name: &str, value: &Value) -> Result<(), String> {
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::System::Variant::{VT_LPWSTR, VT_UI4};
+    use windows::Win32::UI::Shell::PropertiesSystem::*;
+    let w: Vec<u16> = path.encode_utf16().chain([0]).collect();
+    unsafe {
+        let store: IPropertyStore = SHGetPropertyStoreFromParsingName(windows::core::PCWSTR(w.as_ptr()), None, GPS_READWRITE).map_err(|e| e.message())?;
+        let n: Vec<u16> = name.encode_utf16().chain([0]).collect();
+        let mut key = windows::Win32::Foundation::PROPERTYKEY::default();
+        PSGetPropertyKeyFromName(windows::core::PCWSTR(n.as_ptr()), &mut key).map_err(|e| e.message())?;
+        let mut pv = Prop(PROPVARIANT::default());
+        match value {
+            Value::Text(t) => {
+                // Copia en memoria de COM: PropVariantClear la libera.
+                let wide: Vec<u16> = t.encode_utf16().chain([0]).collect();
+                let mem = windows::Win32::System::Com::CoTaskMemAlloc(wide.len() * 2) as *mut u16;
+                if mem.is_null() {
+                    return Err("sin memoria".into());
+                }
+                std::ptr::copy_nonoverlapping(wide.as_ptr(), mem, wide.len());
+                let inner = &mut *pv.0.Anonymous.Anonymous;
+                inner.vt = VT_LPWSTR;
+                inner.Anonymous.pwszVal = windows::core::PWSTR(mem);
+            }
+            Value::Number(v) => {
+                let inner = &mut *pv.0.Anonymous.Anonymous;
+                inner.vt = VT_UI4;
+                inner.Anonymous.ulVal = *v;
+            }
+        }
+        store.SetValue(&key, &pv.0).map_err(|e| e.message())?;
+        store.Commit().map_err(|e| e.message())?;
+    }
+    forget(&[path.to_string()]);
+    Ok(())
 }
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -141,6 +198,16 @@ fn read(path: &str) -> Info {
     let ext = super::ext_of(path).to_lowercase();
     let (photo, video, audio) = (PHOTO.contains(&ext.as_str()), VIDEO.contains(&ext.as_str()), AUDIO.contains(&ext.as_str()));
     let mut rows = Vec::new();
+    let mut dims = None;
+    let editable = EDITABLE.contains(&ext.as_str());
+    let (mut title, mut comment, mut rating) = (String::new(), String::new(), 0u32);
+    if editable {
+        if let Some(store) = Store::open(path) {
+            title = store.text("System.Title").unwrap_or_default();
+            comment = store.text("System.Comment").unwrap_or_default();
+            rating = store.number("System.Rating").unwrap_or(0) as u32;
+        }
+    }
     if photo || video || audio {
         if let Some(store) = Store::open(path) {
             if photo {
@@ -162,6 +229,9 @@ fn read(path: &str) -> Info {
                     rows.push((Field::Exposure, exposure.join(" · ")));
                 }
                 rows.extend(store.get("System.Photo.DateTaken").map(|d| (Field::Taken, d)));
+                if let (Some(w), Some(h)) = (store.number("System.Image.HorizontalSize"), store.number("System.Image.VerticalSize")) {
+                    dims = Some(format!("{w} × {h}"));
+                }
             }
             if video || audio {
                 rows.extend(store.get("System.Media.Duration").map(|d| (Field::Duration, d)));
@@ -169,6 +239,7 @@ fn read(path: &str) -> Info {
             if video {
                 if let (Some(w), Some(h)) = (store.number("System.Video.FrameWidth"), store.number("System.Video.FrameHeight")) {
                     rows.push((Field::Resolution, format!("{w} × {h}")));
+                    dims = Some(format!("{w} × {h}"));
                 }
                 rows.extend(store.get("System.Video.FrameRate").map(|f| (Field::FrameRate, f)));
             }
@@ -179,7 +250,7 @@ fn read(path: &str) -> Info {
             }
         }
     }
-    Info { rows, blocked }
+    Info { rows, blocked, dims, editable, title, comment, rating }
 }
 
 struct Store(windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore);
@@ -214,6 +285,17 @@ impl Store {
             let s: String = s?.chars().filter(|c| !matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}')).collect();
             let s = s.trim().to_string();
             (!s.is_empty()).then_some(s)
+        }
+    }
+
+    /// El texto guardado tal cual (sin el formato de pantalla).
+    fn text(&self, name: &str) -> Option<String> {
+        let (_, v) = self.value(name)?;
+        unsafe {
+            let mut buf = [0u16; 2048];
+            windows::Win32::System::Com::StructuredStorage::PropVariantToString(&v.0, &mut buf).ok()?;
+            let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            Some(String::from_utf16_lossy(&buf[..n]))
         }
     }
 
@@ -272,5 +354,23 @@ mod tests {
         let info = read(&wav);
         println!("{:?}", info.rows);
         assert!(info.rows.iter().any(|(f, v)| *f == Field::Duration && v.contains(':')), "{:?}", info.rows);
+    }
+
+    /// Título, comentario y calificación se escriben en el archivo y se vuelven a leer.
+    #[test]
+    fn writes_title_comment_and_rating() {
+        super::super::shell::com_init();
+        let p = std::env::temp_dir().join(format!("rayo-meta-{}.jpg", std::process::id()));
+        std::fs::write(&p, include_bytes!("testdata/foto.jpg")).unwrap();
+        let path = p.to_string_lossy().into_owned();
+        set(&path, "System.Title", &Value::Text("Atardecer en la playa".into())).expect("título");
+        set(&path, "System.Comment", &Value::Text("Prueba de Rayo, con acentos: ñandú".into())).expect("comentario");
+        set(&path, "System.Rating", &Value::Number(75)).expect("calificación");
+        let info = read(&path);
+        assert!(info.editable);
+        assert_eq!(info.title, "Atardecer en la playa");
+        assert_eq!(info.comment, "Prueba de Rayo, con acentos: ñandú");
+        assert_eq!(info.rating, 75);
+        let _ = std::fs::remove_file(&p);
     }
 }

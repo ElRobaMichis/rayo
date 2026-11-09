@@ -236,6 +236,7 @@ impl App {
         super::motion::init();
         theme::apply_style(&ctx, &t);
         views::set_columns(cfg.columns);
+        views::set_extra_columns(&cfg.extra_columns);
         crate::diag::log(&format!("Rayo {} abierto", env!("CARGO_PKG_VERSION")));
         // El doble clic dura lo que diga Windows (egui usa 0,3 s; Windows, 0,5 s por defecto).
         let dbl = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() } as f64 / 1000.0;
@@ -1399,6 +1400,25 @@ impl App {
                     let inside = format!("{k}\\");
                     col.expanded.retain(|x| !x.starts_with(&inside));
                 }
+            }
+            Action::SetProperty(path, name, value) => {
+                let (result, mgr) = (self.service_result.clone(), self.mgr.clone());
+                std::thread::spawn(move || {
+                    fsx::shell::com_init();
+                    if let Err(e) = fsx::props::set(&path, name, &value) {
+                        *result.lock() = Some(tf!("app.no_pudo", error = e));
+                    }
+                    mgr.wake_ui();
+                });
+            }
+            Action::ToggleColumn(id) => {
+                if let Some(i) = self.cfg.extra_columns.iter().position(|x| *x == id) {
+                    self.cfg.extra_columns.remove(i);
+                } else {
+                    self.cfg.extra_columns.push(id);
+                }
+                views::set_extra_columns(&self.cfg.extra_columns);
+                self.save_cfg();
             }
             Action::RunCommand(id) => {
                 if let Some(c) = super::commands::ALL.iter().find(|c| c.id == id) {
