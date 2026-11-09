@@ -389,6 +389,14 @@ pub fn preview_pane(
                 }
                 if let Some(s) = e.display_size() {
                     info_row(ui, t, t!("comun.tamano"), &tf!("previa.tamano_bytes", tamano = fsx::human_size(s), bytes = fsx::thousands(s as usize)));
+                } else if e.is_dir && item.real.is_none() && !fsx::archive::is_inside(&item.path) {
+                    // Fuera del índice (red, USB): se calcula en segundo plano y se ve avanzar.
+                    let d = fsx::dirsize::get(&item.path);
+                    let mut v = tf!("previa.tamano_bytes", tamano = fsx::human_size(d.bytes), bytes = fsx::thousands(d.bytes as usize));
+                    if !d.done {
+                        v.push_str(&format!(" {}", t!("previa.calculando")));
+                    }
+                    info_row(ui, t, t!("comun.tamano"), &v);
                 }
                 info_row(ui, t, t!("comun.modificado"), &fsx::fmt_date(e.mtime));
                 if e.ctime != 0 {

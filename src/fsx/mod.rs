@@ -1,6 +1,7 @@
 //! Acceso al sistema de archivos de Windows: listado de carpetas, unidades,
 //! carpetas conocidas y utilidades de formato.
 
+pub mod dirsize;
 pub mod shell;
 pub mod thumbs;
 pub mod transfer;

@@ -700,3 +700,4 @@ uso.programa_ya_cerro,el programa ya se cerró,,
 copia.borrando,Borrando {que},,{que} = «nombre» o «N elementos»
 app.borrar_para_siempre,¿Borrar para siempre?,,
 app.borrar_para_siempre_detalle,{que} se borrará sin pasar por la papelera. No se puede deshacer.,,{que} = «nombre» o «N elementos»
+previa.calculando,· calculando…,,Se agrega después de un tamaño que todavía se está sumando

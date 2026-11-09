@@ -244,6 +244,7 @@ impl App {
             Arc::new(move || ctx.request_repaint())
         };
         fsx::props::set_wake(wake.clone());
+        fsx::dirsize::set_wake(wake.clone());
         if let Some(h) = hwnd {
             let w = wake.clone();
             crate::instance::listen(h, move || w());
@@ -3108,10 +3109,26 @@ impl App {
             let col = tab.active_col().clone();
             let list = self.view_of(&col.path);
             let mut s = tp!(list.len(), "comun.elementos_n", n = fsx::thousands(list.len()));
-            let sel = col.selected();
+            let sel: std::collections::HashSet<String> = col.selected().into_iter().collect();
             if !sel.is_empty() {
-                let size: u64 = list.iter().filter(|e| sel.contains(&e.name)).filter_map(|e| e.display_size()).sum();
+                // Las carpetas fuera del índice (red, USB) se suman en segundo plano: mientras tanto,
+                // lo sumado hasta ahora con "calculando…".
+                let (mut size, mut counting) = (0u64, false);
+                for e in list.iter().filter(|e| sel.contains(&e.name)) {
+                    match e.display_size() {
+                        Some(n) => size += n,
+                        None if e.is_dir && sel.len() <= 20 => {
+                            let d = fsx::dirsize::get(&fsx::join(&col.path, &e.name));
+                            size += d.bytes;
+                            counting |= !d.done;
+                        }
+                        None => {}
+                    }
+                }
                 s.push_str(&format!("  ·  {}  ·  {}", tp!(sel.len(), "app.seleccionados"), fsx::human_size(size)));
+                if counting {
+                    s.push_str(&format!(" {}", t!("previa.calculando")));
+                }
             }
             s
         };
