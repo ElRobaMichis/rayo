@@ -139,6 +139,7 @@ pub const ALL: &[Command] = &[
     cmd!("view_grid", ic::SQUARES_FOUR, "Ctrl+3", Nothing),
     cmd!("view_default", ic::CHECK_CIRCLE, "", Nothing),
     cmd!("split", ic::SQUARE_SPLIT_HORIZONTAL, "Ctrl+\\", Nothing),
+    cmd!("quad", ic::SQUARES_FOUR, "Ctrl+Shift+\\", Nothing),
     cmd!("preview", ic::SIDEBAR_SIMPLE, "Ctrl+P", Nothing),
     cmd!("hidden", ic::EYE, "Ctrl+H", Nothing),
     cmd!("space_bars", ic::CHART_PIE_SLICE, "", Nothing),

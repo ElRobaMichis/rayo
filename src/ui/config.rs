@@ -131,6 +131,12 @@ pub struct Config {
     pub tab_group_of_right: Vec<u64>,
     /// Botones propios de la barra (comandos del catálogo, en orden).
     pub toolbar: Vec<String>,
+    /// Cuatro paneles (2 × 2) en lugar de dos, con las pestañas de los de abajo.
+    pub quad: bool,
+    pub tabs_bottom_left: Vec<String>,
+    pub active_bottom_left: usize,
+    pub tabs_bottom_right: Vec<String>,
+    pub active_bottom_right: usize,
 }
 
 fn spanish_before_languages() -> Option<String> {
@@ -176,6 +182,11 @@ impl Default for Config {
             tab_group_of: Vec::new(),
             tab_group_of_right: Vec::new(),
             toolbar: Vec::new(),
+            quad: false,
+            tabs_bottom_left: Vec::new(),
+            active_bottom_left: 0,
+            tabs_bottom_right: Vec::new(),
+            active_bottom_right: 0,
         }
     }
 }

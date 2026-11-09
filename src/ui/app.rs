@@ -78,10 +78,10 @@ pub struct App {
     /// Carpetas recargadas para confirmar que algo desapareció: ruta → generación.
     prune_check: std::collections::HashMap<String, u64>,
     /// Pestaña actual de cada panel (índices en `tabs`). Siempre `cur == pane[focus]`.
-    pane: [usize; 2],
+    pane: [usize; 4],
     focus: usize,
     /// Dónde se dibujó cada panel en el cuadro anterior (para enfocarlo con un clic).
-    pane_rects: [egui::Rect; 2],
+    pane_rects: [egui::Rect; 4],
     /// Cola de copias propia.
     xfer: Arc<Transfers>,
     show_transfers: bool,
@@ -292,10 +292,15 @@ impl App {
         // Pestañas de cada panel (si no hay guardadas, una en Inicio).
         let mut tabs: Vec<Tab> = Vec::new();
         let mut next_id = 1;
-        let mut pane = [0usize; 2];
-        for (p, (list, active)) in [(&cfg.tabs, cfg.active_tab), (&cfg.tabs_right, cfg.active_right)].into_iter().enumerate() {
+        let mut pane = [0usize; 4];
+        let no_groups: Vec<u64> = Vec::new();
+        for (p, (list, active)) in [(&cfg.tabs, cfg.active_tab), (&cfg.tabs_right, cfg.active_right), (&cfg.tabs_bottom_left, cfg.active_bottom_left), (&cfg.tabs_bottom_right, cfg.active_bottom_right)].into_iter().enumerate() {
             let first = tabs.len();
-            let groups_of = if p == 0 { &cfg.tab_group_of } else { &cfg.tab_group_of_right };
+            let groups_of = match p {
+                0 => &cfg.tab_group_of,
+                1 => &cfg.tab_group_of_right,
+                _ => &no_groups,
+            };
             for (k, path) in list.iter().enumerate() {
                 // Una carpeta de red que no contesta (VPN apagada) se conserva: mostrará su error al listar,
                 // pero no deja a Rayo sin ventana esperando a la red.
@@ -325,8 +330,10 @@ impl App {
             tabs.insert(pane[0] + 1, t);
             next_id += 1;
             cur = pane[0] + 1;
-            if pane[1] >= cur {
-                pane[1] += 1;
+            for q in pane.iter_mut().skip(1) {
+                if *q >= cur {
+                    *q += 1;
+                }
             }
             pane[0] = cur;
         }
@@ -359,7 +366,7 @@ impl App {
             service_result: Default::default(),
             pane,
             focus: 0,
-            pane_rects: [egui::Rect::NOTHING; 2],
+            pane_rects: [egui::Rect::NOTHING; 4],
             xfer,
             show_transfers: false,
             palette: Default::default(),
@@ -400,9 +407,46 @@ impl App {
     }
 
     fn set_focus(&mut self, p: usize) {
-        let p = if self.cfg.split { p.min(1) } else { 0 };
+        let p = p.min(self.panes() - 1);
         self.focus = p;
         self.cur = self.pane[p];
+    }
+
+    /// Cuántos paneles se ven: 1, 2 (dividida) o 4 (2 × 2).
+    fn panes(&self) -> usize {
+        if !self.cfg.split {
+            1
+        } else if self.cfg.quad {
+            4
+        } else {
+            2
+        }
+    }
+
+    /// El panel "de enfrente" del enfocado (el de al lado, en la misma fila).
+    fn other_pane(&self) -> Option<usize> {
+        match self.panes() {
+            1 => None,
+            2 => Some(1 - self.focus),
+            _ => Some(self.focus ^ 1),
+        }
+    }
+
+    /// Que el panel `p` tenga al menos una pestaña (empieza en la carpeta actual).
+    fn ensure_pane(&mut self, p: usize) {
+        if self.tabs.iter().any(|t| t.pane as usize == p) {
+            if self.tabs[self.pane[p]].pane as usize != p {
+                self.pane[p] = self.tabs_of(p)[0];
+            }
+            return;
+        }
+        let path = self.tabs[self.cur].path().to_string();
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut t = Tab::new(id, &path);
+        t.pane = p as u8;
+        self.tabs.push(t);
+        self.pane[p] = self.tabs.len() - 1;
     }
 
     /// Índices de las pestañas de un panel, en orden.
@@ -412,7 +456,7 @@ impl App {
 
     /// Carpeta del panel de enfrente (solo con la vista dividida).
     fn other_path(&self) -> Option<String> {
-        self.cfg.split.then(|| self.tabs[self.pane[1 - self.focus]].path().to_string())
+        self.other_pane().map(|o| self.tabs[self.pane[o]].path().to_string())
     }
 
     /// Contexto actual para los comandos: selección del panel enfocado y su carpeta.
@@ -457,7 +501,7 @@ impl App {
     }
 
     fn save_cfg(&mut self) {
-        for p in 0..2 {
+        for p in 0..4 {
             // Las pestañas de herramientas no se guardan (la papelera sí: se guarda su carpeta).
             let idx: Vec<usize> = self
                 .tabs_of(p)
@@ -467,14 +511,25 @@ impl App {
             let paths: Vec<String> = idx.iter().map(|&i| self.tabs[i].path().to_string()).collect();
             let groups: Vec<u64> = idx.iter().map(|&i| self.tabs[i].group).collect();
             let active = idx.iter().position(|&i| i == self.pane[p]).unwrap_or(0);
-            if p == 0 {
-                self.cfg.tabs = paths;
-                self.cfg.active_tab = active;
-                self.cfg.tab_group_of = groups;
-            } else {
-                self.cfg.tabs_right = paths;
-                self.cfg.active_right = active;
-                self.cfg.tab_group_of_right = groups;
+            match p {
+                0 => {
+                    self.cfg.tabs = paths;
+                    self.cfg.active_tab = active;
+                    self.cfg.tab_group_of = groups;
+                }
+                1 => {
+                    self.cfg.tabs_right = paths;
+                    self.cfg.active_right = active;
+                    self.cfg.tab_group_of_right = groups;
+                }
+                2 => {
+                    self.cfg.tabs_bottom_left = paths;
+                    self.cfg.active_bottom_left = active;
+                }
+                _ => {
+                    self.cfg.tabs_bottom_right = paths;
+                    self.cfg.active_bottom_right = active;
+                }
             }
         }
         // Grupos que quedaron sin pestañas.
@@ -649,7 +704,7 @@ impl App {
     /// Avisa al índice qué carpetas se están mostrando.
     fn update_watched(&mut self) {
         use std::hash::{Hash, Hasher};
-        let visible: Vec<usize> = if self.cfg.split { vec![self.pane[0], self.pane[1]] } else { vec![self.cur] };
+        let visible: Vec<usize> = (0..self.panes()).map(|p| self.pane[p]).collect();
         let mut h = std::collections::hash_map::DefaultHasher::new();
         for &i in &visible {
             for c in &self.tabs[i].cols {
@@ -716,13 +771,16 @@ impl App {
         if consume(ctrl, Key::Q) {
             crate::instance::request_quit();
         }
+        if consume(cs, Key::Backslash) {
+            actions.push(Action::ToggleQuad);
+        }
         if consume(ctrl, Key::Backslash) {
             actions.push(Action::ToggleSplit);
         }
-        // Tab (sin escribir en ningún campo) pasa al otro panel.
+        // Tab (sin escribir en ningún campo) pasa al panel siguiente.
         if self.cfg.split && !ctx.egui_wants_keyboard_input() && self.rename.is_none() && consume(Modifiers::NONE, Key::Tab) {
-            let other = 1 - self.focus;
-            self.set_focus(other);
+            let next = (self.focus + 1) % self.panes();
+            self.set_focus(next);
         }
         if consume(ctrl, Key::F) {
             self.tab().search.focus = true;
@@ -1184,7 +1242,7 @@ impl App {
                 t.pane = self.focus as u8;
                 let at = self.cur + 1;
                 self.tabs.insert(at, t);
-                for q in 0..2 {
+                for q in 0..4 {
                     if self.pane[q] >= at {
                         self.pane[q] += 1;
                     }
@@ -1201,7 +1259,7 @@ impl App {
                         let k = mine.iter().position(|&x| x == i).unwrap_or(0);
                         let next = if k > 0 { mine[k - 1] } else { mine[1] };
                         self.tabs.remove(i);
-                        for q in 0..2 {
+                        for q in 0..4 {
                             if self.pane[q] == i {
                                 self.pane[q] = if next > i { next - 1 } else { next };
                             } else if self.pane[q] > i {
@@ -1273,18 +1331,26 @@ impl App {
             Action::ToggleSplit => {
                 self.cfg.split ^= true;
                 if !self.cfg.split {
+                    self.cfg.quad = false;
                     self.set_focus(0);
                 } else if self.tabs[self.pane[1]].pane != 1 {
                     // Primera vez: el panel derecho empieza en la misma carpeta.
-                    let path = self.tabs[self.cur].path().to_string();
+                    self.ensure_pane(1);
                     self.set_focus(1);
-                    let id = self.next_id;
-                    self.next_id += 1;
-                    let mut t = Tab::new(id, &path);
-                    t.pane = 1;
-                    self.tabs.push(t);
-                    self.pane[1] = self.tabs.len() - 1;
-                    self.cur = self.pane[1];
+                }
+                self.save_cfg();
+            }
+            Action::ToggleQuad => {
+                if self.cfg.quad {
+                    self.cfg.quad = false;
+                    let f = self.focus.min(1);
+                    self.set_focus(f);
+                } else {
+                    self.cfg.split = true;
+                    self.cfg.quad = true;
+                    for p in 1..4 {
+                        self.ensure_pane(p);
+                    }
                 }
                 self.save_cfg();
             }
@@ -1403,9 +1469,9 @@ impl App {
                 if !self.cfg.split {
                     self.apply(ctx, Action::ToggleSplit);
                 }
-                let ti = self.pane[1 - self.focus];
+                let other = self.other_pane().unwrap_or(1);
+                let ti = self.pane[other];
                 if self.tabs[ti].tool.is_some() {
-                    let other = 1 - self.focus;
                     self.set_focus(other);
                     self.apply(ctx, Action::NewTab(Some(path)));
                 } else {
@@ -1874,6 +1940,9 @@ impl App {
             self.toolbar_dlg = true;
             return;
         }
+        if id == "quad" {
+            return self.apply(ctx, Action::ToggleQuad);
+        }
         use super::tools::{CompareTool, DupesTool, Tool};
         let first = t.paths.first().cloned();
         let is_dir = |p: &str| std::path::Path::new(&fsx::long_path(p)).is_dir();
@@ -2077,8 +2146,8 @@ impl App {
             "copy_other" => Action::SendToOther { paths: t.paths, mv: false },
             "move_other" => Action::SendToOther { paths: t.paths, mv: true },
             "open_other" => {
-                if self.cfg.split {
-                    let ti = self.pane[1 - self.focus];
+                if let Some(o) = self.other_pane() {
+                    let ti = self.pane[o];
                     if self.tabs[ti].tool.is_none() {
                         self.tabs[ti].search.text.clear();
                         self.tabs[ti].navigate(&t.dir, true);
@@ -2536,7 +2605,7 @@ impl App {
     fn open_workspace(&mut self, w: &super::config::Workspace) {
         let home = self.places.first().map(|p| p.path.clone()).unwrap_or_else(|| "C:\\".into());
         let mut tabs: Vec<Tab> = Vec::new();
-        let mut pane = [0usize; 2];
+        let mut pane = [0usize; 4];
         for (p, (list, active)) in [(&w.tabs, w.active_tab), (&w.tabs_right, w.active_right)].into_iter().enumerate() {
             let first = tabs.len();
             for path in list {
@@ -2562,6 +2631,7 @@ impl App {
         self.cur = pane[0];
         self.focus = 0;
         self.cfg.split = w.split;
+        self.cfg.quad = false;
         self.save_cfg();
     }
 
@@ -2914,8 +2984,7 @@ impl App {
     /// Vista y orden de cada pestaña visible: al entrar a una carpeta se usa lo que se
     /// eligió para ella (o lo predeterminado). La configuración refleja la pestaña enfocada.
     fn resolve_views(&mut self) {
-        let panes = if self.cfg.split { 2 } else { 1 };
-        for p in 0..panes {
+        for p in 0..self.panes() {
             let ti = self.pane[p];
             let tab = &self.tabs[ti];
             if tab.view.is_some() && tab.view_seq == tab.nav_seq {
@@ -3053,8 +3122,7 @@ impl App {
     /// Antes del primer cuadro: pedir las carpetas visibles y esperar un momento la
     /// activa, para que la ventana aparezca ya con su contenido.
     fn warm_start(&mut self) {
-        let panes = if self.cfg.split { 2 } else { 1 };
-        for p in 0..panes {
+        for p in 0..self.panes() {
             let paths: Vec<String> = self.tabs[self.pane[p]].cols.iter().map(|c| c.path.clone()).collect();
             for path in paths {
                 self.dirs.request(&path);
@@ -3187,7 +3255,7 @@ impl App {
         let plus_end = chrome::tab_bar(&mut tui, &t, &self.tabs, &self.cfg.tab_groups, &show, ti, reserve, actions);
         // Lo que sobra a la derecha de las pestañas es barra de título (arrastrar, doble clic).
         let free = egui::Rect::from_min_max(egui::pos2(plus_end + 4.0, tabs_rect.top()), egui::pos2(tabs_rect.right() - reserve, tabs_rect.bottom()));
-        if free.width() > 4.0 {
+        if free.width() > 4.0 && p < 2 {
             self.caption.push(free);
         }
 
@@ -3502,7 +3570,7 @@ impl eframe::App for App {
         }
         if crate::instance::SHOWN_AGAIN.swap(false, Ordering::Relaxed) {
             // De vuelta de segundo plano: lo visible pudo cambiar.
-            for p in 0..if self.cfg.split { 2 } else { 1 } {
+            for p in 0..self.panes() {
                 let paths: Vec<String> = self.tabs[self.pane[p]].cols.iter().map(|c| c.path.clone()).collect();
                 for path in paths {
                     self.dirs.reload(&path);
@@ -3551,7 +3619,7 @@ impl eframe::App for App {
             // Solo clics sobre los paneles mismos (no sobre diálogos, menús o la paleta encima).
             let press = press.filter(|&pos| ctx.layer_id_at(pos).is_none_or(|l| l.order == egui::Order::Background));
             if let Some(pos) = press {
-                if let Some(p) = (0..2).find(|&p| self.pane_rects[p].contains(pos)) {
+                if let Some(p) = (0..self.panes()).find(|&p| self.pane_rects[p].contains(pos)) {
                     if p != self.focus {
                         self.set_focus(p);
                     }
@@ -3694,22 +3762,31 @@ impl eframe::App for App {
         // ---- contenido: uno o dos paneles, cada uno con sus pestañas y su barra
         egui::CentralPanel::default().frame(Frame::new().fill(t.bg)).show(ui, |ui| {
             let full = ui.max_rect();
-            let rects = if self.cfg.split {
-                let mid = full.center().x;
-                [egui::Rect::from_min_max(full.min, egui::pos2(mid - 0.5, full.max.y)), egui::Rect::from_min_max(egui::pos2(mid + 0.5, full.min.y), full.max)]
-            } else {
-                [full, egui::Rect::NOTHING]
+            let panes = self.panes();
+            let (mx, my) = (full.center().x, full.center().y);
+            let none = egui::Rect::NOTHING;
+            let rects = match panes {
+                1 => [full, none, none, none],
+                2 => [egui::Rect::from_min_max(full.min, egui::pos2(mx - 0.5, full.max.y)), egui::Rect::from_min_max(egui::pos2(mx + 0.5, full.min.y), full.max), none, none],
+                // 2 × 2: arriba 0 y 1, abajo 2 y 3.
+                _ => [
+                    egui::Rect::from_min_max(full.min, egui::pos2(mx - 0.5, my - 0.5)),
+                    egui::Rect::from_min_max(egui::pos2(mx + 0.5, full.min.y), egui::pos2(full.max.x, my - 0.5)),
+                    egui::Rect::from_min_max(egui::pos2(full.min.x, my + 0.5), egui::pos2(mx - 0.5, full.max.y)),
+                    egui::Rect::from_min_max(egui::pos2(mx + 0.5, my + 0.5), full.max),
+                ],
             };
             self.pane_rects = rects;
-            let panes = if self.cfg.split { 2 } else { 1 };
             for p in 0..panes {
                 let mut pui = ui.new_child(egui::UiBuilder::new().max_rect(rects[p]).layout(egui::Layout::top_down(egui::Align::Min)));
                 pui.set_clip_rect(rects[p]);
                 self.render_pane(&mut pui, p, now, &mut actions);
             }
-            if self.cfg.split {
-                let x = full.center().x;
-                ui.painter().line_segment([egui::pos2(x, full.top()), egui::pos2(x, full.bottom())], egui::Stroke::new(1.0, t.border));
+            if panes > 1 {
+                ui.painter().line_segment([egui::pos2(mx, full.top()), egui::pos2(mx, full.bottom())], egui::Stroke::new(1.0, t.border));
+            }
+            if panes == 4 {
+                ui.painter().line_segment([egui::pos2(full.left(), my), egui::pos2(full.right(), my)], egui::Stroke::new(1.0, t.border));
             }
         });
 

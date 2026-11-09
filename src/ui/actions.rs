@@ -72,6 +72,8 @@ pub enum Action {
     UninstallService,
     // Vista dividida
     ToggleSplit,
+    /// Cuatro paneles (2 × 2) o dos.
+    ToggleQuad,
     /// Copiar (o mover) al panel de enfrente.
     SendToOther { paths: Vec<String>, mv: bool },
     /// Archivos soltados sobre una carpeta. `force`: Some(true) = mover, Some(false) = copiar.
