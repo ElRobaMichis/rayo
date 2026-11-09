@@ -221,6 +221,7 @@ impl App {
         }
         let t = Theme::get(cfg.dark);
         theme::setup_fonts(&ctx);
+        super::motion::init();
         theme::apply_style(&ctx, &t);
         views::set_columns(cfg.columns);
         crate::diag::log(&format!("Rayo {} abierto", env!("CARGO_PKG_VERSION")));
@@ -1597,6 +1598,12 @@ impl App {
                     }
                 }
             }
+            Action::Prefetch(path) => {
+                // Solo lo que no está ya leído, y nada de red (puede tardar y ocupar al lector).
+                if self.dirs.state(&path).is_none() && !path.starts_with("\\\\") {
+                    self.dirs.request(&path);
+                }
+            }
             Action::Unblock(paths) => {
                 let n = fsx::props::unblock_all(&paths);
                 // El visor (PDF, Office) se vuelve a abrir, ahora sin el bloqueo.
@@ -2788,7 +2795,7 @@ impl App {
             return;
         }
         let groups: Vec<String> = cfg.groups.iter().map(|g| g.name.clone()).collect();
-        let mut cx = Cx { t: &t, now, actions, rename, cut, tab_id: tab.id, groups: &groups, space_bars: cfg.space_bars, split: cfg.split };
+        let mut cx = Cx { t: &t, now, actions, rename, cut, tab_id: tab.id, groups: &groups, space_bars: cfg.space_bars, split: cfg.split, pill: None };
         if tab.search.active() {
             let indexing = if !mgr.is_ready() {
                 Some(t!("app.indice_esta_construyendo").to_string())
@@ -2833,7 +2840,25 @@ impl App {
                 }
                 filter_bar(ui, tab);
                 let w = cfg.col_width;
-                egui::ScrollArea::horizontal().id_salt(("hcols", tab.id)).auto_shrink([false, false]).stick_to_right(true).show(ui, |ui| {
+                // Al abrirse o cerrarse una columna, la vista se desliza hasta la nueva en vez de saltar.
+                let hid = Id::new(("hcols-anim", tab.id));
+                let n_cols = tab.cols.len();
+                let target = (n_cols as f32 * w - ui.available_width()).max(0.0);
+                let now_s = ui.input(|i| i.time);
+                let mut hs: HScroll = ui.data(|d| d.get_temp(hid)).unwrap_or(HScroll { n: n_cols, offset: target, from: target, to: target, start: f64::MIN });
+                if hs.n != n_cols && super::motion::on() {
+                    hs = HScroll { n: n_cols, offset: hs.offset, from: hs.offset, to: target, start: now_s };
+                }
+                hs.n = n_cols;
+                const HDUR: f32 = 0.2;
+                let k = ((now_s - hs.start) as f32 / HDUR).clamp(0.0, 1.0);
+                let animating = k < 1.0;
+                let mut area = egui::ScrollArea::horizontal().id_salt(("hcols", tab.id)).auto_shrink([false, false]).stick_to_right(!animating);
+                if animating {
+                    area = area.horizontal_scroll_offset(hs.from + (hs.to - hs.from) * super::motion::ease_out(k));
+                    ui.ctx().request_repaint();
+                }
+                let out = area.show(ui, |ui| {
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         let h = ui.available_height();
@@ -2846,12 +2871,32 @@ impl App {
                             let loading = st.is_some_and(|s| s.loading);
                             let error = st.and_then(|s| s.error.clone());
                             let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
-                            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(0.0, 4.0))).layout(egui::Layout::top_down(egui::Align::Min)));
+                            // Una columna con contenido nuevo aparece con un fundido y un pequeño deslizamiento
+                            // (cuando ya tiene algo que mostrar, no mientras dice "Cargando…").
+                            // Si cambia muy seguido (una flecha mantenida), se reemplaza sin animar: nada de parpadeos.
+                            let ready = !(entries.is_empty() && loading);
+                            let lid = Id::new(("col-in", tab.id, ci));
+                            let (mut shown, mut start, mut changed): (String, f64, f64) = ui.data(|d| d.get_temp(lid)).unwrap_or((path.clone(), f64::MIN, f64::MIN));
+                            if shown != path && ready {
+                                start = if now_s - changed < 0.25 { f64::MIN } else { now_s };
+                                changed = now_s;
+                                shown = path.clone();
+                            }
+                            ui.data_mut(|d| d.insert_temp(lid, (shown, start, changed)));
+                            let a = super::motion::since(ui.ctx(), start, 0.16);
+                            let inner = rect.shrink2(vec2(0.0, 4.0)).translate(vec2(8.0 * (1.0 - a), 0.0));
+                            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
+                            child.set_clip_rect(rect.intersect(ui.clip_rect()));
+                            if a < 1.0 {
+                                child.multiply_opacity(0.35 + 0.65 * a);
+                            }
                             views::column(&mut child, &mut cx, ci, &mut tab.cols[ci], focused && ci == active, ColumnData { entries: &entries, loading, error: error.as_deref() });
                             ui.painter().line_segment([rect.right_top(), rect.right_bottom()], egui::Stroke::new(1.0, t.border));
                         }
                     });
                 });
+                hs.offset = out.state.offset.x;
+                ui.data_mut(|d| d.insert_temp(hid, hs));
             }
             ViewMode::Details | ViewMode::Grid => {
                 let ci = tab.cols.len() - 1;
@@ -2867,11 +2912,22 @@ impl App {
                 let error = st.and_then(|s| s.error.clone());
                 filter_bar(ui, tab);
                 let data = ColumnData { entries: &entries, loading, error: error.as_deref() };
-                if cfg.view == ViewMode::Grid {
-                    views::grid(ui, &mut cx, ci, &mut tab.cols[ci], focused, data, tex);
-                } else {
-                    views::details(ui, &mut cx, ci, &mut tab.cols[ci], focused, data, (sort, desc));
+                // Al cambiar de carpeta, su contenido entra deslizándose (desde la derecha al entrar,
+                // desde la izquierda al subir) en cuanto tiene algo que mostrar.
+                let ready = !(entries.is_empty() && loading);
+                let (dx, opacity) = super::motion::nav(ui.ctx(), Id::new(("nav-in", tab.id)), &key, ready);
+                let area = ui.available_rect_before_wrap();
+                let mut moved = ui.new_child(egui::UiBuilder::new().max_rect(area.translate(vec2(dx, 0.0))).layout(egui::Layout::top_down(egui::Align::Min)));
+                moved.set_clip_rect(area.intersect(ui.clip_rect()));
+                if opacity < 1.0 {
+                    moved.multiply_opacity(opacity);
                 }
+                if cfg.view == ViewMode::Grid {
+                    views::grid(&mut moved, &mut cx, ci, &mut tab.cols[ci], focused, data, tex);
+                } else {
+                    views::details(&mut moved, &mut cx, ci, &mut tab.cols[ci], focused, data, (sort, desc));
+                }
+                ui.advance_cursor_after_rect(area);
             }
         }
     }
@@ -3492,4 +3548,14 @@ struct MenuWin {
     subs: Vec<(usize, f32)>,
     /// Qué ventanas ya tienen el aspecto de menú de Windows (un bit por nivel).
     styled: u32,
+}
+
+/// Desplazamiento animado de la vista de columnas (cuántas había, dónde estaba y hacia dónde va).
+#[derive(Clone, Copy)]
+struct HScroll {
+    n: usize,
+    offset: f32,
+    from: f32,
+    to: f32,
+    start: f64,
 }

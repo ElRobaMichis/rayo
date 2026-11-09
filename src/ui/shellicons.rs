@@ -14,8 +14,8 @@ use std::sync::Arc;
 #[derive(Default)]
 struct Cache {
     loader: Option<Arc<ThumbLoader>>,
-    /// Ícono listo (o None si Windows no dio ninguno), por clave de caché.
-    ready: HashMap<String, Option<TextureHandle>>,
+    /// Ícono listo (o None si Windows no dio ninguno) y cuándo llegó, por clave de caché.
+    ready: HashMap<String, (Option<TextureHandle>, f64)>,
     /// Pedidos en curso: clave de caché → lo que se pidió al cargador.
     asked: HashMap<String, ThumbKey>,
     /// Pedidos que fallaron: cuántas veces y cuándo la última (se reintenta).
@@ -40,14 +40,17 @@ fn cache_key(path: &str, ext: &str, size: u32) -> String {
     if own_icon(ext) { format!("{}|{size}", path.to_lowercase()) } else { format!(".{ext}|{size}") }
 }
 
-/// El ícono de Windows de un archivo, en `size` píxeles, si ya está cargado (si no, se pide).
-pub fn get(path: &str, ext: &str, size: u32) -> Option<TextureHandle> {
+/// El ícono de Windows de un archivo, en `size` píxeles, si ya está cargado (si no, se pide), y
+/// cuánto se ve (de 0 a 1: el que acaba de llegar aparece con un fundido sobre el de Rayo).
+pub fn get(path: &str, ext: &str, size: u32) -> Option<(TextureHandle, f32)> {
     let ext = ext.to_lowercase();
     let key = cache_key(path, &ext, size);
     CACHE.with(|c| {
         let mut c = c.borrow_mut();
-        if let Some(t) = c.ready.get(&key) {
-            return t.clone();
+        if let Some((t, at)) = c.ready.get(&key) {
+            let t = t.clone()?;
+            let a = c.ctx.as_ref().map_or(1.0, |ctx| super::motion::since(ctx, *at, 0.18));
+            return Some((t, a));
         }
         if let Some((tries, at)) = c.failed.get(&key) {
             if at.elapsed() < std::time::Duration::from_millis(700 * u64::from(*tries)) {
@@ -94,7 +97,7 @@ pub fn deliver(ctx: &egui::Context, key: &ThumbKey, img: Option<Rgba>) {
         if c.ready.len() > 4000 {
             c.ready.clear();
         }
-        c.ready.insert(cache, tex);
+        c.ready.insert(cache, (tex, ctx.input(|i| i.time)));
     });
 }
 

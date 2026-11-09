@@ -15,6 +15,8 @@ pub struct TexEntry {
     pub orig: Option<(u32, u32)>,
     /// Páginas (si es un PDF).
     pub pages: Option<u32>,
+    /// Cuándo llegó (para que aparezca con un fundido); muy atrás si reemplaza a otra del mismo archivo.
+    pub at: f64,
 }
 
 /// Texturas de miniaturas con desalojo por antigüedad.
@@ -34,11 +36,26 @@ impl Textures {
 
     pub fn poll(&mut self, ctx: &egui::Context) {
         self.loader.next_frame();
-        while let Ok(r) = self.loader.rx.try_recv() {
+        // Subir texturas tiene su costo: se suben las que entren en ~3 ms por cuadro y el resto en
+        // el siguiente, así una carpeta llena de fotos no traba el movimiento.
+        let t0 = std::time::Instant::now();
+        let budget = std::time::Duration::from_millis(3);
+        let now = ctx.input(|i| i.time);
+        loop {
+            if t0.elapsed() > budget {
+                if !self.loader.rx.is_empty() {
+                    ctx.request_repaint();
+                }
+                break;
+            }
+            let Ok(r) = self.loader.rx.try_recv() else { break };
             if r.key.path.starts_with(crate::fsx::thumbs::ICON_PREFIX) {
                 super::shellicons::deliver(ctx, &r.key, r.img);
                 continue;
             }
+            // Si ya se veía otra versión del mismo archivo, la nueva la reemplaza sin fundido.
+            let replaces = self.map.iter().any(|(k, e)| k.path == r.key.path && e.tex.is_some());
+            let at = if replaces { f64::MIN } else { now };
             let entry = match r.img {
                 Some(img) => {
                     let size = [img.w as usize, img.h as usize];
@@ -48,9 +65,9 @@ impl Textures {
                         ColorImage::from_rgba_unmultiplied(size, &img.px)
                     };
                     let tex = ctx.load_texture(&r.key.path, ci, TextureOptions::LINEAR);
-                    TexEntry { tex: Some(tex), orig: img.orig, pages: img.pages }
+                    TexEntry { tex: Some(tex), orig: img.orig, pages: img.pages, at }
                 }
-                None => TexEntry { tex: None, orig: None, pages: None },
+                None => TexEntry { tex: None, orig: None, pages: None, at },
             };
             self.order.push_back(r.key.clone());
             self.map.insert(r.key, entry);

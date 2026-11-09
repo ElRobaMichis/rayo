@@ -27,6 +27,10 @@ pub struct Cx<'a> {
     pub space_bars: bool,
     /// Hay dos paneles (para "enviar al otro panel").
     pub split: bool,
+    /// Dónde está ahora el resaltado de la selección, que se desliza de fila en fila (si hay uno
+    /// solo seleccionado). Las filas no dibujan el suyo y sus letras cambian de color según cuánto
+    /// las cubre.
+    pub pill: Option<Rect>,
 }
 
 /// Archivos que se están arrastrando (rutas completas).
@@ -169,13 +173,57 @@ fn highlighted(p: &Painter, text: &str, needle: &str, t: &Theme, color: Color32,
     p.layout_job(job)
 }
 
-pub fn row_bg(p: &Painter, rect: Rect, t: &Theme, selected: bool, active: bool, hovered: bool) {
+/// Fondo de una fila: la selección, o el hover (`hover` de 0 a 1: aparece y se apaga con un fundido).
+pub fn row_bg(p: &Painter, rect: Rect, t: &Theme, selected: bool, active: bool, hover: f32) {
     let r = rect.shrink2(vec2(4.0, 1.0));
     if selected {
         p.rect_filled(r, 5.0, if active { t.sel } else { t.sel_inactive });
-    } else if hovered {
-        p.rect_filled(r, 5.0, t.hover);
+    } else if hover > 0.01 {
+        p.rect_filled(r, 5.0, t.hover.gamma_multiply(hover));
     }
+}
+
+/// Cuánto se ve el hover de este elemento (entra rápido, se apaga un poco más lento: al pasar el
+/// mouse por una lista deja una estela corta).
+pub fn hover_amount(resp: &egui::Response, show: bool) -> f32 {
+    let on = show && resp.hovered();
+    super::motion::fade(&resp.ctx, resp.id.with("hover"), on, if on { 0.07 } else { 0.16 })
+}
+
+/// Cuánto cubre el resaltado deslizante a una fila (0 a 1).
+fn pill_cover(pill: Rect, r: Rect) -> f32 {
+    let fx = 1.0 - ((pill.center().x - r.center().x).abs() / pill.width().max(1.0));
+    let fy = 1.0 - ((pill.center().y - r.center().y).abs() / pill.height().max(1.0));
+    fx.clamp(0.0, 1.0) * fy.clamp(0.0, 1.0)
+}
+
+/// Colores del texto de una fila (nombre, datos): con el resaltado deslizante, pasan de normales a
+/// los de seleccionado a medida que este llega.
+fn row_fg(t: &Theme, pill: Option<Rect>, r: Rect, selected: bool, active: bool) -> (Color32, Color32, bool) {
+    match pill {
+        Some(p) if active => {
+            let k = pill_cover(p, r);
+            let (a, b) = fg(t, false, false);
+            let (c, d) = fg(t, true, true);
+            (a.lerp_to_gamma(c, k), b.lerp_to_gamma(d, k), k > 0.5)
+        }
+        Some(_) => {
+            let (a, b) = fg(t, false, false);
+            (a, b, false)
+        }
+        None => {
+            let (a, b) = fg(t, selected, active);
+            (a, b, selected && active)
+        }
+    }
+}
+
+/// El resaltado que se desliza a la fila `i` (en coordenadas de la lista, que ya incluyen el desplazamiento).
+fn pill_rect(ui: &Ui, id: Id, target: Rect) -> Rect {
+    let ctx = ui.ctx();
+    let x = super::motion::glide(ctx, id.with("px"), target.left() - ui.max_rect().left(), 0.11);
+    let y = super::motion::glide(ctx, id.with("py"), target.top() - ui.max_rect().top(), 0.11);
+    Rect::from_min_size(ui.max_rect().min + vec2(x, y), target.size())
 }
 
 /// Ícono del estado en la nube (OneDrive): solo en la nube, descargado, siempre en el equipo.
@@ -193,7 +241,9 @@ fn fg(t: &Theme, selected: bool, active: bool) -> (Color32, Color32) {
 }
 
 /// Lista virtualizada: solo se dibujan las filas visibles.
-fn virtual_list(ui: &mut Ui, id: Id, n: usize, scroll_to: Option<usize>, mut row: impl FnMut(&mut Ui, usize, Rect)) -> egui::scroll_area::ScrollAreaOutput<()> {
+/// `glide`: fila del resaltado deslizante y su color (si hay una sola seleccionada); a cada fila
+/// se le pasa dónde está ese resaltado.
+fn virtual_list(ui: &mut Ui, id: Id, n: usize, scroll_to: Option<usize>, glide: Option<(usize, Color32)>, mut row: impl FnMut(&mut Ui, usize, Rect, Option<Rect>)) -> egui::scroll_area::ScrollAreaOutput<()> {
     let out = egui::ScrollArea::vertical().id_salt(id).auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
         let width = ui.available_width();
         ui.set_height(ROW_H * n as f32 + 6.0);
@@ -203,11 +253,17 @@ fn virtual_list(ui: &mut Ui, id: Id, n: usize, scroll_to: Option<usize>, mut row
             let r = Rect::from_min_size(pos2(left, top + i as f32 * ROW_H), vec2(width, ROW_H));
             ui.scroll_to_rect(r.expand2(vec2(0.0, ROW_H * 0.5)), None);
         }
+        let pill = glide.map(|(i, color)| {
+            let target = Rect::from_min_size(pos2(left, top + i as f32 * ROW_H), vec2(width, ROW_H));
+            let r = pill_rect(ui, id, target);
+            ui.painter().rect_filled(r.shrink2(vec2(4.0, 1.0)), 5.0, color);
+            r
+        });
         let first = (viewport.min.y / ROW_H).floor().max(0.0) as usize;
         let last = ((viewport.max.y / ROW_H).ceil() as usize + 1).min(n);
         for i in first..last {
             let r = Rect::from_min_size(pos2(left, top + i as f32 * ROW_H), vec2(width, ROW_H));
-            row(ui, i, r);
+            row(ui, i, r, pill);
         }
     });
     out
@@ -293,6 +349,16 @@ fn list_hits(entries: &[FileEntry], r: Rect) -> Vec<String> {
 }
 
 /// Clic en un espacio vacío: deselecciona (salvo con Ctrl o Mayús).
+/// La fila del resaltado deslizante: la del cursor, si es lo único seleccionado.
+fn glide_row(t: &Theme, col: &Col, entries: &[FileEntry], active: bool) -> Option<(usize, Color32)> {
+    if !col.multi.is_empty() {
+        return None;
+    }
+    let c = col.cursor.as_ref()?;
+    let i = entries.iter().position(|e| &e.name == c)?;
+    Some((i, if active { t.sel } else { t.sel_inactive }))
+}
+
 fn background_click(cx: &mut Cx, bg: &egui::Response, ci: usize) {
     if bg.clicked() && !bg.ctx.input(|i| i.modifiers.ctrl || i.modifiers.shift) {
         cx.actions.push(Action::SetSelection { col: ci, names: Vec::new() });
@@ -409,14 +475,19 @@ fn file_icon(p: &Painter, t: &Theme, center: Pos2, points: f32, glyph: f32, path
     }
     if !is_dir {
         let px = super::shellicons::px_for(p.ctx(), points);
-        if let Some(tex) = super::shellicons::get(path, ext, px) {
+        if let Some((tex, shown)) = super::shellicons::get(path, ext, px) {
+            // Recién llegado: el de Rayo se desvanece mientras aparece el de Windows.
+            if shown < 1.0 {
+                let (g, c) = icons::for_entry(t, is_dir, ext);
+                p.text(center, Align2::CENTER_CENTER, g, theme::icon_font(glyph, true), color.unwrap_or(c).gamma_multiply(alpha * (1.0 - shown)));
+            }
             // Alineado a los píxeles de la pantalla y del tamaño exacto: nítido, como en el Explorador.
             let ppp = p.ctx().pixels_per_point();
             let side = px as f32 / ppp;
             let min = center - vec2(side, side) / 2.0;
             let min = pos2((min.x * ppp).round() / ppp, (min.y * ppp).round() / ppp);
             let r = Rect::from_min_size(min, vec2(side, side));
-            p.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE.gamma_multiply(alpha));
+            p.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE.gamma_multiply(alpha * shown));
             return;
         }
     }
@@ -424,16 +495,51 @@ fn file_icon(p: &Painter, t: &Theme, center: Pos2, points: f32, glyph: f32, path
     p.text(center, Align2::CENTER_CENTER, g, theme::icon_font(glyph, true), color.unwrap_or(c).gamma_multiply(alpha));
 }
 
+/// Si el mouse se detiene un momento sobre una carpeta (o el cursor queda en ella), se lee antes de
+/// entrar: al abrirla, su contenido ya está.
+fn prefetch(cx: &mut Cx, resp: &egui::Response, path: &str, cursor: bool) {
+    let ctx = &resp.ctx;
+    let key = Id::new("prefetch-dwell");
+    let now = ctx.input(|i| i.time);
+    // Con el teclado: la carpeta del cursor, sin esperar (una vez).
+    let ckey = Id::new("prefetch-cursor");
+    if cursor && ctx.data(|d| d.get_temp::<Id>(ckey)) != Some(resp.id) {
+        ctx.data_mut(|d| d.insert_temp(ckey, resp.id));
+        cx.actions.push(Action::Prefetch(path.to_string()));
+    }
+    if !resp.hovered() {
+        return;
+    }
+    let (who, since, sent): (Id, f64, bool) = ctx.data(|d| d.get_temp(key)).unwrap_or((Id::NULL, 0.0, false));
+    if who != resp.id {
+        ctx.data_mut(|d| d.insert_temp(key, (resp.id, now, false)));
+        ctx.request_repaint_after(std::time::Duration::from_millis(90));
+        return;
+    }
+    if !sent && now - since >= 0.08 {
+        cx.actions.push(Action::Prefetch(path.to_string()));
+        ctx.data_mut(|d| d.insert_temp(key, (who, since, true)));
+    } else if !sent {
+        ctx.request_repaint_after(std::time::Duration::from_millis(30));
+    }
+}
+
 fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, selected: bool, active: bool, right: Option<&str>, chevron: bool, name_limit: Option<f32>) -> egui::Response {
     let id = Id::new(("row", cx.tab_id, dir, &e.name));
     let resp = ui.interact(rect, id, Sense::click_and_drag());
+    if e.is_dir {
+        prefetch(cx, &resp, &fsx::join(dir, &e.name), selected && active);
+    }
     let p = ui.painter_at(rect);
-    row_bg(&p, rect, cx.t, selected, active, resp.hovered());
+    let pill = cx.pill;
+    // Con el resaltado deslizante, la fila no dibuja su selección (ya está debajo).
+    let hover = hover_amount(&resp, !selected || pill.is_some_and(|pl| pill_cover(pl, rect) < 0.5));
+    row_bg(&p, rect, cx.t, selected && pill.is_none(), active, hover);
     if e.is_dir {
         drop_highlight(ui, cx.t, &resp, rect);
     }
-    let (text_c, dim_c) = fg(cx.t, selected, active);
-    let icolor = (selected && active).then_some(cx.t.accent_text);
+    let (text_c, dim_c, on_sel) = row_fg(cx.t, pill, rect, selected, active);
+    let icolor = on_sel.then_some(cx.t.accent_text);
     let path = fsx::join(dir, &e.name);
     let faded = e.hidden || cx.cut.contains(&path);
     let alpha = if faded { 0.5 } else { 1.0 };
@@ -453,7 +559,7 @@ fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, sele
     // Estado en la nube: al final del nombre (en detalles, al final de su columna).
     let mut name_limit = name_limit;
     if let Some((g, c, tip)) = cloud_glyph(cx.t, e.cloud) {
-        let c = if selected && active { cx.t.accent_text } else { c };
+        let c = if on_sel { cx.t.accent_text } else { c };
         let x = match name_limit {
             Some(l) => {
                 name_limit = Some(l - 20.0);
@@ -479,7 +585,7 @@ fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, sele
         match fsx::downloading(&e.name).filter(|_| !e.is_dir) {
             // Descarga en curso: el nombre que tendrá y "Descargando…".
             Some(base) => {
-                let tag = p.layout_no_wrap(t!("lista.descargando").to_string(), FontId::proportional(12.0), if selected && active { text_c } else { cx.t.accent });
+                let tag = p.layout_no_wrap(t!("lista.descargando").to_string(), FontId::proportional(12.0), if on_sel { text_c } else { cx.t.accent });
                 let g = elided(&p, base, FontId::proportional(13.5), text_c.gamma_multiply(alpha), (limit - name_x - tag.size().x - 10.0).max(20.0));
                 let gw = g.size().x;
                 p.galley(pos2(name_x, rect.center().y - g.size().y / 2.0), g, text_c);
@@ -700,7 +806,9 @@ pub fn column(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, active: bool, 
     }
     let scroll_to = scroll_target(col, data.entries, data.loading);
     let selection = col.selected();
-    let out = virtual_list(ui, Id::new(("col", cx.tab_id, ci, &dir)), data.entries.len(), scroll_to, |ui, i, r| {
+    let glide = glide_row(cx.t, col, data.entries, active);
+    let out = virtual_list(ui, Id::new(("col", cx.tab_id, ci, &dir)), data.entries.len(), scroll_to, glide, |ui, i, r, pill| {
+        cx.pill = pill;
         let e = &data.entries[i];
         let selected = col.is_selected(&e.name);
         let st = size_text(e);
@@ -709,6 +817,7 @@ pub fn column(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, active: bool, 
         let name_area = Rect::from_min_max(pos2(r.left() + 36.0, r.top()), pos2(r.right() - 12.0, r.bottom()));
         handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), None, name_area, true);
     });
+    cx.pill = None;
     marquee(ui, cx, ci, start, selection, &out, |r| list_hits(data.entries, r));
     background_drop(ui, cx, &bg, rect, &dir);
 }
@@ -838,13 +947,15 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
     let selection = col.selected();
     // Para las barras de "qué ocupa espacio": proporción de cada elemento sobre el total de la carpeta.
     let total: u64 = data.entries.iter().filter_map(|e| e.display_size()).sum();
-    let out = virtual_list(ui, Id::new(("det", cx.tab_id, &dir)), data.entries.len(), scroll_to, |ui, i, r| {
+    let glide = glide_row(&t, col, data.entries, focused);
+    let out = virtual_list(ui, Id::new(("det", cx.tab_id, &dir)), data.entries.len(), scroll_to, glide, |ui, i, r, pill| {
+        cx.pill = pill;
         let e = &data.entries[i];
         let selected = col.is_selected(&e.name);
         let (_, x1, x2, x3, x4) = details_columns(r);
         let resp = file_row(ui, cx, r, e, &dir, selected, focused, None, false, Some(x1 - 8.0));
         let p = ui.painter_at(r);
-        let (_, dim_c) = fg(&t, selected, focused);
+        let (_, dim_c, _) = row_fg(&t, pill, r, selected, focused);
         if cx.space_bars && total > 0 {
             if let Some(sz) = e.display_size() {
                 let frac = (sz as f64 / total as f64) as f32;
@@ -877,6 +988,7 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
             start = resp.ctx.input(|i| i.pointer.press_origin());
         }
     });
+    cx.pill = None;
     marquee(ui, cx, ci, start, selection, &out, |r| list_hits(data.entries, r));
     background_drop(ui, cx, &bg, rest, &dir);
 }
@@ -987,7 +1099,8 @@ pub fn search_results(ui: &mut Ui, cx: &mut Cx, res: Option<&Results>, cursor: &
     };
     let n = res.len();
     let mut reached_end = false;
-    virtual_list(ui, Id::new(("search", cx.tab_id)), n, scroll_to, |ui, i, r| {
+    let glide = (*cursor < n).then_some((*cursor, t.sel));
+    virtual_list(ui, Id::new(("search", cx.tab_id)), n, scroll_to, glide, |ui, i, r, pill| {
         if i + 1 == n {
             reached_end = true;
         }
@@ -995,12 +1108,13 @@ pub fn search_results(ui: &mut Ui, cx: &mut Cx, res: Option<&Results>, cursor: &
         let selected = i == *cursor;
         let resp = ui.interact(r, Id::new(("sr", cx.tab_id, i)), Sense::click());
         let p = ui.painter_at(r);
-        row_bg(&p, r, &t, selected, true, resp.hovered());
-        let (text_c, dim_c) = fg(&t, selected, true);
-        file_icon(&p, &t, pos2(r.left() + 22.0, r.center().y), 16.0, 16.0, &row.path(), row.is_dir, &row.ext, selected.then_some(t.accent_text), 1.0);
+        let hover = hover_amount(&resp, pill.is_none_or(|pl| pill_cover(pl, r) < 0.5));
+        row_bg(&p, r, &t, selected && pill.is_none(), true, hover);
+        let (text_c, dim_c, on_sel) = row_fg(&t, pill, r, selected, true);
+        file_icon(&p, &t, pos2(r.left() + 22.0, r.center().y), 16.0, 16.0, &row.path(), row.is_dir, &row.ext, on_sel.then_some(t.accent_text), 1.0);
         let (nx, dir_x, size_r, date_x) = search_columns(r);
         let name_w = dir_x - nx - 12.0;
-        let g = if selected {
+        let g = if on_sel {
             elided(&p, &row.name, FontId::proportional(13.5), text_c, name_w)
         } else {
             highlighted(&p, &row.name, &needle, &t, text_c, name_w)
@@ -1082,6 +1196,13 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
             let r = Rect::from_min_size(pos2(left, top + (i / cols) as f32 * TILE_H), vec2(TILE_W, TILE_H));
             ui.scroll_to_rect(r, None);
         }
+        // El resaltado se desliza de mosaico en mosaico (también en diagonal, al cambiar de fila).
+        let pill = glide_row(&t, col, data.entries, focused).map(|(i, color)| {
+            let target = Rect::from_min_size(pos2(left + (i % cols) as f32 * TILE_W, top + (i / cols) as f32 * TILE_H), vec2(TILE_W, TILE_H)).shrink(3.0);
+            let r = pill_rect(ui, Id::new(("grid-pill", cx.tab_id, &dir)), target);
+            ui.painter().rect_filled(r, 8.0, if focused { color.gamma_multiply(0.55) } else { color });
+            r
+        });
         let first = (viewport.min.y / TILE_H).floor().max(0.0) as usize;
         let last = ((viewport.max.y / TILE_H).ceil() as usize + 1).min(rows);
         for row in first..last {
@@ -1095,11 +1216,15 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                 let path = fsx::join(&dir, &e.name);
                 let resp = ui.interact(r, Id::new(("tile", cx.tab_id, &path)), Sense::click_and_drag());
                 let selected = col.is_selected(&e.name);
+                if e.is_dir {
+                    prefetch(cx, &resp, &path, selected && focused);
+                }
                 let p = ui.painter_at(r);
-                if selected {
+                let hover = hover_amount(&resp, !selected || pill.is_some_and(|pl| pill_cover(pl, r) < 0.5));
+                if selected && pill.is_none() {
                     p.rect_filled(r, 8.0, if focused { t.sel.gamma_multiply(0.55) } else { t.sel_inactive });
-                } else if resp.hovered() {
-                    p.rect_filled(r, 8.0, t.hover);
+                } else if hover > 0.01 {
+                    p.rect_filled(r, 8.0, t.hover.gamma_multiply(hover));
                 }
                 if e.is_dir {
                     drop_highlight(ui, &t, &resp, r);
@@ -1113,7 +1238,12 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                             let size = tx.size_vec2();
                             let s = (thumb.width() / size.x).min(thumb.height() / size.y).min(1.0 * ppp.recip() * 4.0);
                             let img = Rect::from_center_size(thumb.center(), size * s);
-                            p.image(tx.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                            // Recién llegada: aparece con un fundido sobre el ícono, que se desvanece.
+                            let shown = super::motion::since(ui.ctx(), te.at, 0.22);
+                            if shown < 1.0 {
+                                file_icon(&p, &t, thumb.center(), 48.0, 54.0, &path, e.is_dir, &e.ext, None, 1.0 - shown);
+                            }
+                            p.image(tx.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE.gamma_multiply(shown));
                             drew = true;
                         }
                     }

@@ -8,6 +8,7 @@ pub mod config;
 pub mod ctxmenu;
 pub mod icons;
 pub mod language;
+pub mod motion;
 pub mod preview;
 pub mod shellicons;
 pub mod state;

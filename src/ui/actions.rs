@@ -6,6 +6,8 @@ use crate::fsx::SortKey;
 #[derive(Debug, Clone)]
 pub enum Action {
     Navigate(String),
+    /// Leer una carpeta antes de entrar (el mouse se detuvo sobre ella): al entrar ya está lista.
+    Prefetch(String),
     NewTab(Option<String>),
     CloseTab(usize),
     SwitchTab(usize),
