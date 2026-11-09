@@ -118,6 +118,10 @@ pub struct App {
     admin: Option<(String, crate::admin::AdminOp)>,
     /// Lo que quedó sin hacer por permisos en otro hilo (p. ej. al borrar).
     admin_report: Arc<Mutex<Option<crate::admin::AdminOp>>>,
+    /// Última carpeta registrada en las recientes (para la paleta).
+    last_dir: String,
+    /// Secuencia de teclas en curso para los atajos propios (combinaciones, cuándo la última).
+    key_seq: (Vec<String>, f64),
     /// Selección para la que se lee por adelantado el menú de Windows: (rutas, desde cuándo, pedido).
     menu_prefetch: (Vec<String>, f64, bool),
     /// "¿Borrar para siempre?": lo que espera confirmación.
@@ -371,6 +375,8 @@ impl App {
             admin: None,
             admin_report: Default::default(),
             menu_prefetch: (Vec::new(), 0.0, false),
+            last_dir: String::new(),
+            key_seq: (Vec::new(), 0.0),
             confirm_delete: None,
             deleting: Vec::new(),
             admin_watch: Vec::new(),
@@ -664,6 +670,7 @@ impl App {
         if self.palette.open || self.batch.is_some() || self.pattern.is_some() || self.hash.is_some() || self.locks.is_some() || self.default_dlg.is_some() || self.lang_dlg.is_some() || self.admin.is_some() || self.confirm_delete.is_some() || self.first_run || egui::Popup::is_any_open(ctx) || chrome::overlay_open(ctx) {
             return;
         }
+        self.user_shortcuts(ctx, actions);
         let typing = ctx.egui_wants_keyboard_input() || self.rename.is_some();
         let consume = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
         let ctrl = Modifiers::CTRL;
@@ -1220,6 +1227,46 @@ impl App {
             Action::TransferCancel(id) => self.xfer.cancel(id),
             Action::TransferResolve(id, c, all) => self.xfer.resolve(id, c, all),
             Action::OpenPalette => self.palette.show(),
+            Action::SaveWorkspace(name) => {
+                self.save_cfg();
+                let w = super::config::Workspace {
+                    name: name.clone(),
+                    tabs: self.cfg.tabs.clone(),
+                    active_tab: self.cfg.active_tab,
+                    tabs_right: self.cfg.tabs_right.clone(),
+                    active_right: self.cfg.active_right,
+                    split: self.cfg.split,
+                };
+                self.cfg.workspaces.retain(|x| !x.name.eq_ignore_ascii_case(&name));
+                self.cfg.workspaces.push(w);
+                self.save_cfg();
+                self.toast(ctx, tf!("app.espacio_guardado", nombre = name));
+            }
+            Action::OpenWorkspace(name) => {
+                if let Some(w) = self.cfg.workspaces.iter().find(|w| w.name == name).cloned() {
+                    self.open_workspace(&w);
+                    self.toast(ctx, tf!("app.espacio_abierto", nombre = name));
+                }
+            }
+            Action::DeleteWorkspace(name) => {
+                self.cfg.workspaces.retain(|w| w.name != name);
+                self.save_cfg();
+                self.toast(ctx, tf!("app.espacio_borrado", nombre = name));
+            }
+            Action::SetAlias(alias, dir) => {
+                self.cfg.aliases.retain(|(a, _)| !a.eq_ignore_ascii_case(&alias));
+                self.cfg.aliases.push((alias.clone(), dir.clone()));
+                self.save_cfg();
+                self.toast(ctx, tf!("app.alias_guardado", alias = alias, carpeta = fsx::file_name(&dir)));
+            }
+            Action::SetShortcut(keys, id) => {
+                // Un atajo es de un solo comando: si ya era de otro, pasa a este.
+                self.cfg.shortcuts.retain(|(k, c)| *c != id && *k != keys);
+                self.cfg.shortcuts.push((keys.clone(), id.clone()));
+                self.save_cfg();
+                let label = super::commands::get(super::commands::ALL.iter().find(|c| c.id == id).map_or("open", |c| c.id)).label();
+                self.toast(ctx, tf!("app.atajo_guardado", teclas = super::commands::keys_label(&keys), comando = label));
+            }
             Action::ToggleFlat => {
                 let on = !self.tabs[self.cur].flat;
                 if on && self.cfg.view == ViewMode::Columns {
@@ -2295,6 +2342,95 @@ impl App {
             }
             !done
         });
+    }
+
+    /// Reemplaza las pestañas por las de un espacio de trabajo.
+    fn open_workspace(&mut self, w: &super::config::Workspace) {
+        let home = self.places.first().map(|p| p.path.clone()).unwrap_or_else(|| "C:\\".into());
+        let mut tabs: Vec<Tab> = Vec::new();
+        let mut pane = [0usize; 2];
+        for (p, (list, active)) in [(&w.tabs, w.active_tab), (&w.tabs_right, w.active_right)].into_iter().enumerate() {
+            let first = tabs.len();
+            for path in list {
+                if fsx::probe_dir(path, 250) != Some(false) {
+                    let mut t = Tab::new(self.next_id, path);
+                    t.pane = p as u8;
+                    tabs.push(t);
+                    self.next_id += 1;
+                }
+            }
+            if tabs.len() == first {
+                let mut t = Tab::new(self.next_id, &home);
+                t.pane = p as u8;
+                tabs.push(t);
+                self.next_id += 1;
+            }
+            pane[p] = first + active.min(tabs.len() - first - 1);
+        }
+        self.rename = None;
+        self.menu = None;
+        self.tabs = tabs;
+        self.pane = pane;
+        self.cur = pane[0];
+        self.focus = 0;
+        self.cfg.split = w.split;
+        self.save_cfg();
+    }
+
+    /// Registra la carpeta actual en las recientes (para "ir a" desde la paleta).
+    fn track_recent(&mut self) {
+        let tab = &self.tabs[self.cur];
+        if tab.tool.is_some() || tab.search.active() {
+            return;
+        }
+        let p = tab.path().to_string();
+        if p == self.last_dir || p.is_empty() {
+            return;
+        }
+        self.last_dir = p.clone();
+        let r = &mut self.cfg.recent_dirs;
+        r.retain(|d| !d.eq_ignore_ascii_case(&p));
+        r.insert(0, p);
+        r.truncate(60);
+    }
+
+    /// Atajos propios (Ctrl+K → "Asignar atajo"), también en secuencia ("Ctrl+K D"): si lo
+    /// apretado hasta ahora empieza un atajo, la tecla se queda para él.
+    fn user_shortcuts(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if self.cfg.shortcuts.is_empty() {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        if now - self.key_seq.1 > 1.2 {
+            self.key_seq.0.clear();
+        }
+        let pressed: Vec<(Key, Modifiers)> = ctx.input(|i| i.events.iter().filter_map(|e| if let egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } = e { Some((*key, *modifiers)) } else { None }).collect());
+        for (k, m) in pressed {
+            let mut seq = self.key_seq.0.clone();
+            seq.push(super::commands::chord(k, m));
+            let typed = seq.join(" ");
+            let exact = self.cfg.shortcuts.iter().find(|(keys, _)| *keys == typed).map(|(_, id)| id.clone());
+            let prefix = self.cfg.shortcuts.iter().any(|(keys, _)| keys.starts_with(&format!("{typed} ")));
+            if exact.is_none() && !prefix {
+                self.key_seq.0.clear();
+                continue;
+            }
+            // La tecla es del atajo: que no la use nada más.
+            ctx.input_mut(|i| i.consume_key(m, k));
+            if let Some(id) = exact {
+                self.key_seq.0.clear();
+                if let Some(c) = super::commands::ALL.iter().find(|c| c.id == id) {
+                    let t = self.target();
+                    if c.id == "save_workspace" || c.id == "add_alias" || c.id == "assign_shortcut" {
+                        actions.push(Action::OpenPalette);
+                    } else if super::commands::available(c, &t) {
+                        actions.push(Action::Command(c.id, t));
+                    }
+                }
+            } else {
+                self.key_seq = (seq, now);
+            }
+        }
     }
 
     /// Con la selección quieta un momento, el menú de Windows (las opciones de otras apps) se lee
@@ -3433,7 +3569,12 @@ impl eframe::App for App {
 
         // ---- paleta de comandos y renombrado en lote
         let target = self.target();
-        self.palette.ui(&ctx, &t, &target, &mut actions);
+        {
+            let c = &self.cfg;
+            let data = super::commands::PaletteData { workspaces: &c.workspaces, recent: &c.recent_dirs, aliases: &c.aliases, shortcuts: &c.shortcuts };
+            self.palette.ui(&ctx, &t, &target, &data, &mut actions);
+        }
+        self.track_recent();
         let outcome = self.batch.as_mut().map(|b| (b.ui(&ctx, &t), b.dir.clone()));
         match outcome {
             None | Some((super::tools::Outcome::Open, _)) => {}

@@ -28,6 +28,18 @@ pub struct FavGroup {
     pub collapsed: bool,
 }
 
+/// Un espacio de trabajo: las pestañas de los dos paneles, guardadas con un nombre.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct Workspace {
+    pub name: String,
+    pub tabs: Vec<String>,
+    pub active_tab: usize,
+    pub tabs_right: Vec<String>,
+    pub active_right: usize,
+    pub split: bool,
+}
+
 /// Anchos de columnas que se ajustan arrastrando su borde.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -95,6 +107,14 @@ pub struct Config {
     pub lang: Option<String>,
     pub columns: ColumnWidths,
     pub tags_collapsed: bool,
+    /// Espacios de trabajo guardados (Ctrl+K → "Guardar espacio de trabajo").
+    pub workspaces: Vec<Workspace>,
+    /// Carpetas visitadas, de la más reciente a la más vieja (para ir rápido desde la paleta).
+    pub recent_dirs: Vec<String>,
+    /// Alias escritos en la paleta → carpeta.
+    pub aliases: Vec<(String, String)>,
+    /// Atajos propios: teclas ("Ctrl+Shift+D", o una secuencia "Ctrl+K D") → comando.
+    pub shortcuts: Vec<(String, String)>,
 }
 
 fn spanish_before_languages() -> Option<String> {
@@ -132,6 +152,10 @@ impl Default for Config {
             lang: None,
             columns: ColumnWidths::DEFAULT,
             tags_collapsed: false,
+            workspaces: Vec::new(),
+            recent_dirs: Vec::new(),
+            aliases: Vec::new(),
+            shortcuts: Vec::new(),
         }
     }
 }

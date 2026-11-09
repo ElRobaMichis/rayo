@@ -128,6 +128,9 @@ pub const ALL: &[Command] = &[
     cmd!("terminal", ic::TERMINAL, "", Nothing),
     cmd!("explorer", ic::FOLDER_OPEN, "", Nothing),
     cmd!("favorite", ic::STAR, "", Nothing),
+    cmd!("save_workspace", ic::BOOKMARKS, "", Nothing),
+    cmd!("add_alias", ic::AT, "", Nothing),
+    cmd!("assign_shortcut", ic::KEYBOARD, "", Nothing),
     // Vista
     cmd!("view_columns", ic::COLUMNS, "Ctrl+1", Nothing),
     cmd!("view_details", ic::LIST_BULLETS, "Ctrl+2", Nothing),
@@ -220,12 +223,71 @@ fn score(c: &Command, query: &str) -> Option<i32> {
     Some(s)
 }
 
+/// Lo que la paleta necesita de la configuración para sus entradas dinámicas.
+pub struct PaletteData<'a> {
+    pub workspaces: &'a [super::config::Workspace],
+    pub recent: &'a [String],
+    pub aliases: &'a [(String, String)],
+    pub shortcuts: &'a [(String, String)],
+}
+
+/// Qué está pidiendo la paleta.
+#[derive(Default, Clone, PartialEq)]
+pub enum Mode {
+    /// Buscar y ejecutar (comandos, espacios de trabajo, carpetas recientes, alias).
+    #[default]
+    Commands,
+    /// Nombre para guardar las pestañas como espacio de trabajo.
+    SaveWorkspace,
+    /// Alias para la carpeta actual.
+    AddAlias,
+    /// Elegir a qué comando asignarle un atajo.
+    PickCommand,
+    /// Grabando el atajo de este comando: las combinaciones apretadas y cuándo la última.
+    Record(&'static str, Vec<String>, f64),
+}
+
 #[derive(Default)]
 pub struct Palette {
     pub open: bool,
     pub text: String,
     pub cursor: usize,
     pub first_frame: bool,
+    pub mode: Mode,
+}
+
+/// Una fila de la paleta.
+enum Entry<'a> {
+    Cmd(&'static Command),
+    Go(String),
+    Workspace(&'a str),
+    Alias(&'a str, &'a str),
+}
+
+/// El atajo de un comando: el propio del usuario si lo asignó, si no el de siempre.
+pub fn shortcut_of(id: &str, shortcuts: &[(String, String)]) -> String {
+    shortcuts.iter().find(|(_, c)| c == id).map(|(k, _)| keys_label(k)).unwrap_or_else(|| get(id).keys())
+}
+
+/// La combinación de una tecla apretada ("Ctrl+Shift+D"); None si es solo un modificador.
+pub fn chord(key: Key, m: Modifiers) -> String {
+    let mut parts = Vec::new();
+    if m.ctrl || m.command {
+        parts.push("Ctrl");
+    }
+    if m.alt {
+        parts.push("Alt");
+    }
+    if m.shift {
+        parts.push("Shift");
+    }
+    let name = key.name();
+    let mut s = parts.join("+");
+    if !s.is_empty() {
+        s.push('+');
+    }
+    s.push_str(name);
+    s
 }
 
 impl Palette {
@@ -234,19 +296,74 @@ impl Palette {
         self.text.clear();
         self.cursor = 0;
         self.first_frame = true;
+        self.mode = Mode::Commands;
+    }
+
+    fn enter_mode(&mut self, mode: Mode) {
+        self.mode = mode;
+        self.text.clear();
+        self.cursor = 0;
+        self.first_frame = true;
     }
 
     /// Dibuja la paleta; empuja la acción elegida.
-    pub fn ui(&mut self, ctx: &egui::Context, theme: &Theme, target: &Target, actions: &mut Vec<Action>) {
+    pub fn ui(&mut self, ctx: &egui::Context, theme: &Theme, target: &Target, data: &PaletteData, actions: &mut Vec<Action>) {
         if !self.open {
             return;
         }
-        let query = search_key(self.text.trim());
-        // "C:\algo": ofrecer ir directo a esa ruta.
-        let path_like = self.text.trim().len() > 2 && self.text.trim().as_bytes().get(1) == Some(&b':');
-        let mut list: Vec<(&Command, i32)> = ALL.iter().filter(|c| available(c, target)).filter_map(|c| score(c, &query).map(|s| (c, s))).collect();
-        list.sort_by(|a, b| b.1.cmp(&a.1));
-        let total = list.len() + usize::from(path_like);
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.open = false;
+            return;
+        }
+        // Grabando un atajo: no hay texto, se leen las teclas.
+        if let Mode::Record(id, chords, last) = self.mode.clone() {
+            return self.record_ui(ctx, theme, id, chords, last, actions);
+        }
+        let raw = self.text.trim().to_string();
+        let query = search_key(&raw);
+        let mut entries: Vec<(Entry, i32)> = Vec::new();
+        match &self.mode {
+            Mode::Commands => {
+                // "C:\algo" o "\\servidor\algo": ofrecer ir directo a esa ruta.
+                if raw.len() > 2 && (raw.as_bytes().get(1) == Some(&b':') || raw.starts_with(r"\\")) {
+                    entries.push((Entry::Go(raw.trim_matches('"').to_string()), 1000));
+                }
+                // Un alias escrito tal cual va primero.
+                for (a, dir) in data.aliases {
+                    let k = search_key(a);
+                    if !query.is_empty() && k == query {
+                        entries.push((Entry::Alias(a, dir), 900));
+                    } else if !query.is_empty() && k.starts_with(&query) {
+                        entries.push((Entry::Alias(a, dir), 60));
+                    }
+                }
+                for w in data.workspaces {
+                    if let Some(sc) = score_text(&w.name, t!("paleta.espacio_de_trabajo"), &query) {
+                        entries.push((Entry::Workspace(&w.name), sc + 1));
+                    }
+                }
+                entries.extend(ALL.iter().filter(|c| available(c, target)).filter_map(|c| score(c, &query).map(|s| (Entry::Cmd(c), s))));
+                // Carpetas recientes ("GoTo"): con algo escrito, las que coinciden; sin nada, las primeras.
+                let mut n = 0;
+                for (rank, d) in data.recent.iter().enumerate() {
+                    let name = crate::fsx::file_name(d);
+                    let hit = if query.is_empty() { (rank < 6).then_some(0) } else { score_text(&name, d, &query) };
+                    if let Some(sc) = hit {
+                        entries.push((Entry::Go(d.clone()), sc - 2 - rank as i32 / 4));
+                        n += 1;
+                        if n >= 8 {
+                            break;
+                        }
+                    }
+                }
+            }
+            Mode::PickCommand => {
+                entries.extend(ALL.iter().filter_map(|c| score(c, &query).map(|s| (Entry::Cmd(c), s))));
+            }
+            Mode::SaveWorkspace | Mode::AddAlias | Mode::Record(..) => {}
+        }
+        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        let total = entries.len();
         let mut moved = false;
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) && total > 0 {
             self.cursor = (self.cursor + 1).min(total - 1);
@@ -258,16 +375,21 @@ impl Palette {
         }
         self.cursor = self.cursor.min(total.saturating_sub(1));
         let enter = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            self.open = false;
-            return;
-        }
+        // Supr sobre un espacio de trabajo: borrarlo.
+        let del = self.mode == Mode::Commands && matches!(entries.get(self.cursor), Some((Entry::Workspace(_), _))) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete));
         let mut run: Option<Action> = None;
+        let mut next_mode: Option<Mode> = None;
+        let (icon, hint) = match &self.mode {
+            Mode::SaveWorkspace => (ic::BOOKMARKS, t!("paleta.nombre_espacio").to_string()),
+            Mode::AddAlias => (ic::AT, tf!("paleta.alias_para", carpeta = crate::fsx::file_name(&target.dir))),
+            Mode::PickCommand => (ic::KEYBOARD, t!("paleta.elige_comando_atajo").to_string()),
+            _ => (if entries.first().is_some_and(|e| matches!(e.0, Entry::Go(_))) && !raw.is_empty() { ic::FOLDER_OPEN } else { ic::COMMAND }, t!("paleta.escribe").to_string()),
+        };
         let screen = ctx.content_rect();
         let area = egui::Area::new(Id::new("palette")).order(egui::Order::Foreground).fixed_pos(pos2(screen.center().x - 280.0, screen.top() + 90.0)).show(ctx, |ui| {
             egui::Frame::new().fill(theme.chrome).stroke(egui::Stroke::new(1.0, theme.border)).corner_radius(12).inner_margin(10).shadow(ui.visuals().popup_shadow).show(ui, |ui| {
                 ui.set_width(560.0);
-                let mut f = super::widgets::Field::new("palette-text", if path_like { ic::FOLDER_OPEN } else { ic::COMMAND }, t!("paleta.escribe"));
+                let mut f = super::widgets::Field::new("palette-text", icon, &hint);
                 f.height = 42.0;
                 let r = super::widgets::field(ui, theme, &mut self.text, f).edit;
                 if self.first_frame {
@@ -277,26 +399,48 @@ impl Palette {
                 if r.changed() {
                     self.cursor = 0;
                 }
-                ui.add_space(6.0);
-                let mut k = 0usize;
-                if path_like {
-                    let label = format!("{}  {}", ic::FOLDER_OPEN, tf!("paleta.ir_a", ruta = self.text.trim()));
-                    if row(ui, theme, &label, "", k == self.cursor).clicked() || (enter && k == self.cursor) {
-                        run = Some(Action::Navigate(self.text.trim().trim_matches('"').to_string()));
+                match self.mode {
+                    Mode::SaveWorkspace | Mode::AddAlias => {
+                        ui.add_space(6.0);
+                        let what = if self.mode == Mode::SaveWorkspace { t!("paleta.enter_guarda_espacio") } else { t!("paleta.enter_guarda_alias") };
+                        ui.label(egui::RichText::new(what).size(12.0).color(theme.faint));
+                        if enter && !raw.is_empty() {
+                            run = Some(if self.mode == Mode::SaveWorkspace { Action::SaveWorkspace(raw.clone()) } else { Action::SetAlias(raw.clone(), target.dir.clone()) });
+                        }
+                        return;
                     }
-                    k += 1;
+                    _ => {}
                 }
+                ui.add_space(6.0);
                 egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
-                    for (c, _) in &list {
-                        let label = format!("{}  {}", c.icon, c.label());
-                        let resp = row(ui, theme, &label, &c.keys(), k == self.cursor);
+                    for (k, (e, _)) in entries.iter().enumerate() {
+                        let (label, keys) = match e {
+                            Entry::Cmd(c) => (format!("{}  {}", c.icon, c.label()), shortcut_of(c.id, data.shortcuts)),
+                            Entry::Go(d) => (format!("{}  {}", ic::FOLDER_OPEN, tf!("paleta.ir_a", ruta = d)), String::new()),
+                            Entry::Workspace(n) => (format!("{}  {}", ic::BOOKMARKS, tf!("paleta.abrir_espacio", nombre = n)), t!("paleta.supr_borra").to_string()),
+                            Entry::Alias(a, d) => (format!("{}  {a}  →  {}", ic::AT, d), String::new()),
+                        };
+                        let resp = row(ui, theme, &label, &keys, k == self.cursor);
                         if moved && k == self.cursor {
                             resp.scroll_to_me(None);
                         }
                         if resp.clicked() || (enter && k == self.cursor) {
-                            run = Some(Action::Command(c.id, target.clone()));
+                            match e {
+                                Entry::Cmd(c) if self.mode == Mode::PickCommand => next_mode = Some(Mode::Record(c.id, Vec::new(), 0.0)),
+                                Entry::Cmd(c) if c.id == "save_workspace" => next_mode = Some(Mode::SaveWorkspace),
+                                Entry::Cmd(c) if c.id == "add_alias" => next_mode = Some(Mode::AddAlias),
+                                Entry::Cmd(c) if c.id == "assign_shortcut" => next_mode = Some(Mode::PickCommand),
+                                Entry::Cmd(c) => run = Some(Action::Command(c.id, target.clone())),
+                                Entry::Go(d) => run = Some(Action::Navigate(d.clone())),
+                                Entry::Workspace(n) => run = Some(Action::OpenWorkspace(n.to_string())),
+                                Entry::Alias(_, d) => run = Some(Action::Navigate(d.to_string())),
+                            }
                         }
-                        k += 1;
+                        if del && k == self.cursor {
+                            if let Entry::Workspace(n) = e {
+                                run = Some(Action::DeleteWorkspace(n.to_string()));
+                            }
+                        }
                     }
                 });
                 if total == 0 {
@@ -305,9 +449,17 @@ impl Palette {
             });
         });
         let inside = area.response.rect;
+        if let Some(m) = next_mode {
+            self.enter_mode(m);
+            return;
+        }
         if let Some(a) = run {
+            // Borrar un espacio no cierra la paleta (para seguir eligiendo).
+            let keep = matches!(a, Action::DeleteWorkspace(_));
             actions.push(a);
-            self.open = false;
+            if !keep {
+                self.open = false;
+            }
         }
         // Clic fuera: cerrar.
         let outside = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !inside.contains(p)));
@@ -315,6 +467,85 @@ impl Palette {
             self.open = false;
         }
     }
+
+    /// Grabar un atajo: cada combinación apretada se suma (hasta 3, para secuencias como
+    /// "Ctrl+K D"); se guarda al dejar de apretar un momento o con Enter.
+    fn record_ui(&mut self, ctx: &egui::Context, theme: &Theme, id: &'static str, mut chords: Vec<String>, mut last: f64, actions: &mut Vec<Action>) {
+        let now = ctx.input(|i| i.time);
+        let pressed: Vec<(Key, Modifiers)> = ctx.input_mut(|i| {
+            let mut v = Vec::new();
+            i.events.retain(|e| match e {
+                egui::Event::Key { key, pressed: true, modifiers, repeat: false, .. } => {
+                    v.push((*key, *modifiers));
+                    false
+                }
+                egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_) => false,
+                _ => true,
+            });
+            v
+        });
+        let mut save = false;
+        for (k, m) in pressed {
+            if k == Key::Enter && m.is_none() {
+                save = !chords.is_empty();
+                continue;
+            }
+            if k == Key::Backspace && m.is_none() {
+                chords.clear();
+                continue;
+            }
+            if chords.len() < 3 {
+                chords.push(chord(k, m));
+                last = now;
+            }
+        }
+        if !chords.is_empty() && now - last > 1.2 {
+            save = true;
+        }
+        if save {
+            actions.push(Action::SetShortcut(chords.join(" "), id.to_string()));
+            self.open = false;
+            return;
+        }
+        if !chords.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        self.mode = Mode::Record(id, chords.clone(), last);
+        let screen = ctx.content_rect();
+        egui::Area::new(Id::new("palette")).order(egui::Order::Foreground).fixed_pos(pos2(screen.center().x - 280.0, screen.top() + 90.0)).show(ctx, |ui| {
+            egui::Frame::new().fill(theme.chrome).stroke(egui::Stroke::new(1.0, theme.border)).corner_radius(12).inner_margin(16).shadow(ui.visuals().popup_shadow).show(ui, |ui| {
+                ui.set_width(548.0);
+                ui.label(egui::RichText::new(format!("{}  {}", ic::KEYBOARD, tf!("paleta.presiona_atajo", comando = get(id).label()))).size(15.0).color(theme.text));
+                ui.add_space(10.0);
+                let shown = if chords.is_empty() { t!("paleta.esperando_teclas").to_string() } else { keys_label(&chords.join(" ")) };
+                ui.label(egui::RichText::new(shown).font(super::theme::semibold(20.0)).color(if chords.is_empty() { theme.faint } else { theme.accent }));
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(t!("paleta.ayuda_atajo")).size(12.0).color(theme.faint));
+            });
+        });
+    }
+}
+
+/// Puntaje de un texto (nombre y palabras extra) para lo escrito.
+fn score_text(name: &str, extra: &str, query: &str) -> Option<i32> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let label = search_key(name);
+    let words = search_key(extra);
+    let mut s = 0;
+    for q in query.split_whitespace() {
+        if label.starts_with(q) {
+            s += 25;
+        } else if label.contains(q) {
+            s += 12;
+        } else if words.contains(q) {
+            s += 4;
+        } else {
+            return None;
+        }
+    }
+    Some(s)
 }
 
 fn row(ui: &mut egui::Ui, t: &Theme, label: &str, keys: &str, selected: bool) -> egui::Response {

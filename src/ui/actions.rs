@@ -83,6 +83,14 @@ pub enum Action {
     Command(&'static str, super::commands::Target),
     /// Pide abrir la paleta de comandos.
     OpenPalette,
+    /// Guardar las pestañas de ahora como espacio de trabajo (con este nombre).
+    SaveWorkspace(String),
+    OpenWorkspace(String),
+    DeleteWorkspace(String),
+    /// Alias (lo que se escribe en la paleta) → carpeta.
+    SetAlias(String, String),
+    /// Atajo propio (teclas, comando).
+    SetShortcut(String, String),
     /// Abrir una carpeta en el panel de enfrente.
     OpenOther(String),
     /// Pestaña de la papelera.

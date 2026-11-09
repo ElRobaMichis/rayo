@@ -119,7 +119,9 @@ fn main() -> eframe::Result {
             .with_app_id("rayo")
             .with_inner_size([1320.0, 820.0])
             .with_min_inner_size([760.0, 440.0])
-            .with_icon(icon()),
+            .with_icon(icon())
+            // Para pruebas automáticas: abrir sin quitarle el foco a lo que la persona está usando.
+            .with_active(std::env::var_os("RAYO_NO_ACTIVATE").is_none()),
         centered: true,
         ..Default::default()
     };

@@ -701,3 +701,25 @@ copia.borrando,Borrando {que},,{que} = «nombre» o «N elementos»
 app.borrar_para_siempre,¿Borrar para siempre?,,
 app.borrar_para_siempre_detalle,{que} se borrará sin pasar por la papelera. No se puede deshacer.,,{que} = «nombre» o «N elementos»
 previa.calculando,· calculando…,,Se agrega después de un tamaño que todavía se está sumando
+cmd.save_workspace,Guardar espacio de trabajo…,,
+cmd.save_workspace.buscar,pestañas sesión workspace guardar conjunto,,
+cmd.add_alias,Crear alias para esta carpeta…,,
+cmd.add_alias.buscar,atajo nombre corto ir carpeta alias,,
+cmd.assign_shortcut,Asignar atajo de teclado…,,
+cmd.assign_shortcut.buscar,tecla combinación secuencia shortcut atajo,,
+paleta.espacio_de_trabajo,espacio de trabajo pestañas,,
+paleta.nombre_espacio,Nombre del espacio de trabajo,,
+paleta.alias_para,Alias para «{carpeta}» (lo que escribirás en Ctrl+K),,{carpeta} = el nombre de una carpeta
+paleta.elige_comando_atajo,¿A qué comando le asignas un atajo?,,
+paleta.enter_guarda_espacio,Enter guarda las pestañas de ambos paneles con este nombre.,,
+paleta.enter_guarda_alias,Enter guarda el alias. Escríbelo en Ctrl+K para ir a esta carpeta.,,
+paleta.abrir_espacio,Abrir espacio de trabajo «{nombre}»,,{nombre} = el nombre de un espacio de trabajo
+paleta.supr_borra,Supr borra,,
+paleta.presiona_atajo,Presiona las teclas para «{comando}»,,{comando} = el nombre de un comando
+paleta.esperando_teclas,Esperando teclas…,,
+paleta.ayuda_atajo,Puede ser una combinación (Ctrl+Mayús+D) o una secuencia de hasta 3 (Ctrl+K y luego D). Se guarda al soltar un momento o con Enter · Retroceso borra · Esc cancela.,,
+app.espacio_guardado,Espacio de trabajo «{nombre}» guardado,,{nombre} = el nombre de un espacio de trabajo
+app.espacio_abierto,Espacio de trabajo «{nombre}»,,{nombre} = el nombre de un espacio de trabajo
+app.espacio_borrado,Espacio de trabajo «{nombre}» borrado,,{nombre} = el nombre de un espacio de trabajo
+app.alias_guardado,Alias «{alias}» → {carpeta},,{alias} = lo que se escribe; {carpeta} = el nombre de una carpeta
+app.atajo_guardado,{teclas} → {comando},,{teclas} = un atajo de teclado; {comando} = el nombre de un comando

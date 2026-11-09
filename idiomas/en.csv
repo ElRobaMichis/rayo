@@ -707,3 +707,25 @@ copia.borrando,Deleting {que},Borrando {que},{que} = «nombre» o «N elementos�
 app.borrar_para_siempre,Delete permanently?,¿Borrar para siempre?,
 app.borrar_para_siempre_detalle,{que} will be deleted without going to the Recycle Bin. This can't be undone.,{que} se borrará sin pasar por la papelera. No se puede deshacer.,{que} = «nombre» o «N elementos»
 previa.calculando,· calculating…,· calculando…,Se agrega después de un tamaño que todavía se está sumando
+cmd.save_workspace,Save workspace…,Guardar espacio de trabajo…,
+cmd.save_workspace.buscar,tabs session workspace save set,pestañas sesión workspace guardar conjunto,
+cmd.add_alias,Create alias for this folder…,Crear alias para esta carpeta…,
+cmd.add_alias.buscar,shortcut short name go folder alias,atajo nombre corto ir carpeta alias,
+cmd.assign_shortcut,Assign keyboard shortcut…,Asignar atajo de teclado…,
+cmd.assign_shortcut.buscar,key combination sequence shortcut hotkey,tecla combinación secuencia shortcut atajo,
+paleta.espacio_de_trabajo,workspace tabs,espacio de trabajo pestañas,
+paleta.nombre_espacio,Workspace name,Nombre del espacio de trabajo,
+paleta.alias_para,Alias for “{carpeta}” (what you'll type in Ctrl+K),Alias para «{carpeta}» (lo que escribirás en Ctrl+K),{carpeta} = el nombre de una carpeta
+paleta.elige_comando_atajo,Which command gets a shortcut?,¿A qué comando le asignas un atajo?,
+paleta.enter_guarda_espacio,Enter saves the tabs of both panes under this name.,Enter guarda las pestañas de ambos paneles con este nombre.,
+paleta.enter_guarda_alias,Enter saves the alias. Type it in Ctrl+K to go to this folder.,Enter guarda el alias. Escríbelo en Ctrl+K para ir a esta carpeta.,
+paleta.abrir_espacio,Open workspace “{nombre}”,Abrir espacio de trabajo «{nombre}»,{nombre} = el nombre de un espacio de trabajo
+paleta.supr_borra,Del deletes,Supr borra,
+paleta.presiona_atajo,Press the keys for “{comando}”,Presiona las teclas para «{comando}»,{comando} = el nombre de un comando
+paleta.esperando_teclas,Waiting for keys…,Esperando teclas…,
+paleta.ayuda_atajo,A combination (Ctrl+Shift+D) or a sequence of up to 3 (Ctrl+K then D). Saved after a short pause or with Enter · Backspace clears · Esc cancels.,Puede ser una combinación (Ctrl+Mayús+D) o una secuencia de hasta 3 (Ctrl+K y luego D). Se guarda al soltar un momento o con Enter · Retroceso borra · Esc cancela.,
+app.espacio_guardado,Workspace “{nombre}” saved,Espacio de trabajo «{nombre}» guardado,{nombre} = el nombre de un espacio de trabajo
+app.espacio_abierto,Workspace “{nombre}”,Espacio de trabajo «{nombre}»,{nombre} = el nombre de un espacio de trabajo
+app.espacio_borrado,Workspace “{nombre}” deleted,Espacio de trabajo «{nombre}» borrado,{nombre} = el nombre de un espacio de trabajo
+app.alias_guardado,Alias “{alias}” → {carpeta},Alias «{alias}» → {carpeta},{alias} = lo que se escribe; {carpeta} = el nombre de una carpeta
+app.atajo_guardado,{teclas} → {comando},{teclas} → {comando},{teclas} = un atajo de teclado; {comando} = el nombre de un comando
