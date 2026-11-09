@@ -444,7 +444,7 @@ pub const ICON_PREFIX: &str = "\u{1}icono:";
 /// Carga una imagen: página de PDF, foto o miniatura del shell (o el ícono, con `ICON_PREFIX`).
 fn load(key: &ThumbKey) -> Option<Rgba> {
     if let Some(path) = key.path.strip_prefix(ICON_PREFIX) {
-        return shell_image(path, key.size as i32, true);
+        return system_icon(path, key.size).or_else(|| shell_image(path, key.size as i32, true));
     }
     // "C:\\doc.pdf|3" = página 3 de un PDF.
     let (path, page) = match key.path.rsplit_once(super::pdf::PAGE_SEP) {
@@ -601,3 +601,51 @@ mod icon_tests {
         assert!(zip.is_some(), "ícono de un .zip");
     }
 }
+
+/// El ícono como lo muestra el Explorador: el de la lista de imágenes del sistema, que trae
+/// cada tamaño estándar (16, 32, 48, 256) dibujado a mano en vez de reducido de uno grande.
+/// Devuelve el de la lista más cercana por arriba a `size`.
+pub fn system_icon(path: &str, size: u32) -> Option<Rgba> {
+    use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
+    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, GetSystemMetrics, ICONINFO, SM_CXSMICON};
+    unsafe {
+        let w = wide(path);
+        let mut sfi = SHFILEINFOW::default();
+        if SHGetFileInfoW(PCWSTR(w.as_ptr()), Default::default(), Some(&mut sfi), std::mem::size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX) == 0 {
+            return None;
+        }
+        let small = GetSystemMetrics(SM_CXSMICON).max(16) as u32;
+        let list = if size <= small {
+            SHIL_SMALL
+        } else if size <= 32 {
+            SHIL_LARGE
+        } else if size <= 48 {
+            SHIL_EXTRALARGE
+        } else {
+            SHIL_JUMBO
+        };
+        let il: IImageList = SHGetImageList(list as i32).ok()?;
+        let hicon = il.GetIcon(sfi.iIcon, ILD_TRANSPARENT.0).ok()?;
+        let mut ii = ICONINFO::default();
+        let got = GetIconInfo(hicon, &mut ii).is_ok();
+        let _ = DestroyIcon(hicon);
+        if !got {
+            return None;
+        }
+        let color = bitmap_pixels(ii.hbmColor);
+        let mask = bitmap_pixels(ii.hbmMask);
+        let _ = DeleteObject(ii.hbmColor.into());
+        let _ = DeleteObject(ii.hbmMask.into());
+        let mut img = color?;
+        // Los íconos de 32 bits traen transparencia propia (sin premultiplicar); los viejos, una máscara.
+        if img.premultiplied {
+            img.premultiplied = false;
+        } else if let Some(m) = mask.filter(|m| m.w == img.w && m.h >= img.h) {
+            for (p, q) in img.px.chunks_exact_mut(4).zip(m.px.chunks_exact(4)) {
+                p[3] = if q[0] > 127 { 0 } else { 255 };
+            }
+        }
+        Some(img)
+    }
+}
+
