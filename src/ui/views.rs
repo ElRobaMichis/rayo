@@ -365,6 +365,11 @@ fn background_click(cx: &mut Cx, bg: &egui::Response, ci: usize) {
     }
 }
 
+/// Lo que se muestra mientras se lee una carpeta: en la red puede tardar (servidor dormido, VPN).
+fn loading_text(dir: &str) -> &'static str {
+    if fsx::is_remote(dir) { t!("lista.esperando_servidor") } else { t!("lista.cargando") }
+}
+
 fn empty_message(ui: &mut Ui, t: &Theme, text: &str) {
     ui.add_space(18.0);
     ui.vertical_centered(|ui| {
@@ -798,7 +803,7 @@ pub fn column(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, active: bool, 
     }
     if data.entries.is_empty() {
         if data.loading {
-            empty_message(ui, cx.t, t!("lista.cargando"));
+            empty_message(ui, cx.t, loading_text(&dir));
         } else {
             empty_message(ui, cx.t, t!("lista.carpeta_vacia"));
         }
@@ -940,7 +945,7 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
         return;
     }
     if data.entries.is_empty() {
-        empty_message(ui, &t, if data.loading { t!("lista.cargando") } else { t!("lista.carpeta_vacia") });
+        empty_message(ui, &t, if data.loading { loading_text(&dir) } else { t!("lista.carpeta_vacia") });
         return;
     }
     let scroll_to = scroll_target(col, data.entries, data.loading);
@@ -1223,7 +1228,7 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
         return;
     }
     if data.entries.is_empty() {
-        empty_message(ui, &t, if data.loading { t!("lista.cargando") } else { t!("lista.carpeta_vacia") });
+        empty_message(ui, &t, if data.loading { loading_text(&dir) } else { t!("lista.carpeta_vacia") });
         return;
     }
     let n = data.entries.len();

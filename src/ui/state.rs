@@ -31,6 +31,8 @@ pub struct DirCache {
     pub map: HashMap<String, DirState>,
     tx: Sender<String>,
     rx: Receiver<ListResult>,
+    /// Lee una carpeta y entrega el resultado (lo usan los hilos de listado).
+    job: Arc<dyn Fn(String) + Send + Sync>,
     pub frame: u64,
 }
 
@@ -38,39 +40,51 @@ impl DirCache {
     pub fn new(mgr: Arc<IndexManager>, wake: Wake) -> Self {
         let (tx, req_rx) = unbounded::<String>();
         let (res_tx, rx) = unbounded::<ListResult>();
+        let job: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |path: String| {
+            // Vista plana: todos los archivos de la carpeta y sus subcarpetas.
+            if let Some(dir) = path.strip_prefix(fsx::FLAT_KEY) {
+                let r = mgr.files_under(dir, 300_000).map(Ok).unwrap_or_else(|| fsx::list_flat(dir, 300_000));
+                let _ = res_tx.send((path, r));
+                wake();
+                return;
+            }
+            let mut r = fsx::list_dir(&path);
+            if let Ok(list) = &mut r {
+                if list.iter().any(|e| e.is_dir) {
+                    if let Some(sizes) = mgr.child_sizes(&path) {
+                        for e in list.iter_mut().filter(|e| e.is_dir) {
+                            e.dir_size = sizes.get(&e.lower).copied();
+                        }
+                    }
+                }
+            }
+            let _ = res_tx.send((path, r));
+            wake();
+        });
         for i in 0..2 {
             let req_rx = req_rx.clone();
-            let res_tx = res_tx.clone();
-            let mgr = mgr.clone();
-            let wake = wake.clone();
+            let job = job.clone();
             std::thread::Builder::new()
                 .name(format!("listado-{i}"))
                 .spawn(move || {
                     while let Ok(path) = req_rx.recv() {
-                        // Vista plana: todos los archivos de la carpeta y sus subcarpetas.
-                        if let Some(dir) = path.strip_prefix(fsx::FLAT_KEY) {
-                            let r = mgr.files_under(dir, 300_000).map(Ok).unwrap_or_else(|| fsx::list_flat(dir, 300_000));
-                            let _ = res_tx.send((path, r));
-                            wake();
-                            continue;
-                        }
-                        let mut r = fsx::list_dir(&path);
-                        if let Ok(list) = &mut r {
-                            if list.iter().any(|e| e.is_dir) {
-                                if let Some(sizes) = mgr.child_sizes(&path) {
-                                    for e in list.iter_mut().filter(|e| e.is_dir) {
-                                        e.dir_size = sizes.get(&e.lower).copied();
-                                    }
-                                }
-                            }
-                        }
-                        let _ = res_tx.send((path, r));
-                        wake();
+                        job(path);
                     }
                 })
                 .ok();
         }
-        DirCache { map: HashMap::new(), tx, rx, frame: 0 }
+        DirCache { map: HashMap::new(), tx, rx, job, frame: 0 }
+    }
+
+    /// Pide leer una carpeta. Las de red van en un hilo propio: un servidor que no contesta
+    /// (VPN apagada, NAS dormido) puede tardar casi un minuto, y no debe trabar las demás.
+    fn send(&self, path: String) {
+        if fsx::is_remote(path.strip_prefix(fsx::FLAT_KEY).unwrap_or(&path)) {
+            let job = self.job.clone();
+            let _ = std::thread::Builder::new().name("listado-red".into()).spawn(move || job(path));
+        } else {
+            let _ = self.tx.send(path);
+        }
     }
 
     pub fn request(&mut self, path: &str) {
@@ -88,7 +102,7 @@ impl DirCache {
         st.last_used = frame;
         if st.raw.is_none() && !st.loading && st.error.is_none() {
             st.loading = true;
-            let _ = self.tx.send(path.to_string());
+            self.send(path.to_string());
         }
     }
 
@@ -101,7 +115,7 @@ impl DirCache {
             } else {
                 st.loading = true;
                 st.error = None;
-                let _ = self.tx.send(path.to_string());
+                self.send(path.to_string());
             }
         } else {
             self.request(path);
@@ -118,13 +132,14 @@ impl DirCache {
     /// Procesa listados terminados. Devuelve true si llegó algo.
     pub fn poll(&mut self) -> bool {
         let mut any = false;
+        let mut again = Vec::new();
         while let Ok((path, r)) = self.rx.try_recv() {
             any = true;
             if let Some(st) = self.map.get_mut(&path) {
                 // Si cambió mientras tanto, se muestra este y se pide otro (sigue "cargando").
                 st.loading = std::mem::take(&mut st.again);
                 if st.loading {
-                    let _ = self.tx.send(path.clone());
+                    again.push(path.clone());
                 }
                 match r {
                     Ok(list) => {
@@ -143,6 +158,9 @@ impl DirCache {
                     }
                 }
             }
+        }
+        for p in again {
+            self.send(p);
         }
         any
     }

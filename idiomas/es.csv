@@ -572,6 +572,7 @@ lista.ajustar_columna,Arrastra para cambiar el ancho · doble clic: ancho origin
 lista.buscando,Buscando…,,
 lista.cambia_extension,Cambia la extensión: {antes} → {despues},,Al renombrar · {antes} y {despues} = extensiones como «.pdf» o «sin extensión»
 lista.cargando,Cargando…,,
+lista.esperando_servidor,Esperando al servidor…,,
 lista.carpeta_vacia,Carpeta vacía,,
 lista.descarga,Descarga,,Columna Tipo de una descarga que todavía no termina
 lista.descargando,Descargando…,,Junto al nombre de una descarga en curso

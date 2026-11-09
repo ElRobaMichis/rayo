@@ -1,6 +1,7 @@
 //! Índice de archivos de todos los volúmenes NTFS locales.
 
 pub mod cache;
+pub mod dirwatch;
 pub mod everything;
 pub mod mft;
 pub mod search;

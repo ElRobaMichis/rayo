@@ -621,6 +621,24 @@ fn path_suggestions(ctx: &egui::Context, typed: &str) -> Vec<String> {
     let cached: Option<(String, std::sync::Arc<Vec<String>>)> = ctx.data(|d| d.get_temp(key));
     let names = match cached {
         Some((d, n)) if d.eq_ignore_ascii_case(dir) => n,
+        _ if fsx::is_remote(dir) => {
+            // En la red, listar puede tardar (o no contestar nunca): en otro hilo, y las
+            // sugerencias aparecen cuando llegan.
+            ctx.data_mut(|d| d.insert_temp(key, (dir.to_string(), std::sync::Arc::new(Vec::<String>::new()))));
+            let (c, d) = (ctx.clone(), dir.to_string());
+            std::thread::spawn(move || {
+                let n: Vec<String> = fsx::list_dir(&d).map(|l| l.into_iter().filter(|e| e.is_dir && !e.hidden).map(|e| e.name).collect()).unwrap_or_default();
+                c.data_mut(|m| {
+                    // Solo si sigue escrita la misma carpeta.
+                    let same = m.get_temp::<(String, std::sync::Arc<Vec<String>>)>(key).is_some_and(|(k, _)| k.eq_ignore_ascii_case(&d));
+                    if same {
+                        m.insert_temp(key, (d.clone(), std::sync::Arc::new(n)));
+                    }
+                });
+                c.request_repaint();
+            });
+            std::sync::Arc::new(Vec::new())
+        }
         _ => {
             let n: Vec<String> = fsx::list_dir(dir).map(|l| l.into_iter().filter(|e| e.is_dir && !e.hidden).map(|e| e.name).collect()).unwrap_or_default();
             let n = std::sync::Arc::new(n);
@@ -835,7 +853,14 @@ fn breadcrumb(ui: &mut Ui, t: &Theme, tab: &mut Tab, width: f32, actions: &mut V
 }
 
 fn crumb_label(path: &str) -> String {
-    if path.len() <= 3 { path.trim_end_matches('\\').to_string() } else { fsx::file_name(path) }
+    if path.len() <= 3 {
+        path.trim_end_matches('\\').to_string()
+    } else if path.starts_with(r"\\") && fsx::parent_of(path).is_none() {
+        // Raíz de red: "servidor\recurso".
+        path.trim_start_matches('\\').trim_end_matches('\\').to_string()
+    } else {
+        fsx::file_name(path)
+    }
 }
 
 /// ¿Tiene sentido soltar `src` en `dest`? No sobre sí misma, ni donde ya está, ni dentro de sí misma.

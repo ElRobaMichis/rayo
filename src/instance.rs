@@ -326,7 +326,7 @@ pub fn take_requests() -> Vec<String> {
 
 /// Ruta pasada por línea de comandos (si existe).
 pub fn path_from_args() -> Option<String> {
-    std::env::args().skip(1).find(|a| !a.starts_with("--")).map(|a| a.trim_matches('"').to_string()).filter(|p| std::path::Path::new(p).exists())
+    std::env::args().skip(1).find(|a| !a.starts_with("--")).map(|a| a.trim_matches('"').to_string()).filter(|p| crate::fsx::is_remote(p) || std::path::Path::new(p).exists())
 }
 
 // ---------------------------------------------------------------- inicio con Windows

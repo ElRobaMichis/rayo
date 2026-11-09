@@ -115,6 +115,13 @@ pub fn join(dir: &str, name: &str) -> String {
 
 pub fn parent_of(path: &str) -> Option<String> {
     let t = path.trim_end_matches('\\');
+    // Ruta de red: la raíz es \\servidor\recurso (más arriba no hay carpeta que listar).
+    if let Some(rest) = t.strip_prefix(r"\\") {
+        if rest.split('\\').filter(|s| !s.is_empty()).count() <= 2 {
+            return None;
+        }
+        return t.rfind('\\').map(|i| t[..i].to_string());
+    }
     let i = t.rfind('\\')?;
     if i <= 2 { Some(format!("{}\\", &t[..2])) } else { Some(t[..i].to_string()) }
 }
@@ -217,6 +224,34 @@ pub fn list_flat(dir: &str, limit: usize) -> Result<Vec<FileEntry>, String> {
 /// ¿Se puede entrar como carpeta? (carpeta real, comprimido o carpeta dentro de uno)
 pub fn is_dir_like(p: &str) -> bool {
     std::path::Path::new(&long_path(p)).is_dir() || archive::is_dir(p)
+}
+
+/// ¿Está en la red? (\\servidor\recurso o una unidad de red asignada, como Z:)
+pub fn is_remote(p: &str) -> bool {
+    if p.starts_with(r"\\") && !p.starts_with(r"\\?\") {
+        return true;
+    }
+    let b = p.as_bytes();
+    if b.len() >= 2 && b[1] == b':' {
+        let root: Vec<u16> = format!("{}:\\", &p[..1]).encode_utf16().chain([0]).collect();
+        // DRIVE_REMOTE = 4. Es una consulta local: no toca la red.
+        return unsafe { windows::Win32::Storage::FileSystem::GetDriveTypeW(windows::core::PCWSTR(root.as_ptr())) } == 4;
+    }
+    false
+}
+
+/// ¿Es una carpeta? Sin trabar la interfaz: en la red se pregunta en otro hilo y, si no contesta
+/// en `ms` milisegundos (servidor caído, VPN desconectada), devuelve None ("no se sabe todavía").
+pub fn probe_dir(p: &str, ms: u64) -> Option<bool> {
+    if !is_remote(p) {
+        return Some(std::path::Path::new(&long_path(p)).is_dir());
+    }
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    let path = long_path(p);
+    std::thread::spawn(move || {
+        let _ = tx.send(std::path::Path::new(&path).is_dir());
+    });
+    rx.recv_timeout(std::time::Duration::from_millis(ms)).ok()
 }
 
 /// ¿Existe? (también dentro de un comprimido)
@@ -564,6 +599,10 @@ mod tests {
         assert_eq!(parent_of("C:\\a\\b").as_deref(), Some("C:\\a"));
         assert_eq!(parent_of("C:\\a").as_deref(), Some("C:\\"));
         assert_eq!(parent_of("C:\\"), None);
+        assert_eq!(parent_of(r"\\srv\share\a\b").as_deref(), Some(r"\\srv\share\a"));
+        assert_eq!(parent_of(r"\\srv\share\a").as_deref(), Some(r"\\srv\share"));
+        assert_eq!(parent_of(r"\\srv\share"), None);
+        assert_eq!(parent_of(r"\\srv\share\"), None);
         assert_eq!(normalize("c:"), "C:\\");
         assert_eq!(normalize("c:/users/"), "C:\\users");
         assert_eq!(human_size(1536), "1.50 KB");

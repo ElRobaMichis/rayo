@@ -283,7 +283,9 @@ impl App {
         for (p, (list, active)) in [(&cfg.tabs, cfg.active_tab), (&cfg.tabs_right, cfg.active_right)].into_iter().enumerate() {
             let first = tabs.len();
             for path in list {
-                if std::path::Path::new(path).is_dir() {
+                // Una carpeta de red que no contesta (VPN apagada) se conserva: mostrará su error al listar,
+                // pero no deja a Rayo sin ventana esperando a la red.
+                if fsx::probe_dir(path, 250) != Some(false) {
                     let mut t = Tab::new(next_id, path);
                     t.pane = p as u8;
                     tabs.push(t);
@@ -302,7 +304,7 @@ impl App {
         // Si se abrió con una ruta como argumento: abrir esa carpeta (o mostrar ese archivo) en una pestaña nueva.
         if let Some(p) = crate::instance::path_from_args() {
             let mut t = Tab::new(next_id, &p);
-            if !std::path::Path::new(&p).is_dir() && fsx::archive::split(&p).is_none() {
+            if fsx::probe_dir(&p, 300) == Some(false) && fsx::archive::split(&p).is_none() {
                 t.reveal(&p);
             }
             tabs.insert(pane[0] + 1, t);
@@ -634,6 +636,9 @@ impl App {
                 }
             }
             drop(w);
+            // Lo que el índice no vigila (red, NAS, USB FAT/exFAT) se vigila carpeta por carpeta.
+            let own: Vec<String> = visible.iter().flat_map(|&i| self.tabs[i].cols.iter().map(|c| c.path.clone())).filter(|p| crate::index::dirwatch::needs_own_watch(&self.mgr, p)).collect();
+            crate::index::dirwatch::sync(&self.mgr, &own);
             for p in back {
                 if self.dirs.state(&p).is_some_and(|s| s.raw.is_some()) {
                     self.dirs.reload(&p);
@@ -3072,7 +3077,8 @@ impl eframe::App for App {
             }
             // Si esa carpeta ya está abierta en una pestaña, se va a ella (no se apilan pestañas iguales).
             // Un comprimido se abre por dentro, como una carpeta.
-            let is_dir = std::path::Path::new(&p).is_dir() || fsx::archive::split(&p).is_some();
+            // En la red, sin esperar a un servidor que no contesta: si no se sabe, se trata como carpeta.
+            let is_dir = fsx::probe_dir(&p, 300).unwrap_or(true) || fsx::archive::split(&p).is_some();
             crate::diag::log(&format!("abrir en Rayo: «{p}» ({})", if is_dir { "carpeta" } else { "archivo: se marca" }));
             let dir = if is_dir { fsx::normalize(&p) } else { fsx::parent_of(&p).unwrap_or_default() };
             match self.tabs.iter().position(|t| t.tool.is_none() && t.search.text.is_empty() && t.path().eq_ignore_ascii_case(&dir)) {

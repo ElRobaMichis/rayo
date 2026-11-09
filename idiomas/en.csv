@@ -578,6 +578,7 @@ lista.ajustar_columna,Drag to resize · double-click: original width,Arrastra pa
 lista.buscando,Searching…,Buscando…,
 lista.cambia_extension,Changes the extension: {antes} → {despues},Cambia la extensión: {antes} → {despues},Al renombrar · {antes} y {despues} = extensiones como «.pdf» o «sin extensión»
 lista.cargando,Loading…,Cargando…,
+lista.esperando_servidor,Waiting for the server…,Esperando al servidor…,
 lista.carpeta_vacia,Empty folder,Carpeta vacía,
 lista.descarga,Download,Descarga,Columna Tipo de una descarga que todavía no termina
 lista.descargando,Downloading…,Descargando…,Junto al nombre de una descarga en curso
