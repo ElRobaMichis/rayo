@@ -259,6 +259,7 @@ impl App {
         };
         fsx::props::set_wake(wake.clone());
         fsx::dirsize::set_wake(wake.clone());
+        fsx::git::set_wake(wake.clone());
         if let Some(h) = hwnd {
             let w = wake.clone();
             crate::instance::listen(h, move || w());
@@ -3644,6 +3645,13 @@ impl App {
                 s.push_str(&format!("  ·  {}  ·  {}", tp!(sel.len(), "app.seleccionados"), fsx::human_size(size)));
                 if counting {
                     s.push_str(&format!(" {}", t!("previa.calculando")));
+                }
+            }
+            // En un repositorio de git: la rama y cuántos cambios hay.
+            if let Some(repo) = fsx::git::root_of(&col.path).and_then(|r| fsx::git::repo(&r)) {
+                s.push_str(&format!("  ·  {} {}", egui_phosphor::regular::GIT_BRANCH, repo.branch));
+                if !repo.files.is_empty() {
+                    s.push_str(&format!("  ·  {}", tp!(repo.files.len(), "app.cambios_git")));
                 }
             }
             s

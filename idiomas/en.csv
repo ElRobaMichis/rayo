@@ -778,3 +778,5 @@ cmd.terminal_panel.buscar,console powershell commands panel bottom,consola power
 app.terminal,Terminal,Terminal,
 app.cerrar_terminal,Close terminal (Ctrl+`),Cerrar la terminal (Ctrl+`),
 app.terminal_ir_carpeta,Go to the current folder,Ir a la carpeta actual,
+app.cambios_git.uno,{n} change,{n} cambio,Cuando la cantidad es 1 · Barra de estado · {n} = un número
+app.cambios_git.varios,{n} changes,{n} cambios,Cuando la cantidad no es 1 · Barra de estado · {n} = un número

@@ -772,3 +772,5 @@ cmd.terminal_panel.buscar,consola powershell comandos panel abajo,,
 app.terminal,Terminal,,
 app.cerrar_terminal,Cerrar la terminal (Ctrl+`),,
 app.terminal_ir_carpeta,Ir a la carpeta actual,,
+app.cambios_git.uno,{n} cambio,,Cuando la cantidad es 1 · Barra de estado · {n} = un número
+app.cambios_git.varios,{n} cambios,,Cuando la cantidad no es 1 · Barra de estado · {n} = un número

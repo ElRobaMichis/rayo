@@ -604,11 +604,30 @@ fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, sele
             None => {
                 let mask = fsx::tags::get(&path);
                 let dots = if mask == 0 { 0.0 } else { 7.0 * mask.count_ones() as f32 + 10.0 };
-                let g = elided(&p, shown_name, FontId::proportional(13.5), text_c.gamma_multiply(alpha), limit - name_x - dots);
+                // Estado en git (si la carpeta es parte de un repositorio): una letra o, en
+                // carpetas con cambios adentro, un punto.
+                let git = fsx::git::state_of(&path, e.is_dir);
+                let git_w = if git.is_some() { 18.0 } else { 0.0 };
+                let g = elided(&p, shown_name, FontId::proportional(13.5), text_c.gamma_multiply(alpha), limit - name_x - dots - git_w);
                 let gw = g.size().x;
                 p.galley(pos2(name_x, rect.center().y - g.size().y / 2.0), g, text_c);
                 if mask != 0 {
                     tag_dots(&p, cx.t, name_x + gw + 6.0, rect.center().y, mask);
+                }
+                if let Some((st, inside)) = git {
+                    use fsx::git::State;
+                    let c = match st {
+                        State::Modified | State::Renamed => Color32::from_rgb(0xE5, 0xA8, 0x4B),
+                        State::Added | State::Untracked => Color32::from_rgb(0x4F, 0xB4, 0x77),
+                        State::Deleted | State::Conflict => cx.t.danger,
+                    };
+                    let c = if on_sel { cx.t.accent_text } else { c };
+                    let x = name_x + gw + dots + 8.0;
+                    if inside {
+                        p.circle_filled(pos2(x + 3.0, rect.center().y), 3.0, c.gamma_multiply(0.8));
+                    } else {
+                        p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, st.letter(), theme::semibold(11.0), c);
+                    }
                 }
             }
         }
