@@ -89,4 +89,9 @@ pub enum Action {
     ToggleFlat,
     /// Pestaña de archivos recientes.
     OpenRecent,
+    /// Todo lo que tiene esa etiqueta de color (en la pestaña actual).
+    OpenTag(usize),
+    /// Poner o quitar una etiqueta de color.
+    ToggleTag(Vec<String>, usize),
+    ClearTags(Vec<String>),
 }

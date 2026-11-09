@@ -58,6 +58,7 @@ app.enlaces_creados.varios,{n} links created ({tipos}),{n} enlaces creados ({tip
 app.esta_vista_este_orden_son,This view and sort order now apply to every folder,Esta vista y este orden son ahora los de todas las carpetas,
 app.estado_archivos,{n} files · {como},{n} archivos · {como},{n} = un número
 app.este_ya_rayo_instalado,This is already the installed Rayo,Este ya es el Rayo instalado,
+app.extension_cambiada,Extension changed from {antes} to {despues} · Ctrl+Z to undo,Extensión cambiada de {antes} a {despues} · Ctrl+Z para deshacer,{antes} y {despues} = extensiones como «.pdf» o «sin extensión»
 app.extrayendo,Extracting…,Extrayendo…,
 app.extrayendo_a.uno,Extracting {n} item to “{destino}”,Extrayendo {n} elemento a «{destino}»,"Cuando la cantidad es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
 app.extrayendo_a.varios,Extracting {n} items to “{destino}”,Extrayendo {n} elementos a «{destino}»,"Cuando la cantidad no es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
@@ -178,6 +179,7 @@ barra.este_archivo_ya_existe_destino,This file already exists in the destination
 barra.eta_horas,{horas} h {minutos} min,{horas} h {minutos} min,"{horas} = un número de horas; {minutos} = un número de minutos"
 barra.eta_minutos,{minutos} min,{minutos} min,{minutos} = un número de minutos
 barra.eta_segundos,{segundos} s,{segundos} s,{segundos} = un número de segundos
+barra.etiquetas,Tags,Etiquetas,Título de la sección de etiquetas de color en la barra lateral
 barra.expulsar,Eject,Expulsar,
 barra.expulsar_forma_segura,Safely eject,Expulsar de forma segura,
 barra.faltan, · {tiempo} left, · faltan {tiempo},{tiempo} = un tiempo (3 min)
@@ -392,6 +394,13 @@ enlace.nombre_enlace,{nombre} - link{extension},{nombre} - enlace{extension},"{e
 enlace.nombre_enlace_n,{nombre} - link ({k}){extension},{nombre} - enlace ({k}){extension},"{extension} = una extensión (PDF, TXT…); {k} = un número; {nombre} = un nombre de archivo o carpeta"
 enlace.union_carpeta,folder junction,unión de carpeta,
 enlace.windows_no_permite_enlaces_simbolicos,"Windows doesn't allow symbolic links without permission (turn on Developer Mode), and a hard link can only be on the same drive",Windows no permite enlaces simbólicos sin permisos (activa el modo de desarrollador) y un enlace duro solo puede ir en el mismo disco,
+etiqueta.amarillo,Yellow,Amarillo,Etiqueta de color
+etiqueta.azul,Blue,Azul,Etiqueta de color
+etiqueta.gris,Gray,Gris,Etiqueta de color
+etiqueta.morado,Purple,Morado,Etiqueta de color
+etiqueta.naranja,Orange,Naranja,Etiqueta de color
+etiqueta.rojo,Red,Rojo,Etiqueta de color
+etiqueta.verde,Green,Verde,Etiqueta de color
 fondo.abrir_rayo,Open Rayo,Abrir Rayo,Menú del ícono de Rayo en la bandeja (junto al reloj)
 fondo.rayo_segundo_plano,Rayo (in the background),Rayo (en segundo plano),
 hash.md5_no_disponible,MD5 not available,MD5 no disponible,
@@ -567,8 +576,11 @@ Windows va a pedir permiso de administrador.",
 instalar.rayo_desinstalo,Rayo was uninstalled.,Rayo se desinstaló.,
 lista.ajustar_columna,Drag to resize · double-click: original width,Arrastra para cambiar el ancho · doble clic: ancho original,
 lista.buscando,Searching…,Buscando…,
+lista.cambia_extension,Changes the extension: {antes} → {despues},Cambia la extensión: {antes} → {despues},Al renombrar · {antes} y {despues} = extensiones como «.pdf» o «sin extensión»
 lista.cargando,Loading…,Cargando…,
 lista.carpeta_vacia,Empty folder,Carpeta vacía,
+lista.descarga,Download,Descarga,Columna Tipo de una descarga que todavía no termina
+lista.descargando,Downloading…,Descargando…,Junto al nombre de una descarga en curso
 lista.disponible_este_equipo_sincronizado,Available on this device (synced),Disponible en este equipo (sincronizado),
 lista.esc_quitar,Esc to clear,Esc para quitar,
 lista.filtrando,Filtering: {filtro},Filtrando: {filtro},{filtro} = lo que se escribió para filtrar
@@ -582,6 +594,7 @@ lista.resultados.varios,{n} results,{n} resultados,Cuando la cantidad no es 1 ·
 lista.resultados_mejores,{n} results (top {mostrados}),{n} resultados (los {mostrados} mejores),{n} = un número
 lista.salir_vista_plana_esc,Leave flat view (Esc),Salir de la vista plana (Esc),
 lista.siempre_este_equipo,Always on this device,Siempre en este equipo,
+lista.sin_extension,no extension,sin extensión,
 lista.sin_resultados,No results,Sin resultados,
 lista.solo_nube_descarga_abrirlo,Cloud-only: it downloads when opened,Solo en la nube: se descarga al abrirlo,
 lista.tipo,Type,Tipo,
@@ -592,11 +605,13 @@ lista.vista_plana_juntando_archivos,Flat view: gathering files…,Vista plana: j
 menu.1_opcion_oculta_mostrar,1 hidden option: show,1 opción oculta: mostrar,
 menu.buscar_opcion,Search for an option…,Buscar una opción…,
 menu.esconder_otra_vez_ocultas,Hide the hidden ones again,Esconder otra vez las ocultas,
+menu.etiqueta,Tag,Etiqueta,Submenú con las etiquetas de color
 menu.herramientas,Tools,Herramientas,
 menu.nada_coincide,Nothing matches,Nada coincide,
 menu.opciones_ocultas_mostrar,{n} hidden options: show,{n} opciones ocultas: mostrar,{n} = un número
 menu.opciones_windows,Windows options…,Opciones de Windows…,
 menu.otro_panel,Other pane,Otro panel,
+menu.quitar_etiquetas,Remove tags,Quitar etiquetas,
 menu.ver,View,Ver,
 nuevo.base_datos_access,Access Database,base de datos de Access,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
 nuevo.carpeta_comprimida,Compressed Folder,carpeta comprimida,Tipo de archivo en el menú «Nuevo» y en el nombre del archivo creado («Nuevo documento de texto»): en minúscula
@@ -637,6 +652,7 @@ previa.contenido,Contents,Contenido,
 previa.creado,Created,Creado,
 previa.desbloquear,Unblock,Desbloquear,
 previa.desbloquear_ayuda,Removes the “downloaded from the internet” mark. Only do this if you trust the file.,Quita la marca de «descargado de Internet». Hazlo solo si confías en el archivo.,
+previa.descarga_en_curso,Download in progress: you can open it once it finishes.,Descarga en curso: se podrá abrir cuando termine.,
 previa.descargado_internet,Downloaded from the internet: Windows blocks its preview.,Descargado de Internet: Windows bloquea su vista previa.,
 previa.dimensiones,Dimensions,Dimensiones,
 previa.duracion,Duration,Duración,

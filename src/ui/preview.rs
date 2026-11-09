@@ -440,6 +440,13 @@ pub fn preview_pane(
                         actions.push(Action::QuickLook);
                     }
                 });
+                if !e.is_dir && fsx::downloading(&e.name).is_some() {
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(ic::DOWNLOAD_SIMPLE).font(theme::icon_font(14.0, false)).color(t.accent));
+                        ui.label(egui::RichText::new(t!("previa.descarga_en_curso")).size(12.0).color(t.dim));
+                    });
+                }
                 let props = if e.is_dir { None } else { fsx::props::info(&item.path) };
                 if props.as_ref().is_some_and(|p| p.blocked) {
                     // Descargado de Internet: Windows no deja ver PDF ni Office en la vista previa.

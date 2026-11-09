@@ -306,6 +306,21 @@ fn empty_message(ui: &mut Ui, t: &Theme, text: &str) {
     });
 }
 
+/// Si un nombre nuevo cambia la extensión: (la de antes, la nueva), como se muestran (".pdf",
+/// o "sin extensión"). Las carpetas no tienen extensión que cuidar.
+pub fn ext_change(old: &str, new: &str) -> Option<(String, String)> {
+    let ext = |n: &str| {
+        let n = fsx::file_name(n);
+        n.rfind('.').filter(|&i| i > 0 && i + 1 < n.len()).map(|i| n[i..].to_lowercase())
+    };
+    let (a, b) = (ext(old), ext(new.trim()));
+    if a == b {
+        return None;
+    }
+    let show = |e: Option<String>| e.unwrap_or_else(|| t!("lista.sin_extension").to_string());
+    Some((show(a), show(b)))
+}
+
 /// Fila de renombrado en línea.
 fn rename_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, x: f32) {
     let Some(rn) = cx.rename.as_mut() else { return };
@@ -327,6 +342,21 @@ fn rename_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, x: f32) {
         state.store(ui.ctx(), id);
         rn.first_frame = false;
     }
+    // Cambiar la extensión puede dejar el archivo sin poder abrirse: se avisa al lado, sin el
+    // cuadro de diálogo de Windows (y se deshace con Ctrl+Z).
+    if let Some((a, b)) = ext_change(&rn.old, &rn.buf) {
+        if !std::path::Path::new(&fsx::long_path(&fsx::join(&rn.dir, &rn.old))).is_dir() {
+            let warn = Color32::from_rgb(0xF5, 0x9E, 0x42);
+            let long = tf!("lista.cambia_extension", antes = a, despues = b);
+            let room = rect.right() - edit_rect.right() - 16.0;
+            let font = FontId::proportional(12.0);
+            let g = ui.painter().layout_no_wrap(format!("{}  {long}", ic::WARNING), font.clone(), warn);
+            let g = if g.size().x <= room { g } else { ui.painter().layout_no_wrap(format!("{}  {a} → {b}", ic::WARNING), font, warn) };
+            if g.size().x <= room {
+                ui.painter().galley(pos2(edit_rect.right() + 10.0, rect.center().y - g.size().y / 2.0), g, warn);
+            }
+        }
+    }
     let (enter, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
     if esc {
         *cx.rename = None;
@@ -337,10 +367,46 @@ fn rename_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, x: f32) {
 
 /// Dibuja una fila de archivo genérica (ícono + nombre + texto a la derecha).
 #[allow(clippy::too_many_arguments)]
+/// El nombre de una etiqueta de color, en el idioma de la interfaz.
+pub fn tag_label(i: usize) -> &'static str {
+    match i {
+        0 => t!("etiqueta.rojo"),
+        1 => t!("etiqueta.naranja"),
+        2 => t!("etiqueta.amarillo"),
+        3 => t!("etiqueta.verde"),
+        4 => t!("etiqueta.azul"),
+        5 => t!("etiqueta.morado"),
+        _ => t!("etiqueta.gris"),
+    }
+}
+
+pub fn tag_color(i: usize) -> Color32 {
+    let c = fsx::tags::COLORS[i.min(6)].1;
+    Color32::from_rgb(c[0], c[1], c[2])
+}
+
+/// Los puntos de color de las etiquetas de un archivo, desde `x` (centrados en `cy`). Devuelve
+/// cuánto ocupan.
+fn tag_dots(p: &Painter, t: &Theme, x: f32, cy: f32, mask: u8) -> f32 {
+    let mut w = 0.0;
+    for i in (0..7).filter(|i| mask & (1 << i) != 0) {
+        let c = pos2(x + w + 4.5, cy);
+        // Con un borde del color de fondo, para que se distingan si se tocan.
+        p.circle(c, 4.5, tag_color(i), egui::Stroke::new(1.0, t.bg));
+        w += 7.0;
+    }
+    if w > 0.0 { w + 2.0 } else { 0.0 }
+}
+
 /// El ícono de un archivo: el de Windows si ya llegó (el de cada programa, o el de su tipo);
 /// mientras tanto, y para las carpetas de las listas, el de Rayo. `glyph`: tamaño del de Rayo.
 #[allow(clippy::too_many_arguments)]
 fn file_icon(p: &Painter, t: &Theme, center: Pos2, points: f32, glyph: f32, path: &str, is_dir: bool, ext: &str, color: Option<Color32>, alpha: f32) {
+    // Una descarga en curso: la flecha de descarga (no el ícono de un archivo a medias).
+    if !is_dir && fsx::downloading(&fsx::file_name(path)).is_some() {
+        p.text(center, Align2::CENTER_CENTER, ic::DOWNLOAD_SIMPLE, theme::icon_font(glyph, true), color.unwrap_or(t.accent).gamma_multiply(alpha));
+        return;
+    }
     if !is_dir {
         let px = super::shellicons::px_for(p.ctx(), points);
         if let Some(tex) = super::shellicons::get(path, ext, px) {
@@ -410,8 +476,26 @@ fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, sele
         rename_row(ui, cx, rect, name_x - 4.0);
     } else {
         let limit = name_limit.unwrap_or(f32::INFINITY).min(rect.right() - right_w);
-        let g = elided(&p, &e.name, FontId::proportional(13.5), text_c.gamma_multiply(alpha), limit - name_x);
-        p.galley(pos2(name_x, rect.center().y - g.size().y / 2.0), g, text_c);
+        match fsx::downloading(&e.name).filter(|_| !e.is_dir) {
+            // Descarga en curso: el nombre que tendrá y "Descargando…".
+            Some(base) => {
+                let tag = p.layout_no_wrap(t!("lista.descargando").to_string(), FontId::proportional(12.0), if selected && active { text_c } else { cx.t.accent });
+                let g = elided(&p, base, FontId::proportional(13.5), text_c.gamma_multiply(alpha), (limit - name_x - tag.size().x - 10.0).max(20.0));
+                let gw = g.size().x;
+                p.galley(pos2(name_x, rect.center().y - g.size().y / 2.0), g, text_c);
+                p.galley(pos2(name_x + gw + 10.0, rect.center().y - tag.size().y / 2.0), tag, text_c);
+            }
+            None => {
+                let mask = fsx::tags::get(&path);
+                let dots = if mask == 0 { 0.0 } else { 7.0 * mask.count_ones() as f32 + 10.0 };
+                let g = elided(&p, &e.name, FontId::proportional(13.5), text_c.gamma_multiply(alpha), limit - name_x - dots);
+                let gw = g.size().x;
+                p.galley(pos2(name_x, rect.center().y - g.size().y / 2.0), g, text_c);
+                if mask != 0 {
+                    tag_dots(&p, cx.t, name_x + gw + 6.0, rect.center().y, mask);
+                }
+            }
+        }
     }
     resp
 }
@@ -773,7 +857,15 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
         if x2 - x1 >= DATE_WITH_AGE {
             age_pill(&p, &t, x2 - 8.0, r.center().y, e.mtime, cx.now);
         }
-        let kind = if e.is_dir { t!("comun.carpeta").to_string() } else if e.ext.is_empty() { t!("comun.archivo").into() } else { e.ext.to_uppercase() };
+        let kind = if e.is_dir {
+            t!("comun.carpeta").to_string()
+        } else if fsx::downloading(&e.name).is_some() {
+            t!("lista.descarga").to_string()
+        } else if e.ext.is_empty() {
+            t!("comun.archivo").into()
+        } else {
+            e.ext.to_uppercase()
+        };
         p.text(pos2(x2 + 10.0, r.center().y), Align2::LEFT_CENTER, kind, FontId::proportional(12.0), dim_c);
         if let Some(s) = size_text(e) {
             let txt = if e.is_dir { format!("~{s}") } else { s };
@@ -1028,6 +1120,10 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                 }
                 if !drew {
                     file_icon(&p, &t, thumb.center(), 48.0, 54.0, &path, e.is_dir, &e.ext, None, 1.0);
+                }
+                let mask = fsx::tags::get(&path);
+                if mask != 0 {
+                    tag_dots(&p, &t, thumb.left() + 2.0, thumb.top() + 7.0, mask);
                 }
                 if let Some((g, c, _)) = cloud_glyph(&t, e.cloud) {
                     let b = Rect::from_center_size(pos2(thumb.right() - 6.0, thumb.top() + 8.0), vec2(20.0, 20.0));

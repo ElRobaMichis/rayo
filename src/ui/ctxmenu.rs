@@ -20,6 +20,8 @@ use std::sync::Arc;
 
 pub enum Icon {
     Glyph(&'static str),
+    /// Un círculo de color (etiquetas).
+    Color([u8; 3]),
     Image(Arc<Rgba>, String),
     None,
 }
@@ -193,6 +195,22 @@ fn item_entries(paths: &[String], is_dir: bool, dir: &str, reveal: Option<&str>,
         push(&mut e, Entry::cmd("hash", &t));
     }
     push(&mut e, Entry::cmd("who_uses", &t));
+    // Etiquetas de color: marcadas las que ya tiene todo lo elegido.
+    let mut tags: Vec<Entry> = (0..7)
+        .map(|i| {
+            let mut e = Entry::act("", "", super::views::tag_label(i), Action::ToggleTag(paths.to_vec(), i));
+            e.icon = Icon::Color(crate::fsx::tags::COLORS[i].1);
+            if paths.iter().all(|p| crate::fsx::tags::get(p) & (1 << i) != 0) {
+                e.keys = "✓".into();
+            }
+            e
+        })
+        .collect();
+    if paths.iter().any(|p| crate::fsx::tags::get(p) != 0) {
+        tags.push(Entry::sep());
+        tags.push(Entry::act("", ic::X, t!("menu.quitar_etiquetas"), Action::ClearTags(paths.to_vec())));
+    }
+    push(&mut e, Entry::sub(ic::TAG, t!("menu.etiqueta"), tags));
     // Solo si algo de lo elegido viene de Internet (es lo que bloquea la vista previa).
     if paths.iter().take(32).any(|p| crate::fsx::props::is_blocked(p)) {
         push(&mut e, Entry::cmd("unblock", &t));
@@ -592,6 +610,9 @@ fn row(ui: &mut Ui, t: &Theme, e: &Entry, label: Option<&str>, pinned: bool, hig
     match &e.icon {
         Icon::Glyph(g) => {
             p.text(ic_pos, Align2::CENTER_CENTER, *g, theme::icon_font(14.0, false), if dim { t.faint } else { t.dim });
+        }
+        Icon::Color(c) => {
+            p.circle_filled(ic_pos, 5.5, egui::Color32::from_rgb(c[0], c[1], c[2]));
         }
         Icon::Image(img, key) => {
             let id = Id::new(key);

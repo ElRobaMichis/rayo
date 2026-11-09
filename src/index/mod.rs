@@ -633,6 +633,31 @@ impl IndexManager {
 
     pub fn search(&self, text: &str, within: Option<&str>, opts: SearchOpts) -> SearchOutcome {
         let t = Instant::now();
+        // "etiqueta:rojo": lo que tiene esa etiqueta de color, esté donde esté.
+        if let Some(color) = crate::fsx::tags::query_color(text) {
+            let guards: Vec<_> = self.slots.iter().map(|s| s.index.read()).collect();
+            let epochs = self.slots.iter().map(|s| s.epoch.load(Ordering::Relaxed)).collect();
+            let mut hits = Vec::new();
+            for p in crate::fsx::tags::paths(color) {
+                let letter = p.chars().next().map(|c| c.to_ascii_uppercase());
+                if let Some(k) = self.slots.iter().position(|s| Some(s.letter) == letter) {
+                    if let Some(id) = guards[k].find_path(&p).filter(|&id| id != 0) {
+                        hits.push(search::Hit { vol: k as u8, id, score: 0 });
+                    }
+                }
+            }
+            let total = hits.len();
+            if opts.sort != ResultSort::Relevance {
+                let vols: Vec<&VolumeIndex> = guards.iter().map(|g| &**g).collect();
+                let ranks: Vec<Option<Arc<Ranks>>> = if matches!(opts.sort, ResultSort::Name | ResultSort::Folder) {
+                    (0..vols.len()).map(|k| Some(self.ranks_of(k, vols[k]))).collect()
+                } else {
+                    vec![None; vols.len()]
+                };
+                sort_hits(&mut hits, &vols, &ranks, opts.sort, opts.desc);
+            }
+            return SearchOutcome { hits, total, elapsed: t.elapsed(), epochs };
+        }
         let q = search::parse_query(text);
         let mut hits = Vec::new();
         let mut total = 0;

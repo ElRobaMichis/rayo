@@ -596,6 +596,15 @@ impl App {
         }
     }
 
+    /// Si alguna pestaña muestra una etiqueta, que vuelva a buscar (se acaba de poner o quitar).
+    fn refresh_tag_search(&mut self) {
+        for t in &mut self.tabs {
+            if fsx::tags::query_color(&t.search.text).is_some() {
+                t.search.sent = None;
+            }
+        }
+    }
+
     /// Avisa al índice qué carpetas se están mostrando.
     fn update_watched(&mut self) {
         use std::hash::{Hash, Hasher};
@@ -610,10 +619,23 @@ impl App {
         if sig != self.watched_sig {
             self.watched_sig = sig;
             let mut w = self.mgr.watched.write();
-            w.clear();
+            let before = std::mem::take(&mut *w);
+            let mut back = Vec::new();
             for &i in &visible {
                 for c in &self.tabs[i].cols {
-                    w.insert(c.path.to_lowercase());
+                    let l = c.path.to_lowercase();
+                    // Mientras no estaba a la vista nadie avisaba de sus cambios (otra pestaña,
+                    // el historial): lo guardado puede ser viejo, así que se vuelve a leer.
+                    if !before.contains(&l) {
+                        back.push(c.path.clone());
+                    }
+                    w.insert(l);
+                }
+            }
+            drop(w);
+            for p in back {
+                if self.dirs.state(&p).is_some_and(|s| s.raw.is_some()) {
+                    self.dirs.reload(&p);
                 }
             }
         }
@@ -1225,6 +1247,28 @@ impl App {
                     self.open_tool(ctx, dir, tool);
                 }
             }
+            Action::OpenTag(color) => {
+                if matches!(self.tabs[self.cur].tool.as_deref(), Some(super::tools::Tool::Recycle(_))) {
+                    self.tabs[self.cur].tool = None;
+                }
+                if self.tabs[self.cur].tool.is_some() {
+                    let home = self.places.first().map(|p| p.path.clone()).unwrap_or_else(|| "C:\\".into());
+                    self.apply(ctx, Action::NewTab(Some(home)));
+                }
+                let s = &mut self.tabs[self.cur].search;
+                s.text = fsx::tags::query_for(color);
+                s.here = false;
+                s.sort = crate::index::ResultSort::Name;
+                s.desc = false;
+            }
+            Action::ToggleTag(paths, color) => {
+                fsx::tags::toggle(&paths, color);
+                self.refresh_tag_search();
+            }
+            Action::ClearTags(paths) => {
+                fsx::tags::clear(&paths);
+                self.refresh_tag_search();
+            }
             Action::OpenRecent => {
                 // En la misma pestaña (si es una carpeta o la papelera); Esc o cualquier lugar vuelven a ella.
                 if matches!(self.tabs[self.cur].tool.as_deref(), Some(super::tools::Tool::Recycle(_))) {
@@ -1383,6 +1427,10 @@ impl App {
                         }
                         match shell::rename(&old_path, &new) {
                             Ok(new_path) => {
+                                fsx::tags::moved(&old_path, &new_path);
+                                if let Some((a, b)) = views::ext_change(&r.old, &new).filter(|_| !std::path::Path::new(&fsx::long_path(&new_path)).is_dir()) {
+                                    self.toast(ctx, tf!("app.extension_cambiada", antes = a, despues = b));
+                                }
                                 self.dirs.reload(&r.dir);
                                 self.retarget_cols(&old_path, &new_path);
                                 self.push_undo(Undo::Rename { dir: r.dir.clone(), old: r.old.clone(), new: new.clone() });
@@ -2320,7 +2368,7 @@ impl App {
             s.hist_since = now;
             return;
         }
-        if text.chars().count() < 2 || text.to_lowercase().starts_with("recientes:") || s.hist_recorded == text {
+        if text.chars().count() < 2 || text.to_lowercase().starts_with("recientes:") || fsx::tags::query_color(&text).is_some() || s.hist_recorded == text {
             return;
         }
         let waited = now - s.hist_since;
@@ -3029,6 +3077,8 @@ impl eframe::App for App {
                 (String::new(), "papelera")
             } else if tab.search.text.trim_start().to_lowercase().starts_with("recientes:") {
                 (String::new(), "recientes")
+            } else if let Some(c) = fsx::tags::query_color(&tab.search.text) {
+                (String::new(), fsx::tags::COLORS[c].0)
             } else if tab.tool.is_some() {
                 (String::new(), "")
             } else {

@@ -94,6 +94,7 @@ pub struct Config {
     #[serde(default = "spanish_before_languages")]
     pub lang: Option<String>,
     pub columns: ColumnWidths,
+    pub tags_collapsed: bool,
 }
 
 fn spanish_before_languages() -> Option<String> {
@@ -130,6 +131,7 @@ impl Default for Config {
             menu_hidden: Vec::new(),
             lang: None,
             columns: ColumnWidths::DEFAULT,
+            tags_collapsed: false,
         }
     }
 }

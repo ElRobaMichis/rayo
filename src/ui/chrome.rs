@@ -255,6 +255,24 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
             }
         }
 
+        // Etiquetas de color (solo las que se usan): todo lo de un color, esté donde esté.
+        let counts = fsx::tags::counts();
+        if counts.iter().any(|&n| n > 0) {
+            let (h, _) = section_header(ui, t, t!("barra.etiquetas"), s.cfg.tags_collapsed);
+            if h.clicked() {
+                s.cfg.tags_collapsed ^= true;
+            }
+            if !s.cfg.tags_collapsed {
+                for (i, &n) in counts.iter().enumerate().filter(|(_, n)| **n > 0) {
+                    let sel = s.special == fsx::tags::COLORS[i].0;
+                    let r = side_item(ui, t, egui_phosphor::fill::CIRCLE, crate::ui::views::tag_color(i), true, crate::ui::views::tag_label(i), sel).on_hover_text(tp!(n, "comun.elementos_n", n = fsx::thousands(n)));
+                    if r.clicked() || r.middle_clicked() {
+                        actions.push(Action::OpenTag(i));
+                    }
+                }
+            }
+        }
+
         let ngroups = s.cfg.groups.len();
         for gi in 0..ngroups {
             let editing = s.group_edit.as_ref().is_some_and(|(i, _)| *i == gi);
@@ -425,13 +443,14 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], show: &[usize], cur: usize,
             tool.icon()
         } else if tab.search.text.trim_start().to_lowercase().starts_with("recientes:") {
             ic::CLOCK_COUNTER_CLOCKWISE
+        } else if fsx::tags::query_color(&tab.search.text).is_some() {
+            ic::TAG
         } else if tab.search.active() {
             ic::MAGNIFYING_GLASS
         } else {
             ic::FOLDER
         };
         let close_r = if tiny { Rect::from_center_size(r.center(), vec2(TAB_BTN, TAB_BTN)) } else { Rect::from_center_size(pos2(r.right() - 15.0, r.center().y), vec2(TAB_BTN, TAB_BTN)) };
-        // Muy angosta: la X ocupa el lugar del ícono al pasar por encima.
         // Muy angosta, la X va en el centro: solo en la activa (en las demás, un clic cambia a ella).
         let has_x = !tiny || active;
         if !(tiny && active && hovering) {
@@ -439,8 +458,11 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], show: &[usize], cur: usize,
             p.text(ip.0, ip.1, icon, theme::icon_font(14.0, true), if active { t.folder } else { t.dim });
         }
         let recent = tab.search.text.trim_start().to_lowercase().starts_with("recientes:");
+        let tag = fsx::tags::query_color(&tab.search.text).filter(|_| tab.tool.is_none());
         let title = if recent && tab.tool.is_none() {
             t!("barra.recientes").to_string()
+        } else if let Some(c) = tag {
+            crate::ui::views::tag_label(c).to_string()
         } else if tab.search.active() && tab.tool.is_none() {
             format!("“{}”", tab.search.text.trim())
         } else {

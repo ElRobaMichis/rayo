@@ -16,6 +16,7 @@ pub mod hash;
 pub mod links;
 pub mod locks;
 pub mod props;
+pub mod tags;
 pub mod ctxmenu;
 
 use crate::index::store::filetime_to_unix;
@@ -160,6 +161,16 @@ pub fn normalize(path: &str) -> String {
         p.pop();
     }
     p
+}
+
+/// Una descarga a medias de un navegador ("foto.jpg.crdownload" en Chrome, Edge o Brave,
+/// "foto.jpg.part" en Firefox): devuelve el nombre que tendrá al terminar.
+pub fn downloading(name: &str) -> Option<&str> {
+    let l = name.to_ascii_lowercase();
+    [".crdownload", ".part", ".partial", ".opdownload"]
+        .iter()
+        .find(|s| l.ends_with(*s) && name.len() > s.len())
+        .map(|s| &name[..name.len() - s.len()])
 }
 
 pub fn ext_of(name: &str) -> String {
