@@ -486,6 +486,13 @@ impl App {
     fn view_of(&mut self, path: &str) -> Arc<Vec<FileEntry>> {
         // En vista plana, la carpeta de la pestaña se lista con todas sus subcarpetas.
         let tab = &self.tabs[self.cur];
+        // Con carpetas desplegadas (vista de detalles), la lista es el árbol.
+        if self.cfg.view == ViewMode::Details && !tab.flat && path == tab.path() {
+            if let Some(c) = tab.cols.last().filter(|c| !c.expanded.is_empty()) {
+                let exp = c.expanded.clone();
+                return self.dirs.tree(path, &exp, self.cfg.sort, self.cfg.sort_desc, self.cfg.show_hidden);
+            }
+        }
         let key = if tab.flat && path == tab.path() { format!("{}{path}", fsx::FLAT_KEY) } else { path.to_string() };
         self.dirs.view(&key, self.cfg.sort, self.cfg.sort_desc, self.cfg.show_hidden)
     }
@@ -569,17 +576,21 @@ impl App {
             // En vista plana, la última columna se compara con la lista plana.
             let path = if tab.flat && i == last { format!("{}{}", fsx::FLAT_KEY, tab.cols[i].path) } else { tab.cols[i].path.clone() };
             let Some(st) = self.dirs.map.get(&path) else { continue };
-            let Some(raw) = st.raw.as_ref().filter(|_| !st.loading) else { continue };
+            let Some(raw) = st.raw.clone().filter(|_| !st.loading) else { continue };
             let generation = st.generation;
             let col = &mut tab.cols[i];
-            col.multi.retain(|n| raw.iter().any(|e| &e.name == n));
+            // Lo de una carpeta desplegada en la lista ("sub\archivo") no está en esta carpeta: se
+            // revisa contra la lista desplegada (si ya no está ahí, es porque se plegó o desapareció).
+            let tree: Option<Arc<Vec<FileEntry>>> = (!tab.flat && !col.expanded.is_empty()).then(|| self.dirs.tree(&col.path, &col.expanded.clone(), self.cfg.sort, self.cfg.sort_desc, self.cfg.show_hidden));
+            let present = |n: &str| if n.contains('\\') { tree.as_ref().is_some_and(|t| t.iter().any(|e| e.name == n)) } else { raw.iter().any(|e| e.name == n) };
+            col.multi.retain(|n| present(n));
             let Some(c) = col.cursor.clone() else { continue };
             // Una carpeta que se está moviendo: la pestaña la va a seguir, no cerrarla.
             let moving = fsx::join(&col.path, &c);
             if self.follow_moves.iter().any(|(from, ..)| from.eq_ignore_ascii_case(&moving)) {
                 continue;
             }
-            if raw.iter().any(|e| e.name == c) {
+            if present(&c) {
                 self.prune_check.remove(&path);
                 continue;
             }
@@ -908,6 +919,29 @@ impl App {
                 } as usize;
                 let e = &list[next];
                 actions.push(Action::Select { col: ci, name: e.name.clone(), is_dir: e.is_dir, ctrl: false, shift: false });
+            }
+        }
+        if self.cfg.view == ViewMode::Details && !self.tabs[self.cur].flat {
+            let right = consume(Modifiers::NONE, Key::ArrowRight);
+            let left = consume(Modifiers::NONE, Key::ArrowLeft);
+            if right || left {
+                let path = self.tabs[self.cur].path().to_string();
+                let cursor = self.tabs[self.cur].active_col().cursor.clone();
+                if let Some(c) = cursor {
+                    let is_dir = self.entry_in(&path, &c).is_some_and(|e| e.is_dir);
+                    let open = self.tabs[self.cur].cols.last().is_some_and(|col| col.expanded.contains(&c.to_lowercase()));
+                    if right && is_dir && !open {
+                        actions.push(Action::ToggleExpand(c));
+                    } else if left && open {
+                        actions.push(Action::ToggleExpand(c));
+                    } else if left {
+                        // Fila de adentro: ir a la carpeta que la contiene (y plegarla).
+                        if let Some((parent, _)) = c.rsplit_once('\\') {
+                            let ci = self.tabs[self.cur].cols.len() - 1;
+                            actions.push(Action::Select { col: ci, name: parent.to_string(), is_dir: true, ctrl: false, shift: false });
+                        }
+                    }
+                }
             }
         }
         if columns {
@@ -1289,6 +1323,17 @@ impl App {
             Action::TransferCancel(id) => self.xfer.cancel(id),
             Action::TransferResolve(id, c, all) => self.xfer.resolve(id, c, all),
             Action::OpenPalette => self.palette.show(),
+            Action::ToggleExpand(rel) => {
+                let col = self.tab().cols.last_mut().unwrap();
+                let k = rel.to_lowercase();
+                if !col.expanded.remove(&k) {
+                    col.expanded.insert(k);
+                } else {
+                    // Al plegar, también lo de adentro.
+                    let inside = format!("{k}\\");
+                    col.expanded.retain(|x| !x.starts_with(&inside));
+                }
+            }
             Action::RunCommand(id) => {
                 if let Some(c) = super::commands::ALL.iter().find(|c| c.id == id) {
                     let t = self.target();
@@ -3180,7 +3225,10 @@ impl App {
             return;
         }
         let groups: Vec<String> = cfg.groups.iter().map(|g| g.name.clone()).collect();
-        let mut cx = Cx { t: &t, now, actions, rename, cut, tab_id: tab.id, groups: &groups, space_bars: cfg.space_bars, split: cfg.split, pill: None };
+        // La lista desplegada (árbol) es de la vista de detalles.
+        let tree_on = cfg.view == ViewMode::Details && !tab.flat && tab.cols.last().is_some_and(|c| !c.expanded.is_empty());
+        let expanded = tab.cols.last().map(|c| c.expanded.clone()).unwrap_or_default();
+        let mut cx = Cx { t: &t, now, actions, rename, cut, tab_id: tab.id, groups: &groups, space_bars: cfg.space_bars, split: cfg.split, pill: None, tree: tree_on.then_some(&expanded) };
         if tab.search.active() {
             let indexing = if !mgr.is_ready() {
                 Some(t!("app.indice_esta_construyendo").to_string())
@@ -3288,7 +3336,12 @@ impl App {
                 tab.active = ci;
                 let path = tab.cols[ci].path.clone();
                 let key = if tab.flat { format!("{}{path}", fsx::FLAT_KEY) } else { path.clone() };
-                let entries = entries_of(dirs, ci, &key);
+                let entries = if tree_on {
+                    let v = dirs.tree(&path, &expanded, sort, desc, hidden);
+                    if filter_key.is_empty() { v } else { Arc::new(v.iter().filter(|e| crate::index::store::search_key(&e.name).contains(&filter_key)).cloned().collect()) }
+                } else {
+                    entries_of(dirs, ci, &key)
+                };
                 let st = dirs.state(&key);
                 if tab.flat {
                     views::flat_chip(ui, &t, entries.len(), st.is_some_and(|s| s.loading), cx.actions);
@@ -3720,6 +3773,7 @@ impl eframe::App for App {
             self.palette.ui(&ctx, &t, &target, &data, &mut actions);
         }
         self.track_recent();
+        if let Some(f) = std::env::var_os("RAYO_TEST_DUMP") { let (_, _, l) = self.active_list(); let c = self.tabs[self.cur].active_col().cursor.clone().unwrap_or_default(); let txt: String = l.iter().map(|e| format!("{}{}
         let outcome = self.batch.as_mut().map(|b| (b.ui(&ctx, &t), b.dir.clone()));
         match outcome {
             None | Some((super::tools::Outcome::Open, _)) => {}

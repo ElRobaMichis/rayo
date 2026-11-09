@@ -34,6 +34,8 @@ pub struct DirCache {
     /// Lee una carpeta y entrega el resultado (lo usan los hilos de listado).
     job: Arc<dyn Fn(String) + Send + Sync>,
     pub frame: u64,
+    /// Listas con carpetas desplegadas: carpeta → (qué la define, la lista).
+    trees: HashMap<String, (String, Arc<Vec<FileEntry>>)>,
 }
 
 impl DirCache {
@@ -73,7 +75,7 @@ impl DirCache {
                 })
                 .ok();
         }
-        DirCache { map: HashMap::new(), tx, rx, job, frame: 0 }
+        DirCache { map: HashMap::new(), tx, rx, job, frame: 0, trees: HashMap::new() }
     }
 
     /// Pide leer una carpeta. Las de red van en un hilo propio: un servidor que no contesta
@@ -181,6 +183,48 @@ impl DirCache {
         st.view.clone()
     }
 
+    /// La lista de una carpeta con algunas subcarpetas desplegadas debajo de sí mismas (como
+    /// árbol). Los nombres de lo desplegado llevan su ruta relativa ("sub\\archivo.txt"), como en
+    /// la vista plana, así todo lo demás (abrir, copiar, renombrar) funciona igual. Se rehace solo
+    /// si cambió algo (lo desplegado, el orden o el contenido de esas carpetas).
+    pub fn tree(&mut self, base: &str, expanded: &BTreeSet<String>, sort: SortKey, desc: bool, hidden: bool) -> Arc<Vec<FileEntry>> {
+        let mut key = format!("{sort:?}{desc}{hidden}|{}", self.map.get(base).map_or(0, |s| s.generation));
+        for rel in expanded {
+            let g = self.map.get(&fsx::join(base, rel)).or_else(|| self.map.iter().find(|(k, _)| k.eq_ignore_ascii_case(&fsx::join(base, rel))).map(|(_, v)| v)).map_or(0, |s| s.generation);
+            key.push_str(&format!("|{rel}:{g}"));
+        }
+        if let Some(v) = self.trees.get(base).filter(|(k, _)| *k == key).map(|(_, v)| v.clone()) {
+            return v;
+        }
+        let mut out = Vec::new();
+        self.tree_into(base, "", expanded, sort, desc, hidden, 0, &mut out);
+        let v = Arc::new(out);
+        if self.trees.len() > 16 {
+            self.trees.clear();
+        }
+        self.trees.insert(base.to_string(), (key, v.clone()));
+        v
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn tree_into(&mut self, dir: &str, prefix: &str, expanded: &BTreeSet<String>, sort: SortKey, desc: bool, hidden: bool, depth: usize, out: &mut Vec<FileEntry>) {
+        let list = self.view(dir, sort, desc, hidden);
+        for e in list.iter() {
+            let mut c = e.clone();
+            if !prefix.is_empty() {
+                c.name = format!("{prefix}\\{}", e.name);
+                c.lower = c.name.to_lowercase();
+            }
+            let rel = c.lower.clone();
+            let open = e.is_dir && depth < 16 && expanded.contains(&rel);
+            let name = c.name.clone();
+            out.push(c);
+            if open {
+                self.tree_into(&fsx::join(dir, &e.name), &name, expanded, sort, desc, hidden, depth + 1, out);
+            }
+        }
+    }
+
     pub fn state(&self, path: &str) -> Option<&DirState> {
         self.map.get(path)
     }
@@ -205,6 +249,8 @@ pub struct Col {
     pub multi: BTreeSet<String>,
     pub anchor: Option<String>,
     pub scroll_to_cursor: bool,
+    /// Carpetas desplegadas en la lista (rutas relativas en minúsculas, "sub" o "sub\\otra").
+    pub expanded: BTreeSet<String>,
 }
 
 impl Col {

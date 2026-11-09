@@ -31,6 +31,8 @@ pub struct Cx<'a> {
     /// solo seleccionado). Las filas no dibujan el suyo y sus letras cambian de color según cuánto
     /// las cubre.
     pub pill: Option<Rect>,
+    /// Lista con carpetas desplegadas: las filas van con sangría y muestran solo su nombre.
+    pub tree: Option<&'a std::collections::BTreeSet<String>>,
 }
 
 /// Archivos que se están arrastrando (rutas completas).
@@ -548,8 +550,11 @@ fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, sele
     let path = fsx::join(dir, &e.name);
     let faded = e.hidden || cx.cut.contains(&path);
     let alpha = if faded { 0.5 } else { 1.0 };
-    file_icon(&p, cx.t, pos2(rect.left() + 22.0, rect.center().y), 16.0, 16.0, &path, e.is_dir, &e.ext, icolor, alpha);
-    let name_x = rect.left() + 36.0;
+    let indent = if cx.tree.is_some() { TREE_CHEVRON + tree_depth(&e.name) as f32 * TREE_STEP } else { 0.0 };
+    file_icon(&p, cx.t, pos2(rect.left() + 22.0 + indent, rect.center().y), 16.0, 16.0, &path, e.is_dir, &e.ext, icolor, alpha);
+    let name_x = rect.left() + 36.0 + indent;
+    // En la lista desplegada se ve solo el nombre (la carpeta ya la da la sangría).
+    let shown_name: &str = if cx.tree.is_some() { e.name.rsplit('\\').next().unwrap_or(&e.name) } else { &e.name };
     let mut right_w = 12.0;
     if chevron {
         p.text(pos2(rect.right() - 12.0, rect.center().y), Align2::RIGHT_CENTER, ic::CARET_RIGHT, theme::icon_font(11.0, false), dim_c);
@@ -599,7 +604,7 @@ fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, sele
             None => {
                 let mask = fsx::tags::get(&path);
                 let dots = if mask == 0 { 0.0 } else { 7.0 * mask.count_ones() as f32 + 10.0 };
-                let g = elided(&p, &e.name, FontId::proportional(13.5), text_c.gamma_multiply(alpha), limit - name_x - dots);
+                let g = elided(&p, shown_name, FontId::proportional(13.5), text_c.gamma_multiply(alpha), limit - name_x - dots);
                 let gw = g.size().x;
                 p.galley(pos2(name_x, rect.center().y - g.size().y / 2.0), g, text_c);
                 if mask != 0 {
@@ -786,6 +791,14 @@ pub struct ColumnData<'a> {
     pub error: Option<&'a str>,
 }
 
+/// Sangría de una fila de la lista desplegada (por su profundidad), y el lugar del triángulo.
+const TREE_STEP: f32 = 16.0;
+const TREE_CHEVRON: f32 = 16.0;
+
+fn tree_depth(name: &str) -> usize {
+    name.matches('\\').count()
+}
+
 pub fn column(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, active: bool, data: ColumnData) {
     let rect = ui.max_rect();
     let bg = ui.interact(rect, Id::new(("colbg", cx.tab_id, ci)), Sense::click_and_drag());
@@ -960,7 +973,20 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
         let (_, x1, x2, x3, x4) = details_columns(r);
         let resp = file_row(ui, cx, r, e, &dir, selected, focused, None, false, Some(x1 - 8.0));
         let p = ui.painter_at(r);
-        let (_, dim_c, _) = row_fg(&t, pill, r, selected, focused);
+        let (_, dim_c, on_sel) = row_fg(&t, pill, r, selected, focused);
+        // Triángulo para desplegar la carpeta aquí mismo (encima de la fila: recibe el clic).
+        if let Some(open) = cx.tree.filter(|_| e.is_dir) {
+            let depth = tree_depth(&e.name) as f32;
+            let cr = Rect::from_center_size(pos2(r.left() + 13.0 + depth * TREE_STEP, r.center().y), vec2(16.0, 16.0));
+            let cresp = ui.interact(cr, resp.id.with("expand"), Sense::click());
+            let is_open = open.contains(&e.lower);
+            let glyph = if is_open { ic::CARET_DOWN } else { ic::CARET_RIGHT };
+            let c = if on_sel { t.accent_text } else if cresp.hovered() { t.text } else { t.faint };
+            p.text(cr.center(), Align2::CENTER_CENTER, glyph, theme::icon_font(11.0, true), c);
+            if cresp.clicked() {
+                cx.actions.push(Action::ToggleExpand(e.name.clone()));
+            }
+        }
         if cx.space_bars && total > 0 {
             if let Some(sz) = e.display_size() {
                 let frac = (sz as f64 / total as f64) as f32;

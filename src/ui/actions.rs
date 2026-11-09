@@ -113,6 +113,8 @@ pub enum Action {
     OpenRecycle,
     /// Vista plana de la pestaña actual (encender / apagar).
     ToggleFlat,
+    /// Desplegar o plegar una carpeta dentro de la lista (ruta relativa a la carpeta de la pestaña).
+    ToggleExpand(String),
     /// Pestaña de archivos recientes.
     OpenRecent,
     /// Todo lo que tiene esa etiqueta de color (en la pestaña actual).
