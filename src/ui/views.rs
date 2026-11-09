@@ -149,6 +149,7 @@ pub struct Rename {
 }
 
 pub fn elided(p: &Painter, text: &str, font: FontId, color: Color32, max_w: f32) -> Arc<egui::Galley> {
+    theme::want_cjk(text);
     let mut job = LayoutJob::single_section(text.to_owned(), TextFormat::simple(font, color));
     job.wrap = TextWrapping::truncate_at_width(max_w.max(10.0));
     p.layout_job(job)
@@ -156,6 +157,7 @@ pub fn elided(p: &Painter, text: &str, font: FontId, color: Color32, max_w: f32)
 
 /// Texto con la parte que coincide resaltada.
 fn highlighted(p: &Painter, text: &str, needle: &str, t: &Theme, color: Color32, max_w: f32) -> Arc<egui::Galley> {
+    theme::want_cjk(text);
     let font = FontId::proportional(13.5);
     let mut job = LayoutJob::default();
     // La coincidencia se busca en la clave (sin acentos) y se traduce a bytes del original.
@@ -1482,6 +1484,7 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                     rename_row(ui, cx, Rect::from_min_size(name_rect.min, vec2(name_rect.width(), 24.0)), name_rect.left());
                 } else {
                     let color = if selected && focused { t.text } else { t.text };
+                    theme::want_cjk(&e.name);
                     let mut job = LayoutJob::single_section(e.name.clone(), TextFormat::simple(FontId::proportional(12.5), color));
                     job.wrap = TextWrapping { max_width: name_rect.width(), max_rows: 2, break_anywhere: false, overflow_character: Some('…') };
                     job.halign = egui::Align::Center;

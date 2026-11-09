@@ -99,7 +99,36 @@ pub fn icon_font(size: f32, fill: bool) -> FontId {
     FontId::new(size, FontFamily::Name(if fill { "phosphor-fill" } else { "phosphor" }.into()))
 }
 
+/// Hay que dibujar texto en chino, japonés o coreano (las fuentes de Windows se cargan una vez).
+static CJK_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static CJK_LOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// ¿Este texto necesita una fuente CJK? Si sí, se pide cargarla.
+pub fn want_cjk(text: &str) {
+    if CJK_LOADED.load(std::sync::atomic::Ordering::Relaxed) || text.is_ascii() {
+        return;
+    }
+    let cjk = text.chars().any(|c| matches!(c as u32, 0x3040..=0x30FF | 0x3400..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF | 0x1100..=0x11FF));
+    if cjk {
+        CJK_WANTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Si apareció texto CJK y todavía no están sus fuentes: agregarlas (Microsoft YaHei y Malgun
+/// Gothic, de Windows) como respaldo. Solo entonces: pesan unos 23 MB.
+pub fn load_cjk_if_needed(ctx: &egui::Context) {
+    use std::sync::atomic::Ordering;
+    if CJK_WANTED.load(Ordering::Relaxed) && !CJK_LOADED.swap(true, Ordering::Relaxed) {
+        ctx.set_fonts(definitions(true));
+        crate::index::mem_log("fuentes CJK cargadas");
+    }
+}
+
 pub fn setup_fonts(ctx: &egui::Context) {
+    ctx.set_fonts(definitions(false));
+}
+
+fn definitions(cjk: bool) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let read = |f: &str| std::fs::read(format!("C:\\Windows\\Fonts\\{f}")).ok();
     if let Some(b) = read("segoeui.ttf") {
@@ -118,7 +147,17 @@ pub fn setup_fonts(ctx: &egui::Context) {
     }
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     egui_phosphor::add_font_bytes_as_family(&mut fonts, "phosphor-fill", egui_phosphor::bytes::fill::FONT);
-    ctx.set_fonts(fonts);
+    if cjk {
+        for (name, file) in [("yahei", "msyh.ttc"), ("malgun", "malgun.ttf")] {
+            if let Some(b) = read(file) {
+                fonts.font_data.insert(name.into(), Arc::new(FontData::from_owned(b)));
+                for fam in fonts.families.values_mut() {
+                    fam.push(name.into());
+                }
+            }
+        }
+    }
+    fonts
 }
 
 pub fn apply_style(ctx: &egui::Context, t: &Theme) {

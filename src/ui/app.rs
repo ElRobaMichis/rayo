@@ -4025,6 +4025,7 @@ impl eframe::App for App {
             self.palette.ui(&ctx, &t, &target, &data, &mut actions);
         }
         self.track_recent();
+        theme::load_cjk_if_needed(&ctx);
         {
             let tab = &self.tabs[self.cur];
             if tab.tool.is_none() && !tab.search.active() {

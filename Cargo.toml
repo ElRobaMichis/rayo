@@ -41,6 +41,7 @@ winit = { version = "0.30.13", default-features = false }
 egui-winit = { version = "0.36.2", default-features = false, features = ["clipboard"] }
 portable-pty = "0.9"
 vt100 = "0.15"
+pinyin = "0.10"
 
 [dependencies.windows]
 version = "0.62"

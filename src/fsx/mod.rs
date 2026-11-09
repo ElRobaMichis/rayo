@@ -4,6 +4,7 @@
 pub mod collections;
 pub mod dirsize;
 pub mod git;
+pub mod pinyin;
 pub mod shell;
 pub mod thumbs;
 pub mod transfer;
@@ -354,6 +355,23 @@ pub enum SortKey {
 }
 
 pub fn sort_entries(v: &mut [FileEntry], key: SortKey, desc: bool) {
+    // Nombres en chino: por su pinyin (como el Explorador en chino), no por el código Unicode.
+    if matches!(key, SortKey::Name | SortKey::Kind) && v.iter().any(|e| pinyin::has_cjk(&e.lower)) {
+        let keys: std::collections::HashMap<String, String> = v.iter().filter(|e| pinyin::has_cjk(&e.lower)).map(|e| (e.lower.clone(), pinyin::sort_key(&e.lower).into_owned())).collect();
+        let k = |e: &FileEntry| keys.get(&e.lower).cloned().unwrap_or_else(|| e.lower.clone());
+        v.sort_by(|a, b| {
+            let dirs = b.is_dir.cmp(&a.is_dir);
+            if dirs != Ordering::Equal {
+                return dirs;
+            }
+            let o = match key {
+                SortKey::Kind => a.ext.cmp(&b.ext).then_with(|| natural_cmp(&k(a), &k(b))),
+                _ => natural_cmp(&k(a), &k(b)),
+            };
+            if desc { o.reverse() } else { o }
+        });
+        return;
+    }
     v.sort_by(|a, b| {
         // Por tamaño y por fecha se mezclan carpetas y archivos: así se ve qué ocupa más espacio
         // y qué es lo último (la descarga de hoy arriba, aunque haya mil carpetas).

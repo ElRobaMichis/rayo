@@ -136,6 +136,31 @@ impl Ranks {
 
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
+/// Los nombres en chino de un disco con su pinyin.
+fn pinyin_rows(v: &VolumeIndex) -> Vec<(u32, String, String)> {
+    let mut t = Vec::new();
+    for id in 1..v.len() as u32 {
+        if v.is_deleted(id) {
+            continue;
+        }
+        // Solo nombres con algún carácter de 3 bytes (donde está el chino).
+        let name = v.name(id);
+        if name.bytes().any(|b| b >= 0xE3) && crate::fsx::pinyin::has_cjk(&name) {
+            let (i, f) = crate::fsx::pinyin::keys(&name);
+            t.push((id, i, f));
+        }
+    }
+    t
+}
+
+/// Nombres en chino de un disco con su pinyin: (id, iniciales, completo).
+struct PinyinTable {
+    epoch: u64,
+    built: Instant,
+    building: bool,
+    rows: Arc<Vec<(u32, String, String)>>,
+}
+
 pub struct IndexManager {
     pub slots: Vec<Arc<Slot>>,
     /// Aumenta con cada cambio en cualquier volumen.
@@ -145,6 +170,9 @@ pub struct IndexManager {
     pub recheck: AtomicBool,
     /// Carpetas que la interfaz está mostrando (en minúsculas).
     pub watched: RwLock<std::collections::HashSet<String>>,
+    /// Por disco: los nombres en chino con su pinyin (id, iniciales, completo), y para qué
+    /// versión del índice se armó la tabla.
+    pinyin: Arc<Mutex<std::collections::HashMap<usize, PinyinTable>>>,
     /// Carpetas vigiladas que cambiaron desde la última vez.
     pub dirty: Mutex<Vec<String>>,
     /// Despierta a la interfaz (pide un repintado).
@@ -348,6 +376,7 @@ impl IndexManager {
             shutdown: AtomicBool::new(false),
             recheck: AtomicBool::new(false),
             watched: Default::default(),
+            pinyin: Default::default(),
             dirty: Default::default(),
             wake: Default::default(),
         })
@@ -686,6 +715,12 @@ impl IndexManager {
                 let (h, n) = search::search_volume(v, &c, k as u8, limit);
                 hits.extend(h);
                 total += n;
+                // Pinyin: "khxs" o "kehuan" también encuentran 科幻小说.
+                if crate::fsx::pinyin::is_query(text) {
+                    let extra = self.pinyin_hits(k, v, &text.trim().to_lowercase(), c.within, &hits);
+                    total += extra.len();
+                    hits.extend(extra);
+                }
             }
         }
         if opts.limit.is_some() || opts.sort == ResultSort::Relevance {
@@ -703,6 +738,62 @@ impl IndexManager {
             sort_hits(&mut hits, &vols, &ranks, opts.sort, opts.desc);
         }
         SearchOutcome { hits, total, elapsed: t.elapsed(), epochs }
+    }
+
+    /// Nombres en chino cuyo pinyin (iniciales o completo) contiene lo escrito. La tabla de
+    /// pinyin de cada disco se arma una vez (y otra vez solo si el índice cambió).
+    fn pinyin_hits(&self, k: usize, v: &VolumeIndex, q: &str, within: Option<u32>, already: &[search::Hit]) -> Vec<search::Hit> {
+        // La tabla se arma en segundo plano (recorrer todos los nombres tarda ~100 ms en un disco
+        // grande) y se rehace como mucho cada 20 s: mientras, se usa la anterior. Así una
+        // búsqueda común nunca espera por el pinyin.
+        let epoch = self.slots[k].epoch.load(Ordering::Relaxed);
+        let table = {
+            let mut g = self.pinyin.lock();
+            let e = g.entry(k).or_insert_with(|| PinyinTable { epoch: u64::MAX, built: Instant::now() - Duration::from_secs(3600), building: false, rows: Arc::new(Vec::new()) });
+            if e.epoch == u64::MAX && !e.building {
+                // La primera vez en la sesión, ahora mismo (para que esta búsqueda ya lo tenga).
+                e.rows = Arc::new(pinyin_rows(v));
+                e.epoch = epoch;
+                e.built = Instant::now();
+            } else if e.epoch != epoch && !e.building && e.built.elapsed() > Duration::from_secs(20) {
+                e.building = true;
+                let (slot, all) = (self.slots[k].clone(), self.pinyin.clone());
+                std::thread::Builder::new()
+                    .name("pinyin".into())
+                    .spawn(move || {
+                        let rows = pinyin_rows(&slot.index.read());
+                        let mut g = all.lock();
+                        if let Some(e) = g.get_mut(&k) {
+                            e.rows = Arc::new(rows);
+                            e.epoch = epoch;
+                            e.built = Instant::now();
+                            e.building = false;
+                        }
+                    })
+                    .ok();
+            }
+            e.rows.clone()
+        };
+        let seen: std::collections::HashSet<u32> = already.iter().filter(|h| h.vol as usize == k).map(|h| h.id).collect();
+        let inside = |mut id: u32| {
+            let Some(w) = within else { return true };
+            for _ in 0..512 {
+                if id == w {
+                    return true;
+                }
+                let p = v.parent[id as usize];
+                if p == id || id == 0 {
+                    return false;
+                }
+                id = p;
+            }
+            false
+        };
+        table
+            .iter()
+            .filter(|(id, i, f)| !seen.contains(id) && (i.contains(q) || f.contains(q)) && !v.is_deleted(*id) && inside(*id))
+            .map(|(id, i, _)| search::Hit { vol: k as u8, id: *id, score: if i.starts_with(q) { 50 } else { 20 } })
+            .collect()
     }
 
     pub fn slot_for(&self, path: &str) -> Option<&Arc<Slot>> {
