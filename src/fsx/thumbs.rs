@@ -315,16 +315,21 @@ pub fn bitmap_pixels(hbmp: HBITMAP) -> Option<Rgba> {
             return None;
         }
         let mut any_alpha = false;
+        // Las miniaturas vienen premultiplicadas, pero los íconos grandes que da Windows no (p. ej. el
+        // de Arc): un color más intenso que su opacidad es imposible premultiplicado, y delata el caso.
+        // Tratarlos mal deja los bordes semitransparentes como recortados.
+        let mut straight = false;
         for p in px.chunks_exact_mut(4) {
             p.swap(0, 2);
             any_alpha |= p[3] != 0;
+            straight |= p[0].max(p[1]).max(p[2]) > p[3];
         }
         if !any_alpha {
             for p in px.chunks_exact_mut(4) {
                 p[3] = 255;
             }
         }
-        Some(Rgba { w: bw as u32, h: bh as u32, px, premultiplied: any_alpha, orig: None, pages: None })
+        Some(Rgba { w: bw as u32, h: bh as u32, px, premultiplied: any_alpha && !straight, orig: None, pages: None })
     }
 }
 
