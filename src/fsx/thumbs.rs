@@ -456,7 +456,13 @@ fn load(key: &ThumbKey) -> Option<Rgba> {
         // pedido. Las listas de íconos del sistema solo tienen 16, 32, 48 y 256, y el de 256 de
         // muchos programas es uno chico centrado en un lienzo vacío.
         if key.size > 48 {
-            return shell_image(path, key.size as i32, true).or_else(|| system_icon(path, key.size));
+            return match shell_image(path, key.size as i32, true) {
+                // Ícono que solo existe chico (p. ej. el de un juego de Steam, de 32): Windows lo agranda
+                // y le pone un marco gris alrededor. Mejor el de 48 sin marco, que Rayo agranda suave.
+                Some(img) if framed(&img) => system_icon(path, 48).or(Some(img)),
+                Some(img) => Some(img),
+                None => system_icon(path, key.size),
+            };
         }
         return system_icon(path, key.size).or_else(|| shell_image(path, key.size as i32, true));
     }
@@ -492,6 +498,17 @@ fn load(key: &ThumbKey) -> Option<Rgba> {
         };
     }
     shell_image(&path, key.size as i32, false)
+}
+
+/// ¿Tiene el marco que Windows dibuja al agrandar un ícono chico? (todo el borde semitransparente)
+fn framed(img: &Rgba) -> bool {
+    let (w, h) = (img.w as usize, img.h as usize);
+    if w < 8 || h < 8 {
+        return false;
+    }
+    let alpha = |x: usize, y: usize| img.px[(y * w + x) * 4 + 3];
+    let edge = (0..w).flat_map(|x| [(x, 0), (x, h - 1)]).chain((0..h).flat_map(|y| [(0, y), (w - 1, y)]));
+    edge.into_iter().all(|(x, y)| (1..128).contains(&alpha(x, y)))
 }
 
 /// Lo que se asoma en el ícono de una carpeta: la miniatura de su primera foto (o video).
