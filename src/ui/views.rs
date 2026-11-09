@@ -670,7 +670,7 @@ fn drive_handle(cx: &mut Cx, h: &egui::Response, apply: impl Fn(&mut ColumnWidth
     }
     c.date = c.date.clamp(110.0, 420.0);
     c.kind = c.kind.clamp(50.0, 320.0);
-    c.size = c.size.clamp(60.0, 260.0);
+    c.size = ColumnWidths::DEFAULT.size;
     if c != columns() {
         set_columns(c);
     }
@@ -730,8 +730,7 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
     // (el nombre toma la diferencia), así nunca se pisan dos columnas.
     let h = column_handle(ui, &t, Id::new("col-borde-1"), cols_x.2, hrect.y_range());
     drive_handle(cx, &h, |c, dx| c.kind -= dx, |c| c.kind = d.kind);
-    let h = column_handle(ui, &t, Id::new("col-borde-2"), cols_x.3, hrect.y_range());
-    drive_handle(cx, &h, |c, dx| c.size -= dx, |c| c.size = d.size);
+    // Tamaño no se ajusta: es corto y lleva la barra de uso, que se deformaría.
 
     let rest = ui.available_rect_before_wrap();
     let bg = ui.interact(rest, Id::new(("detbg", cx.tab_id)), Sense::click_and_drag());
@@ -794,7 +793,7 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
 fn details_columns(r: Rect) -> (f32, f32, f32, f32, f32) {
     let x4 = r.right();
     let c = columns();
-    let x3 = x4 - c.size;
+    let x3 = x4 - ColumnWidths::DEFAULT.size;
     let x2 = x3 - c.kind;
     let x1 = x2 - c.date;
     (r.left(), x1.max(r.left() + 160.0), x2, x3, x4)

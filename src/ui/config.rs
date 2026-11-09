@@ -32,7 +32,7 @@ pub struct FavGroup {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ColumnWidths {
-    /// Vista de detalles: Modificado (fecha y antigüedad), Tipo y Tamaño. El nombre toma el resto.
+    /// Vista de detalles: Modificado (fecha y antigüedad) y Tipo; Tamaño es fijo. El nombre toma el resto.
     pub date: f32,
     pub kind: f32,
     pub size: f32,
