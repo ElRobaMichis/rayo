@@ -1,0 +1,33 @@
+{
+  "dark": false,
+  "show_hidden": true,
+  "show_preview": false,
+  "view": "Details",
+  "sort": "Modified",
+  "sort_desc": true,
+  "col_width": 280.0,
+  "groups": [
+    { "name": "Favoritos", "items": ["C:\\Proyectos", "D:\\Fotos"], "collapsed": false },
+    { "name": "Trabajo", "items": ["C:\\Trabajo\\Informes"], "collapsed": true }
+  ],
+  "tabs": ["C:\\Users\\Prueba\\Downloads", "D:\\Fotos"],
+  "active_tab": 1,
+  "split": true,
+  "tabs_right": ["C:\\Proyectos"],
+  "active_right": 0,
+  "space_bars": false,
+  "places_collapsed": true,
+  "drives_collapsed": false,
+  "stay_resident": false,
+  "start_with_windows": true,
+  "default_view": { "view": "Grid", "sort": "Name", "desc": false },
+  "folder_views": [["c:\\users\\prueba\\downloads", { "view": "Details", "sort": "Modified", "desc": true }]],
+  "search_history": ["informe", "*.pdf"],
+  "default_explorer": true,
+  "portable": false,
+  "menu_pins": ["cmd:copy"],
+  "menu_hidden": ["shell:Blip"],
+  "lang": "es",
+  "columns": { "date": 210.0, "kind": 100.0, "size": 86.0, "search_name": 0.0 },
+  "tags_collapsed": true
+}

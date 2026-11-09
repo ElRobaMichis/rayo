@@ -145,7 +145,42 @@ fn path() -> PathBuf {
 
 impl Config {
     pub fn load() -> Self {
-        std::fs::read_to_string(path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        let p = path();
+        let Ok(text) = std::fs::read_to_string(&p) else { return Self::default() };
+        let (cfg, dropped) = Self::parse(&text);
+        if !dropped.is_empty() {
+            // Algo no se pudo leer (p. ej. una versión cambió el tipo de un ajuste): se guarda una
+            // copia del archivo tal como estaba y se deja constancia de qué volvió a su valor original.
+            let _ = std::fs::copy(&p, p.with_extension("json.bak"));
+            crate::diag::log(&format!("configuración: no se pudieron leer {dropped:?}; quedan con su valor original"));
+        }
+        cfg
+    }
+
+    /// Lee la configuración sin perderla entera por un ajuste que no se entiende: lo que no se
+    /// puede leer vuelve a su valor original y todo lo demás se conserva. Devuelve también qué
+    /// ajustes se descartaron.
+    pub fn parse(text: &str) -> (Self, Vec<String>) {
+        // Un editor (el Bloc de notas de antes, PowerShell) puede guardar la marca BOM al principio.
+        let text = text.trim_start_matches('\u{feff}');
+        if let Ok(c) = serde_json::from_str::<Self>(text) {
+            return (c, Vec::new());
+        }
+        let Ok(serde_json::Value::Object(user)) = serde_json::from_str::<serde_json::Value>(text) else {
+            return (Self::default(), vec!["(archivo ilegible)".into()]);
+        };
+        let mut kept = serde_json::Map::new();
+        let mut dropped = Vec::new();
+        for (k, v) in user {
+            let mut probe = kept.clone();
+            probe.insert(k.clone(), v.clone());
+            if serde_json::from_value::<Self>(serde_json::Value::Object(probe)).is_ok() {
+                kept.insert(k, v);
+            } else {
+                dropped.push(k);
+            }
+        }
+        (serde_json::from_value(serde_json::Value::Object(kept)).unwrap_or_default(), dropped)
     }
 
     pub fn save(&self) {
@@ -156,5 +191,49 @@ impl Config {
                 let _ = std::fs::rename(tmp, p);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Una configuración guardada por Rayo 0.2.4 se sigue leyendo entera: actualizar no debe
+    /// perder pestañas, favoritos ni ajustes. (Si un cambio rompe esto, hay que migrar, no borrar.)
+    #[test]
+    fn reads_config_from_0_2_4() {
+        let (c, dropped) = Config::parse(include_str!("testdata/config-0.2.4.json"));
+        assert!(dropped.is_empty(), "no se pudieron leer: {dropped:?}");
+        assert!(!c.dark && c.show_hidden && c.split && c.default_explorer && c.tags_collapsed);
+        assert_eq!(c.view, ViewMode::Details);
+        assert_eq!(c.tabs.len(), 2);
+        assert_eq!(c.active_tab, 1);
+        assert_eq!(c.groups.len(), 2);
+        assert_eq!(c.groups[1].items, vec![r"C:\Trabajo\Informes".to_string()]);
+        assert_eq!(c.default_view.view, ViewMode::Grid);
+        assert_eq!(c.folder_views.len(), 1);
+        assert_eq!(c.columns.date, 210.0);
+        assert_eq!(c.lang.as_deref(), Some("es"));
+    }
+
+    /// Un ajuste que no se entiende vuelve a su valor original; lo demás se conserva.
+    #[test]
+    fn a_bad_setting_does_not_reset_the_rest() {
+        let text = include_str!("testdata/config-0.2.4.json").replace("\"col_width\": 280.0", "\"col_width\": \"ancho\"");
+        let (c, dropped) = Config::parse(&text);
+        assert_eq!(dropped, vec!["col_width".to_string()]);
+        assert_eq!(c.col_width, Config::default().col_width);
+        assert_eq!(c.tabs.len(), 2);
+        assert_eq!(c.groups.len(), 2);
+        assert!(c.default_explorer);
+    }
+
+    /// Guardado con marca BOM (Bloc de notas, PowerShell): se lee igual.
+    #[test]
+    fn reads_config_with_bom() {
+        let text = format!("\u{feff}{}", include_str!("testdata/config-0.2.4.json"));
+        let (c, dropped) = Config::parse(&text);
+        assert!(dropped.is_empty(), "{dropped:?}");
+        assert_eq!(c.tabs.len(), 2);
     }
 }

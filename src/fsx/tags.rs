@@ -36,11 +36,18 @@ fn file() -> PathBuf {
 fn with<R>(f: impl FnOnce(&mut Map) -> R) -> R {
     let mut g = STORE.lock();
     let map = g.get_or_insert_with(|| {
-        std::fs::read(file())
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Vec<(String, u8)>>(&b).ok())
-            .map(|v| v.into_iter().filter(|(_, m)| *m != 0).map(|(p, m)| (p.to_lowercase(), (p, m))).collect())
-            .unwrap_or_default()
+        let Ok(bytes) = std::fs::read(file()) else { return Map::default() };
+        let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes);
+        match serde_json::from_slice::<Vec<(String, u8)>>(bytes) {
+            Ok(v) => v.into_iter().filter(|(_, m)| *m != 0).map(|(p, m)| (p.to_lowercase(), (p, m))).collect(),
+            Err(e) => {
+                // Ilegible (¿un formato de otra versión?): se guarda una copia antes de que el
+                // próximo cambio lo reemplace, para no perder las etiquetas.
+                let _ = std::fs::copy(file(), file().with_extension("json.bak"));
+                crate::diag::log(&format!("etiquetas: no se pudo leer etiquetas.json ({e}); copia en etiquetas.json.bak"));
+                Map::default()
+            }
+        }
     });
     f(map)
 }

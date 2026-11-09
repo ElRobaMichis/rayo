@@ -68,6 +68,19 @@ safe to experiment with.
 
 ## Releasing (maintainers)
 
+Before releasing, run the smoke test on the release build. It opens `rayo.exe` in an isolated instance with a
+configuration saved by an older version and fails if the window is slow to appear, stops responding, logs errors
+or loses settings:
+
+```bash
+cargo build --release
+powershell -ExecutionPolicy Bypass -File scripts/smoke.ps1
+```
+
+When the configuration format changes, keep `src/ui/testdata/config-*.json` readable: the
+`reads_config_from_0_2_4` test fails if an update would drop a user's tabs, favorites or settings. Add the
+previous version's file as a new fixture rather than editing the old one.
+
 Releases are automatic. Bump `version` in `Cargo.toml`, commit, then push a matching tag:
 
 ```bash
