@@ -90,6 +90,9 @@ features = [
 # Copia de winit 0.30.13 con una sola función agregada (`prepare_keyboard_layout`)
 # para preparar la tabla del teclado en paralelo y mostrar la ventana ~70 ms antes.
 winit = { path = "vendor/winit" }
+# Copia de eframe 0.36.2 que no cierra la app si Windows rechaza un cambio de contexto de
+# OpenGL entre ventanas (solo pierde ese cuadro). Ver `change_gl_context`.
+eframe = { path = "vendor/eframe" }
 
 [profile.release]
 opt-level = 3

@@ -28,12 +28,17 @@ const MAX_TEX: usize = 240;
 
 impl Textures {
     pub fn new(loader: Arc<ThumbLoader>) -> Self {
+        super::shellicons::init(loader.clone());
         Textures { loader, map: HashMap::new(), order: VecDeque::new() }
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) {
         self.loader.next_frame();
         while let Ok(r) = self.loader.rx.try_recv() {
+            if r.key.path.starts_with(crate::fsx::thumbs::ICON_PREFIX) {
+                super::shellicons::deliver(ctx, &r.key, r.img);
+                continue;
+            }
             let entry = match r.img {
                 Some(img) => {
                     let size = [img.w as usize, img.h as usize];

@@ -372,7 +372,11 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], show: &[usize], cur: usize,
     let full = ui.available_rect_before_wrap();
     let n = show.len().max(1);
     let plus_w = 36.0;
-    let tab_w = ((full.width() - reserve - plus_w - 12.0) / n as f32).clamp(90.0, 220.0);
+    // Se achican hasta caber (antes tenían un mínimo y, con muchas, tapaban los botones de la
+    // ventana): primero se recorta el título, luego queda solo el ícono.
+    let tab_w = ((full.width() - reserve - plus_w - 12.0) / n as f32).clamp(34.0, 220.0);
+    let narrow = tab_w < 84.0;
+    let tiny = tab_w < 58.0;
     let mut x = full.left() + 6.0;
     let p = ui.painter().clone();
     for (k, &i) in show.iter().enumerate() {
@@ -426,7 +430,14 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], show: &[usize], cur: usize,
         } else {
             ic::FOLDER
         };
-        p.text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, icon, theme::icon_font(14.0, true), if active { t.folder } else { t.dim });
+        let close_r = if tiny { Rect::from_center_size(r.center(), vec2(TAB_BTN, TAB_BTN)) } else { Rect::from_center_size(pos2(r.right() - 15.0, r.center().y), vec2(TAB_BTN, TAB_BTN)) };
+        // Muy angosta: la X ocupa el lugar del ícono al pasar por encima.
+        // Muy angosta, la X va en el centro: solo en la activa (en las demás, un clic cambia a ella).
+        let has_x = !tiny || active;
+        if !(tiny && active && hovering) {
+            let ip = if tiny { (r.center(), Align2::CENTER_CENTER) } else { (pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER) };
+            p.text(ip.0, ip.1, icon, theme::icon_font(14.0, true), if active { t.folder } else { t.dim });
+        }
         let recent = tab.search.text.trim_start().to_lowercase().starts_with("recientes:");
         let title = if recent && tab.tool.is_none() {
             t!("barra.recientes").to_string()
@@ -435,9 +446,11 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], show: &[usize], cur: usize,
         } else {
             tab.title()
         };
-        let close_r = Rect::from_center_size(pos2(r.right() - 15.0, r.center().y), vec2(TAB_BTN, TAB_BTN));
-        let g = elided(&p, &title, FontId::proportional(12.5), if active { t.text } else { t.dim }, r.width() - 56.0);
-        p.galley(pos2(r.left() + 32.0, r.center().y - g.size().y / 2.0), g, t.text);
+        if !narrow {
+            let g = elided(&p, &title, FontId::proportional(12.5), if active { t.text } else { t.dim }, r.width() - 56.0);
+            p.galley(pos2(r.left() + 32.0, r.center().y - g.size().y / 2.0), g, t.text);
+        }
+        let resp = if narrow { resp.on_hover_text(&title) } else { resp };
         if resp.clicked() {
             actions.push(Action::SwitchTab(i));
         }
@@ -445,8 +458,8 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], show: &[usize], cur: usize,
             actions.push(Action::CloseTab(i));
         }
         // La X existe siempre (así no cambia lo que hay bajo el ratón); se ve en la activa y al pasar por encima.
-        let cresp = ui.interact(close_r, Id::new(("tabx", tab.id)), Sense::click());
-        if active || hovering {
+        let cresp = ui.interact(if has_x { close_r } else { Rect::NOTHING }, Id::new(("tabx", tab.id)), Sense::click());
+        if has_x && (hovering || (active && !tiny)) {
             if cresp.hovered() {
                 p.rect_filled(close_r, 5.0, t.border);
             }

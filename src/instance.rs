@@ -195,7 +195,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let cds = unsafe { &*(lp.0 as *const COPYDATASTRUCT) };
             if cds.dwData == MSG_ID {
                 let units = unsafe { std::slice::from_raw_parts(cds.lpData as *const u16, cds.cbData as usize / 2) };
-                let _ = inbox().0.send(String::from_utf16_lossy(units));
+                let path = String::from_utf16_lossy(units);
+                crate::diag::log(&format!("pedido de otra instancia: «{path}»"));
+                let _ = inbox().0.send(path);
                 show_main();
                 return LRESULT(1);
             }
@@ -221,6 +223,36 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
 
+/// Trae la ventana al frente aunque el clic haya sido en otra app (el navegador al "mostrar en
+/// carpeta"). Windows solo deja pasar al frente a quien tiene la entrada del usuario; si no,
+/// únicamente hace parpadear el ícono en la barra de tareas. Para pedirlo como corresponde, este
+/// hilo se engancha un momento a la cola de entrada de la ventana que está al frente.
+unsafe fn bring_to_front(h: HWND) {
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    unsafe {
+        if SetForegroundWindow(h).as_bool() && GetForegroundWindow() == h {
+            return;
+        }
+        let fg = GetForegroundWindow();
+        let fg_thread = GetWindowThreadProcessId(fg, None);
+        let me = GetCurrentThreadId();
+        let attached = fg_thread != 0 && fg_thread != me && AttachThreadInput(me, fg_thread, true).as_bool();
+        let _ = BringWindowToTop(h);
+        let _ = SetForegroundWindow(h);
+        if attached {
+            let _ = AttachThreadInput(me, fg_thread, false);
+        }
+        if GetForegroundWindow() != h {
+            // Último recurso: una pulsación vacía cuenta como entrada del usuario (no escribe nada).
+            use windows::Win32::UI::Input::KeyboardAndMouse::{KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, keybd_event};
+            keybd_event(0, 0, KEYBD_EVENT_FLAGS(0), 0);
+            keybd_event(0, 0, KEYEVENTF_KEYUP, 0);
+            let _ = SetForegroundWindow(h);
+        }
+        crate::diag::log(&format!("al frente: {}", if GetForegroundWindow() == h { "sí" } else { "no (Windows no lo permitió)" }));
+    }
+}
+
 /// Muestra la ventana principal (también si estaba en segundo plano) y la trae al frente.
 fn show_main() {
     if let Some(&h) = MAIN_HWND.get() {
@@ -233,7 +265,7 @@ fn show_main() {
             } else if IsIconic(h).as_bool() {
                 let _ = ShowWindowAsync(h, SW_RESTORE);
             }
-            let _ = SetForegroundWindow(h);
+            bring_to_front(h);
         }
         if let Some(&m) = MSG_HWND.get() {
             tray(HWND(m as *mut _), false);
@@ -282,6 +314,7 @@ pub fn shutdown() {
 /// Abre algo en Rayo desde otro hilo (el vigía del Explorador) y muestra la ventana.
 /// Ruta vacía: solo mostrar Rayo.
 pub fn deliver(path: &str) {
+    crate::diag::log(&format!("pedido del vigía: «{path}»"));
     let _ = inbox().0.send(path.to_string());
     show_main();
 }

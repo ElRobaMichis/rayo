@@ -29,6 +29,7 @@ macro_rules! tp {
 }
 
 pub mod admin;
+pub mod diag;
 pub mod fsx;
 pub mod i18n;
 pub mod index;

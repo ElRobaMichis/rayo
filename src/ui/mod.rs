@@ -9,6 +9,7 @@ pub mod ctxmenu;
 pub mod icons;
 pub mod language;
 pub mod preview;
+pub mod shellicons;
 pub mod state;
 pub mod prevhost;
 pub mod theme;

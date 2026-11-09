@@ -583,6 +583,7 @@ fn take_over(hwnd: HWND) {
     }
     let Some((loc, sel, _)) = found else {
         trace("  sin ubicación: se devuelve al Explorador");
+        crate::diag::log("vigía: el Explorador no dijo qué carpeta mostraba en 2,5 s; se le deja");
         return;
     };
     // Rayo se queda con esto. Se oculta, vuelve a su lugar (así el Explorador recuerda una
@@ -595,6 +596,7 @@ fn take_over(hwnd: HWND) {
     unsafe {
         let _ = wm::PostMessageW(Some(hwnd), wm::WM_CLOSE, WPARAM(0), LPARAM(0));
     }
+    crate::diag::log(&format!("vigía: Explorador en «{loc}», archivo marcado: {sel:?} ({} ms)", start.elapsed().as_millis()));
     let target = match sel {
         Some(s) if !is_home(&loc) => s,
         _ if is_home(&loc) => String::new(),

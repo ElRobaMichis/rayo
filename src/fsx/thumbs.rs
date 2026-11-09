@@ -438,8 +438,14 @@ impl ThumbLoader {
     }
 }
 
-/// Carga una imagen: página de PDF, foto o miniatura del shell.
+/// Marca de un pedido de ícono (no de miniatura) en la ruta de un `ThumbKey`.
+pub const ICON_PREFIX: &str = "\u{1}icono:";
+
+/// Carga una imagen: página de PDF, foto o miniatura del shell (o el ícono, con `ICON_PREFIX`).
 fn load(key: &ThumbKey) -> Option<Rgba> {
+    if let Some(path) = key.path.strip_prefix(ICON_PREFIX) {
+        return shell_image(path, key.size as i32, true);
+    }
     // "C:\\doc.pdf|3" = página 3 de un PDF.
     let (path, page) = match key.path.rsplit_once(super::pdf::PAGE_SEP) {
         Some((p, n)) => (p.to_string(), n.parse().unwrap_or(0)),
@@ -572,5 +578,26 @@ mod tests {
         let (out, w, h) = orient_pixels(px, 3, 2, 6);
         assert_eq!((w, h), (2, 3));
         assert_eq!(out[((0 * w + 1) * 4) as usize], 255);
+    }
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::*;
+
+    /// Windows da el ícono propio de un programa y el del tipo de un archivo cualquiera, con
+    /// transparencia (para los íconos de las listas).
+    #[test]
+    fn shell_gives_icons() {
+        super::super::shell::com_init();
+        let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
+        let exe = shell_image(&format!(r"{windir}\notepad.exe"), 32, true).expect("ícono de notepad.exe");
+        assert!(exe.w >= 16 && exe.h >= 16);
+        assert!(exe.px.chunks(4).any(|p| p[3] == 0), "el ícono debería tener partes transparentes");
+        let d = std::env::temp_dir().join(format!("rayo-icono-{}.zip", std::process::id()));
+        std::fs::write(&d, b"PK\x05\x06\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
+        let zip = shell_image(&d.to_string_lossy(), 32, true);
+        let _ = std::fs::remove_file(&d);
+        assert!(zip.is_some(), "ícono de un .zip");
     }
 }

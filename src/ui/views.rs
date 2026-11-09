@@ -337,6 +337,21 @@ fn rename_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, x: f32) {
 
 /// Dibuja una fila de archivo genérica (ícono + nombre + texto a la derecha).
 #[allow(clippy::too_many_arguments)]
+/// El ícono de un archivo: el de Windows si ya llegó (el de cada programa, o el de su tipo);
+/// mientras tanto, y para las carpetas de las listas, el de Rayo. `glyph`: tamaño del de Rayo.
+#[allow(clippy::too_many_arguments)]
+fn file_icon(p: &Painter, t: &Theme, center: Pos2, points: f32, glyph: f32, path: &str, is_dir: bool, ext: &str, color: Option<Color32>, alpha: f32) {
+    if !is_dir {
+        if let Some(tex) = super::shellicons::get(path, ext, super::shellicons::px_for(p.ctx(), points)) {
+            let r = Rect::from_center_size(center, vec2(points, points));
+            p.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE.gamma_multiply(alpha));
+            return;
+        }
+    }
+    let (g, c) = icons::for_entry(t, is_dir, ext);
+    p.text(center, Align2::CENTER_CENTER, g, theme::icon_font(glyph, true), color.unwrap_or(c).gamma_multiply(alpha));
+}
+
 fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, selected: bool, active: bool, right: Option<&str>, chevron: bool, name_limit: Option<f32>) -> egui::Response {
     let id = Id::new(("row", cx.tab_id, dir, &e.name));
     let resp = ui.interact(rect, id, Sense::click_and_drag());
@@ -346,14 +361,11 @@ fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, sele
         drop_highlight(ui, cx.t, &resp, rect);
     }
     let (text_c, dim_c) = fg(cx.t, selected, active);
-    let (glyph, mut icolor) = icons::for_entry(cx.t, e.is_dir, &e.ext);
-    if selected && active {
-        icolor = cx.t.accent_text;
-    }
+    let icolor = (selected && active).then_some(cx.t.accent_text);
     let path = fsx::join(dir, &e.name);
     let faded = e.hidden || cx.cut.contains(&path);
     let alpha = if faded { 0.5 } else { 1.0 };
-    p.text(pos2(rect.left() + 14.0, rect.center().y), Align2::LEFT_CENTER, glyph, theme::icon_font(16.0, true), icolor.gamma_multiply(alpha));
+    file_icon(&p, cx.t, pos2(rect.left() + 22.0, rect.center().y), 18.0, 16.0, &path, e.is_dir, &e.ext, icolor, alpha);
     let name_x = rect.left() + 36.0;
     let mut right_w = 12.0;
     if chevron {
@@ -407,6 +419,9 @@ fn scroll_target(col: &mut Col, entries: &[FileEntry], loading: bool) -> Option<
     let found = col.cursor.as_ref().and_then(|c| entries.iter().position(|e| &e.name == c));
     if found.is_some() || !loading {
         col.scroll_to_cursor = false;
+        if found.is_none() {
+            crate::diag::log(&format!("no se encontró «{}» en «{}» ({} elementos)", col.cursor.as_deref().unwrap_or(""), col.path, entries.len()));
+        }
     }
     found
 }
@@ -899,11 +914,7 @@ pub fn search_results(ui: &mut Ui, cx: &mut Cx, res: Option<&Results>, cursor: &
         let p = ui.painter_at(r);
         row_bg(&p, r, &t, selected, true, resp.hovered());
         let (text_c, dim_c) = fg(&t, selected, true);
-        let (glyph, mut ic_c) = icons::for_entry(&t, row.is_dir, &row.ext);
-        if selected {
-            ic_c = t.accent_text;
-        }
-        p.text(pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, glyph, theme::icon_font(16.0, true), ic_c);
+        file_icon(&p, &t, pos2(r.left() + 22.0, r.center().y), 18.0, 16.0, &row.path(), row.is_dir, &row.ext, selected.then_some(t.accent_text), 1.0);
         let (nx, dir_x, size_r, date_x) = search_columns(r);
         let name_w = dir_x - nx - 12.0;
         let g = if selected {
@@ -940,8 +951,9 @@ const TILE_H: f32 = 148.0;
 
 /// ¿Vale la pena pedir la miniatura real (foto, video, PDF, ícono del programa)?
 fn wants_thumbnail(e: &FileEntry) -> bool {
-    !e.is_dir
-        && (fsx::thumbs::is_image_ext(&e.ext)
+    // Las carpetas, como en el Explorador: con un vistazo de lo que tienen (fotos, videos…).
+    e.is_dir
+        || (fsx::thumbs::is_image_ext(&e.ext)
             || matches!(e.ext.as_str(), "mp4" | "mkv" | "mov" | "avi" | "wmv" | "webm" | "m4v" | "mpg" | "pdf" | "exe" | "lnk" | "ico" | "psd" | "svg" | "msi"))
 }
 
@@ -1024,8 +1036,7 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                     }
                 }
                 if !drew {
-                    let (glyph, color) = icons::for_entry(&t, e.is_dir, &e.ext);
-                    p.text(thumb.center(), Align2::CENTER_CENTER, glyph, theme::icon_font(54.0, true), color);
+                    file_icon(&p, &t, thumb.center(), 64.0, 54.0, &path, e.is_dir, &e.ext, None, 1.0);
                 }
                 if let Some((g, c, _)) = cloud_glyph(&t, e.cloud) {
                     let b = Rect::from_center_size(pos2(thumb.right() - 6.0, thumb.top() + 8.0), vec2(20.0, 20.0));

@@ -63,6 +63,8 @@ pub struct App {
     toast: Option<(String, f64)>,
     hwnd: Option<HWND>,
     watched_sig: u64,
+    /// Cuándo se anotó por última vez en el diagnóstico que cambió cada carpeta.
+    diag_dirty: std::collections::HashMap<String, std::time::Instant>,
     epoch_seen: u64,
     cut: Vec<String>,
     text_cache: Option<(String, Option<String>)>,
@@ -221,6 +223,7 @@ impl App {
         theme::setup_fonts(&ctx);
         theme::apply_style(&ctx, &t);
         views::set_columns(cfg.columns);
+        crate::diag::log(&format!("Rayo {} abierto", env!("CARGO_PKG_VERSION")));
         // El doble clic dura lo que diga Windows (egui usa 0,3 s; Windows, 0,5 s por defecto).
         let dbl = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() } as f64 / 1000.0;
         ctx.options_mut(|o| o.input_options.max_double_click_delay = dbl.clamp(0.2, 1.0));
@@ -327,6 +330,7 @@ impl App {
             toast: None,
             hwnd,
             watched_sig: 0,
+            diag_dirty: std::collections::HashMap::new(),
             epoch_seen: 0,
             cut: Vec::new(),
             text_cache: None,
@@ -494,6 +498,14 @@ impl App {
         // Carpetas visibles que cambiaron en disco.
         let dirty: Vec<String> = std::mem::take(&mut *self.mgr.dirty.lock());
         if !dirty.is_empty() {
+            // Al registro, como mucho una vez cada 5 s por carpeta (una descarga avisa en cada escritura).
+            let now = std::time::Instant::now();
+            for d in &dirty {
+                if self.diag_dirty.get(d).is_none_or(|t| now.duration_since(*t).as_secs() >= 5) {
+                    self.diag_dirty.insert(d.clone(), now);
+                    crate::diag::log(&format!("cambió en disco: «{d}»"));
+                }
+            }
             let inside = |k: &str| {
                 let k = k.to_lowercase();
                 match k.strip_prefix(fsx::FLAT_KEY) {
@@ -2957,6 +2969,7 @@ impl eframe::App for App {
             // Si esa carpeta ya está abierta en una pestaña, se va a ella (no se apilan pestañas iguales).
             // Un comprimido se abre por dentro, como una carpeta.
             let is_dir = std::path::Path::new(&p).is_dir() || fsx::archive::split(&p).is_some();
+            crate::diag::log(&format!("abrir en Rayo: «{p}» ({})", if is_dir { "carpeta" } else { "archivo: se marca" }));
             let dir = if is_dir { fsx::normalize(&p) } else { fsx::parent_of(&p).unwrap_or_default() };
             match self.tabs.iter().position(|t| t.tool.is_none() && t.search.text.is_empty() && t.path().eq_ignore_ascii_case(&dir)) {
                 Some(i) => actions.push(Action::SwitchTab(i)),
