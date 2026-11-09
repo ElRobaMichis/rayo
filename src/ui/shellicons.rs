@@ -18,6 +18,9 @@ struct Cache {
     ready: HashMap<String, Option<TextureHandle>>,
     /// Pedidos en curso: clave de caché → lo que se pidió al cargador.
     asked: HashMap<String, ThumbKey>,
+    /// Pedidos que fallaron: cuántas veces y cuándo la última (se reintenta).
+    failed: HashMap<String, (u32, std::time::Instant)>,
+    ctx: Option<egui::Context>,
 }
 
 thread_local! {
@@ -46,6 +49,15 @@ pub fn get(path: &str, ext: &str, size: u32) -> Option<TextureHandle> {
         if let Some(t) = c.ready.get(&key) {
             return t.clone();
         }
+        if let Some((tries, at)) = c.failed.get(&key) {
+            if at.elapsed() < std::time::Duration::from_millis(700 * u64::from(*tries)) {
+                // Otro cuadro dentro de un rato, para reintentar.
+                if let Some(ctx) = &c.ctx {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(800));
+                }
+                return None;
+            }
+        }
         let req = c.asked.entry(key).or_insert_with(|| ThumbKey { path: format!("{ICON_PREFIX}{path}"), size }).clone();
         // Se vuelve a pedir en cada cuadro mientras se necesite (lo que deja de pedirse se olvida).
         if let Some(l) = &c.loader {
@@ -59,8 +71,19 @@ pub fn get(path: &str, ext: &str, size: u32) -> Option<TextureHandle> {
 pub fn deliver(ctx: &egui::Context, key: &ThumbKey, img: Option<Rgba>) {
     CACHE.with(|c| {
         let mut c = c.borrow_mut();
+        c.ctx.get_or_insert_with(|| ctx.clone());
         let Some(cache) = c.asked.iter().find(|(_, k)| *k == key).map(|(c, _)| c.clone()) else { return };
         c.asked.remove(&cache);
+        // A veces Windows contesta que está ocupado (p. ej. el ícono de los PDF que abre el navegador):
+        // se vuelve a intentar unas veces, con pausas, antes de quedarse con el ícono de Rayo.
+        if img.is_none() {
+            let tries = c.failed.get(&cache).map_or(0, |f| f.0) + 1;
+            if tries < 5 {
+                c.failed.insert(cache, (tries, std::time::Instant::now()));
+                return;
+            }
+        }
+        c.failed.remove(&cache);
         let tex = img.map(|img| {
             let size = [img.w as usize, img.h as usize];
             let ci = if img.premultiplied { ColorImage::from_rgba_premultiplied(size, &img.px) } else { ColorImage::from_rgba_unmultiplied(size, &img.px) };

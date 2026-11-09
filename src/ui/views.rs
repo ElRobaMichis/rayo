@@ -716,30 +716,16 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
     header(SortKey::Modified, t!("comun.modificado"), cols_x.1, cols_x.2, false, cx);
     header(SortKey::Kind, t!("lista.tipo"), cols_x.2, cols_x.3, false, cx);
     header(SortKey::Size, t!("comun.tamano"), cols_x.3, cols_x.4, true, cx);
-    // Bordes entre columnas: se arrastran para cambiar el ancho (el nombre toma lo que queda).
+    // Bordes entre columnas: se arrastran para cambiar el ancho.
     let d = ColumnWidths::DEFAULT;
     let h = column_handle(ui, &t, Id::new("col-borde-0"), cols_x.1, hrect.y_range());
     drive_handle(cx, &h, |c, dx| c.date -= dx, |c| c.date = d.date);
+    // Cada borde cambia el ancho de la columna de su derecha; lo de la izquierda se mueve con él
+    // (el nombre toma la diferencia), así nunca se pisan dos columnas.
     let h = column_handle(ui, &t, Id::new("col-borde-1"), cols_x.2, hrect.y_range());
-    drive_handle(
-        cx,
-        &h,
-        |c, dx| {
-            c.date += dx;
-            c.kind -= dx;
-        },
-        |c| (c.date, c.kind) = (d.date, d.kind),
-    );
+    drive_handle(cx, &h, |c, dx| c.kind -= dx, |c| c.kind = d.kind);
     let h = column_handle(ui, &t, Id::new("col-borde-2"), cols_x.3, hrect.y_range());
-    drive_handle(
-        cx,
-        &h,
-        |c, dx| {
-            c.kind += dx;
-            c.size -= dx;
-        },
-        |c| (c.kind, c.size) = (d.kind, d.size),
-    );
+    drive_handle(cx, &h, |c, dx| c.size -= dx, |c| c.size = d.size);
 
     let rest = ui.available_rect_before_wrap();
     let bg = ui.interact(rest, Id::new(("detbg", cx.tab_id)), Sense::click_and_drag());
