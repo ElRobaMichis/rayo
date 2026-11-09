@@ -122,6 +122,12 @@ pub struct App {
     toolbar_dlg: bool,
     /// Estante: archivos juntados de varias carpetas para llevarlos juntos.
     shelf: Vec<String>,
+    /// Carpetas de la nube de este equipo.
+    clouds: Vec<(String, String)>,
+    /// Formulario de conexión abierto: (índice si se edita, datos, contraseña, recordarla, error).
+    conn_form: Option<(Option<usize>, fsx::remote::Connection, String, bool, String)>,
+    /// Resultado de una conexión hecha en otro hilo: (índice, carpeta o error).
+    conn_result: Arc<Mutex<Option<(usize, Result<String, String>)>>>,
     /// Terminal integrada (abajo), si tiene el teclado, su alto y dónde se dibujó.
     terminal: Option<super::terminal::Terminal>,
     term_focus: bool,
@@ -400,6 +406,9 @@ impl App {
             last_dir: String::new(),
             toolbar_dlg: false,
             shelf: Vec::new(),
+            clouds: fsx::remote::cloud_folders(),
+            conn_form: None,
+            conn_result: Default::default(),
             terminal: None,
             term_focus: false,
             term_h: 260.0,
@@ -760,7 +769,7 @@ impl App {
 
     fn keys(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         // Con un menú abierto, las teclas son del menú (Esc lo cierra).
-        if self.palette.open || self.batch.is_some() || self.pattern.is_some() || self.hash.is_some() || self.locks.is_some() || self.default_dlg.is_some() || self.lang_dlg.is_some() || self.admin.is_some() || self.confirm_delete.is_some() || self.toolbar_dlg || self.first_run || egui::Popup::is_any_open(ctx) || chrome::overlay_open(ctx) {
+        if self.palette.open || self.batch.is_some() || self.pattern.is_some() || self.hash.is_some() || self.locks.is_some() || self.default_dlg.is_some() || self.lang_dlg.is_some() || self.admin.is_some() || self.confirm_delete.is_some() || self.toolbar_dlg || self.conn_form.is_some() || self.first_run || egui::Popup::is_any_open(ctx) || chrome::overlay_open(ctx) {
             return;
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Backtick)) {
@@ -1553,6 +1562,27 @@ impl App {
                     self.open_tool(ctx, dir, tool);
                 }
             }
+            Action::EditConnection(i) => {
+                let c = i.and_then(|i| self.cfg.connections.get(i).cloned()).unwrap_or(fsx::remote::Connection { secure: true, ..Default::default() });
+                self.conn_form = Some((i, c, String::new(), true, String::new()));
+            }
+            Action::DeleteConnection(i) if i < self.cfg.connections.len() => {
+                let c = self.cfg.connections.remove(i);
+                fsx::remote::forget_password(&c);
+                self.save_cfg();
+            }
+            Action::ForgetPassword(i) => {
+                if let Some(c) = self.cfg.connections.get(i) {
+                    fsx::remote::forget_password(c);
+                    self.toast(ctx, t!("app.contrasena_olvidada"));
+                }
+            }
+            Action::Connect(i) => {
+                if let Some(c) = self.cfg.connections.get(i).cloned() {
+                    self.connect(ctx, i, c, None, false);
+                }
+            }
+            Action::DeleteConnection(_) => {}
             Action::OpenCollection(name) => {
                 if self.tabs[self.cur].tool.is_some() {
                     let home = self.places.first().map(|p| p.path.clone()).unwrap_or_else(|| "C:\\".into());
@@ -2709,6 +2739,149 @@ impl App {
         }
     }
 
+    /// Conecta en otro hilo (un servidor puede tardar) y, al terminar, abre la carpeta.
+    fn connect(&mut self, ctx: &egui::Context, i: usize, c: fsx::remote::Connection, password: Option<String>, remember: bool) {
+        let (out, ctx2) = (self.conn_result.clone(), ctx.clone());
+        self.toast(ctx, tf!("app.conectando", nombre = if c.name.is_empty() { c.host.clone() } else { c.name.clone() }));
+        std::thread::spawn(move || {
+            let r = fsx::remote::connect(&c, password.as_deref(), remember);
+            *out.lock() = Some((i, r));
+            ctx2.request_repaint();
+        });
+    }
+
+    /// Lo que devolvió una conexión: abrirla, o volver al formulario con el error.
+    fn poll_connect(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let Some((i, r)) = self.conn_result.lock().take() else { return };
+        match r {
+            Ok(unc) => actions.push(Action::NewTab(Some(unc))),
+            Err(e) => {
+                if let Some(c) = self.cfg.connections.get(i).cloned() {
+                    self.conn_form = Some((Some(i), c, String::new(), true, e));
+                } else {
+                    self.toast(ctx, tf!("app.no_pudo", error = e));
+                }
+            }
+        }
+    }
+
+    /// El formulario de una conexión.
+    fn connection_dialog(&mut self, ctx: &egui::Context) {
+        use egui::RichText;
+        use fsx::remote::Kind;
+        let t = self.t;
+        let Some((idx, mut c, mut pw, mut remember, err)) = self.conn_form.take() else { return };
+        let (mut close, mut save, mut go) = (false, false, false);
+        let modal = egui::Modal::new(Id::new("connection")).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(egui_phosphor::regular::PLUGS_CONNECTED).font(theme::icon_font(20.0, true)).color(t.accent));
+                ui.label(RichText::new(if idx.is_some() { t!("barra.editar_conexion") } else { t!("barra.nueva_conexion") }).font(theme::semibold(17.0)).color(t.text));
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                for (k, label) in [(Kind::Smb, "SMB"), (Kind::WebDav, "WebDAV"), (Kind::Sftp, "SFTP")] {
+                    if ui.selectable_label(c.kind == k, label).clicked() {
+                        c.kind = k;
+                    }
+                }
+            });
+            ui.add_space(6.0);
+            let row = |ui: &mut Ui, label: &str, w: &mut dyn FnMut(&mut Ui)| {
+                ui.horizontal(|ui| {
+                    ui.add_sized(vec2(110.0, 22.0), egui::Label::new(RichText::new(label).color(t.dim)));
+                    w(ui);
+                });
+            };
+            row(ui, t!("conexion.nombre"), &mut |ui| {
+                ui.add(egui::TextEdit::singleline(&mut c.name).hint_text(t!("conexion.nombre_ejemplo")).desired_width(300.0));
+            });
+            row(ui, t!("conexion.servidor"), &mut |ui| {
+                ui.add(egui::TextEdit::singleline(&mut c.host).hint_text("nas.local / nube.ejemplo.com").desired_width(300.0));
+            });
+            let mut port = if c.port == 0 { String::new() } else { c.port.to_string() };
+            row(ui, t!("conexion.puerto"), &mut |ui| {
+                ui.add(egui::TextEdit::singleline(&mut port).hint_text(match c.kind {
+                    Kind::Smb => "445",
+                    Kind::WebDav => "443",
+                    Kind::Sftp => "22",
+                }).desired_width(80.0));
+                if c.kind == Kind::WebDav {
+                    ui.checkbox(&mut c.secure, "HTTPS");
+                }
+            });
+            c.port = port.trim().parse().unwrap_or(0);
+            row(ui, t!("conexion.carpeta"), &mut |ui| {
+                ui.add(egui::TextEdit::singleline(&mut c.path).hint_text(match c.kind {
+                    Kind::Smb => "compartida\\fotos",
+                    Kind::WebDav => "/remote.php/dav/files/usuario",
+                    Kind::Sftp => "/home/usuario",
+                }).desired_width(300.0));
+            });
+            row(ui, t!("conexion.usuario"), &mut |ui| {
+                ui.add(egui::TextEdit::singleline(&mut c.user).desired_width(300.0));
+            });
+            row(ui, t!("conexion.contrasena"), &mut |ui| {
+                ui.add(egui::TextEdit::singleline(&mut pw).password(true).hint_text(t!("conexion.contrasena_vacia")).desired_width(300.0));
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(114.0);
+                ui.checkbox(&mut remember, t!("conexion.recordar"));
+            });
+            if c.kind == Kind::Sftp && !fsx::remote::sshfs_installed() {
+                ui.add_space(4.0);
+                ui.label(RichText::new(t!("remoto.falta_sshfs")).size(12.0).color(t.danger));
+                ui.hyperlink_to(RichText::new("SSHFS-Win (github.com/winfsp/sshfs-win)").size(12.0), "https://github.com/winfsp/sshfs-win/releases");
+            } else if c.kind == Kind::WebDav {
+                ui.add_space(4.0);
+                ui.label(RichText::new(t!("conexion.webdav_nota")).size(12.0).color(t.faint));
+            }
+            if !err.is_empty() {
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("{}  {err}", egui_phosphor::regular::WARNING)).color(t.danger));
+            }
+            ui.add_space(4.0);
+            ui.label(RichText::new(format!("{}  {}", egui_phosphor::regular::FOLDER_OPEN, c.unc())).size(12.0).color(t.faint));
+            ui.add_space(10.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let ok = !c.host.trim().is_empty();
+                if ui.add_enabled(ok, egui::Button::new(RichText::new(format!("{}  {}", egui_phosphor::regular::PLUGS_CONNECTED, t!("conexion.guardar_conectar"))).strong())).clicked() {
+                    save = true;
+                    go = true;
+                }
+                if ui.add_enabled(ok, egui::Button::new(t!("conexion.guardar"))).clicked() {
+                    save = true;
+                }
+                if ui.button(t!("comun.cancelar")).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if modal.should_close() {
+            close = true;
+        }
+        if save {
+            let i = match idx {
+                Some(i) if i < self.cfg.connections.len() => {
+                    self.cfg.connections[i] = c.clone();
+                    i
+                }
+                _ => {
+                    self.cfg.connections.push(c.clone());
+                    self.cfg.connections.len() - 1
+                }
+            };
+            self.save_cfg();
+            if go {
+                self.connect(ctx, i, c, (!pw.is_empty()).then_some(pw), remember);
+            }
+            return;
+        }
+        if !close {
+            self.conn_form = Some((idx, c, pw, remember, err));
+        }
+    }
+
     /// Si la pestaña muestra una colección, se vuelve a buscar (cambió lo que tiene).
     fn refresh_collection_tab(&mut self) {
         for tab in self.tabs.iter_mut() {
@@ -3815,7 +3988,7 @@ impl eframe::App for App {
                 let drives = self.drives.lock().clone();
                 chrome::sidebar(
                     ui,
-                    chrome::SidebarIn { t: &t, cfg: &mut self.cfg, places: &self.places, drives: &drives, current: &current_path, special, group_edit: &mut self.group_edit, collection: &collection, shelf: &self.shelf },
+                    chrome::SidebarIn { t: &t, cfg: &mut self.cfg, places: &self.places, drives: &drives, current: &current_path, special, group_edit: &mut self.group_edit, collection: &collection, shelf: &self.shelf, clouds: &self.clouds },
                     &mut actions,
                 );
                 // Botones al pie.
@@ -4157,6 +4330,10 @@ impl eframe::App for App {
         if self.toolbar_dlg {
             self.toolbar_dialog(&ctx);
         }
+        if self.conn_form.is_some() {
+            self.connection_dialog(&ctx);
+        }
+        self.poll_connect(&ctx, &mut actions);
         self.check_deletes();
         self.prefetch_menu(&ctx);
         if self.first_run {

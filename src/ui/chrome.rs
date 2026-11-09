@@ -203,6 +203,8 @@ pub struct SidebarIn<'a> {
     pub collection: &'a str,
     /// Lo que está en el estante.
     pub shelf: &'a [String],
+    /// Carpetas de la nube de este equipo (nombre, carpeta).
+    pub clouds: &'a [(String, String)],
 }
 
 pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
@@ -273,6 +275,76 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
                     if r.clicked() || r.middle_clicked() {
                         actions.push(Action::OpenTag(i));
                     }
+                }
+            }
+        }
+
+        // Nube: OneDrive, Dropbox, iCloud, Google Drive… (lo que haya en este equipo).
+        if !s.clouds.is_empty() {
+            let (h, _) = section_header(ui, t, t!("barra.nube"), s.cfg.cloud_collapsed);
+            if h.clicked() {
+                s.cfg.cloud_collapsed ^= true;
+            }
+            if !s.cfg.cloud_collapsed {
+                for (name, path) in s.clouds {
+                    let sel = path.to_lowercase() == cur_lower;
+                    let r = side_item(ui, t, ic::CLOUD, if sel { t.accent } else { t.dim }, false, name, sel).on_hover_text(path);
+                    drop_into(ui, t, &r, path, actions);
+                    if r.clicked() {
+                        actions.push(Action::Navigate(path.clone()));
+                    }
+                    if r.middle_clicked() {
+                        actions.push(Action::NewTab(Some(path.clone())));
+                    }
+                }
+            }
+        }
+
+        // Conexiones: SMB, WebDAV y SFTP guardados; "+" agrega una.
+        {
+            let (h, hrect) = section_header(ui, t, t!("barra.conexiones"), s.cfg.connections_collapsed);
+            if h.clicked() {
+                s.cfg.connections_collapsed ^= true;
+            }
+            let add_r = Rect::from_center_size(pos2(hrect.right() - 14.0, hrect.center().y), vec2(20.0, 20.0));
+            let add = ui.interact(add_r, Id::new("conn-add"), Sense::click()).on_hover_text(t!("barra.nueva_conexion"));
+            if add.hovered() {
+                ui.painter().rect_filled(add_r, 4.0, t.hover);
+            }
+            if h.hovered() || add.hovered() || s.cfg.connections.is_empty() {
+                ui.painter().text(add_r.center(), Align2::CENTER_CENTER, ic::PLUS, theme::icon_font(12.0, false), t.dim);
+            }
+            if add.clicked() {
+                actions.push(Action::EditConnection(None));
+            }
+            if !s.cfg.connections_collapsed {
+                for (i, c) in s.cfg.connections.iter().enumerate() {
+                    use fsx::remote::Kind;
+                    let icon = match c.kind {
+                        Kind::Smb => ic::HARD_DRIVES,
+                        Kind::WebDav => ic::GLOBE,
+                        Kind::Sftp => ic::LOCK_KEY,
+                    };
+                    let label = if c.name.trim().is_empty() { c.host.clone() } else { c.name.clone() };
+                    let sel = cur_lower.starts_with(&c.root().to_lowercase());
+                    let r = side_item(ui, t, icon, if sel { t.accent } else { t.dim }, false, &label, sel).on_hover_text(c.unc());
+                    if r.clicked() {
+                        actions.push(Action::Connect(i));
+                    }
+                    r.context_menu(|ui| {
+                        if ui.button(format!("{}  {}", ic::PENCIL_SIMPLE, t!("barra.editar_conexion"))).clicked() {
+                            actions.push(Action::EditConnection(Some(i)));
+                            ui.close();
+                        }
+                        if ui.button(format!("{}  {}", ic::KEY, t!("barra.olvidar_contrasena"))).clicked() {
+                            actions.push(Action::ForgetPassword(i));
+                            ui.close();
+                        }
+                        if ui.button(format!("{}  {}", ic::TRASH, t!("barra.borrar_conexion"))).clicked() {
+                            actions.push(Action::DeleteConnection(i));
+                            ui.close();
+                        }
+                    });
                 }
             }
         }

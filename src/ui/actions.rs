@@ -130,6 +130,13 @@ pub enum Action {
     /// Poner o quitar una etiqueta de color.
     ToggleTag(Vec<String>, usize),
     ClearTags(Vec<String>),
+    // Conexiones remotas
+    /// Abrir el formulario: None = una nueva; Some(i) = editar la i.
+    EditConnection(Option<usize>),
+    DeleteConnection(usize),
+    /// Conectar la i (con la contraseña recordada, si hay) y abrirla en una pestaña.
+    Connect(usize),
+    ForgetPassword(usize),
     // Colecciones (carpetas virtuales) y estante
     OpenCollection(String),
     AddToCollection(String, Vec<String>),

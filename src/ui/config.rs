@@ -118,6 +118,10 @@ pub struct Config {
     pub columns: ColumnWidths,
     pub tags_collapsed: bool,
     pub collections_collapsed: bool,
+    /// Conexiones guardadas (SMB, WebDAV, SFTP). Las contraseñas no van aquí.
+    pub connections: Vec<crate::fsx::remote::Connection>,
+    pub connections_collapsed: bool,
+    pub cloud_collapsed: bool,
     /// Espacios de trabajo guardados (Ctrl+K → "Guardar espacio de trabajo").
     pub workspaces: Vec<Workspace>,
     /// Carpetas visitadas, de la más reciente a la más vieja (para ir rápido desde la paleta).
@@ -178,6 +182,9 @@ impl Default for Config {
             columns: ColumnWidths::DEFAULT,
             tags_collapsed: false,
             collections_collapsed: false,
+            connections: Vec::new(),
+            connections_collapsed: false,
+            cloud_collapsed: false,
             workspaces: Vec::new(),
             recent_dirs: Vec::new(),
             aliases: Vec::new(),

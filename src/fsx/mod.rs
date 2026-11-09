@@ -4,6 +4,7 @@
 pub mod collections;
 pub mod dirsize;
 pub mod git;
+pub mod remote;
 pub mod pinyin;
 pub mod shell;
 pub mod thumbs;
