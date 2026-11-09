@@ -1010,16 +1010,20 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
         column_menu(&resp, cx);
         ex += w;
     }
-    header(SortKey::Modified, t!("comun.modificado"), cols_x.1, cols_x.2, false, cx);
-    header(SortKey::Kind, t!("lista.tipo"), cols_x.2, cols_x.3, false, cx);
+    if cols_x.2 > cols_x.1 {
+        header(SortKey::Modified, t!("comun.modificado"), cols_x.1, cols_x.2, false, cx);
+    }
+    if cols_x.3 > cols_x.2 {
+        header(SortKey::Kind, t!("lista.tipo"), cols_x.2, cols_x.3, false, cx);
+    }
     header(SortKey::Size, t!("comun.tamano"), cols_x.3, cols_x.4, true, cx);
     // Bordes entre columnas: se arrastran para cambiar el ancho.
     let d = ColumnWidths::DEFAULT;
-    let h = column_handle(ui, &t, Id::new("col-borde-0"), cols_x.1, hrect.y_range());
+    let h = column_handle(ui, &t, Id::new("col-borde-0"), cols_x.1, if cols_x.2 > cols_x.1 { hrect.y_range() } else { egui::Rangef::NOTHING });
     drive_handle(cx, &h, |c, dx| c.date -= dx, |c| c.date = d.date);
     // Cada borde cambia el ancho de la columna de su derecha; lo de la izquierda se mueve con él
     // (el nombre toma la diferencia), así nunca se pisan dos columnas.
-    let h = column_handle(ui, &t, Id::new("col-borde-1"), cols_x.2, hrect.y_range());
+    let h = column_handle(ui, &t, Id::new("col-borde-1"), cols_x.2, if cols_x.3 > cols_x.2 { hrect.y_range() } else { egui::Rangef::NOTHING });
     drive_handle(cx, &h, |c, dx| c.kind -= dx, |c| c.kind = d.kind);
     // Tamaño no se ajusta: es corto y lleva la barra de uso, que se deformaría.
 
@@ -1082,7 +1086,9 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
             extra_cell(&p, &t, id, e, &full, ex, *w, r.center().y, dim_c);
             ex += w;
         }
-        p.text(pos2(x1 + 10.0, r.center().y), Align2::LEFT_CENTER, fsx::fmt_date(e.mtime), FontId::proportional(12.0), dim_c);
+        if x2 > x1 {
+            p.text(pos2(x1 + 10.0, r.center().y), Align2::LEFT_CENTER, fsx::fmt_date(e.mtime), FontId::proportional(12.0), dim_c);
+        }
         if x2 - x1 >= DATE_WITH_AGE {
             age_pill(&p, &t, x2 - 8.0, r.center().y, e.mtime, cx.now);
         }
@@ -1095,7 +1101,9 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
         } else {
             e.ext.to_uppercase()
         };
-        p.text(pos2(x2 + 10.0, r.center().y), Align2::LEFT_CENTER, kind, FontId::proportional(12.0), dim_c);
+        if x3 > x2 {
+            p.text(pos2(x2 + 10.0, r.center().y), Align2::LEFT_CENTER, kind, FontId::proportional(12.0), dim_c);
+        }
         if let Some(s) = size_text(e) {
             let txt = if e.is_dir { format!("~{s}") } else { s };
             p.text(pos2(r.right() - 14.0, r.center().y), Align2::RIGHT_CENTER, txt, FontId::proportional(12.0), dim_c);
@@ -1116,9 +1124,13 @@ fn details_columns(r: Rect) -> (f32, f32, f32, f32, f32) {
     let x4 = r.right();
     let c = columns();
     let x3 = x4 - ColumnWidths::DEFAULT.size;
-    let x2 = x3 - c.kind;
-    let x1 = x2 - c.date;
-    (r.left(), x1.max(r.left() + 160.0), x2, x3, x4)
+    // Si no caben (un panel angosto), primero se oculta Tipo y después Modificado: nunca se pisan.
+    let room = (x3 - r.left() - 160.0).max(0.0);
+    let kind = if c.date + c.kind <= room { c.kind } else { 0.0 };
+    let date = if c.date <= room - kind { c.date } else if room - kind >= 110.0 { room - kind } else { 0.0 };
+    let x2 = x3 - kind;
+    let x1 = x2 - date;
+    (r.left(), x1, x2, x3, x4)
 }
 
 /// Las columnas extra que entran entre el nombre (que conserva al menos 220 px) y la fecha.
