@@ -188,122 +188,14 @@ pub fn kind(item: &PreviewItem, has_text: bool) -> Kind {
     Kind::Picture
 }
 
-/// Texto plano o Markdown con formato.
+/// Texto plano, código con colores o Markdown con formato.
 pub fn text_view(ui: &mut Ui, t: &Theme, text: &str, ext: &str, size: f32) {
     if matches!(ext, "md" | "markdown" | "mdx") {
-        markdown(ui, t, text, size);
+        super::richtext::markdown(ui, t, text, size);
+    } else if super::richtext::is_code(ext) {
+        super::richtext::code(ui, t, text, size);
     } else {
         ui.add(egui::Label::new(egui::RichText::new(text).font(FontId::monospace(size - 1.0)).color(t.text)).wrap_mode(egui::TextWrapMode::Extend));
-    }
-}
-
-/// Texto de una línea de Markdown con **negrita**, *cursiva*, `código` y [enlaces](url).
-fn inline_job(text: &str, t: &Theme, size: f32, color: Color32, base: FontId) -> egui::text::LayoutJob {
-    use egui::text::{LayoutJob, TextFormat};
-    let mut job = LayoutJob::default();
-    let plain = TextFormat::simple(base.clone(), color);
-    let mut rest = text;
-    while !rest.is_empty() {
-        // El próximo marcador.
-        let next = ["**", "`", "*", "["].iter().filter_map(|m| rest.find(m).map(|i| (i, *m))).min_by_key(|x| x.0);
-        let Some((i, m)) = next else {
-            job.append(rest, 0.0, plain.clone());
-            break;
-        };
-        job.append(&rest[..i], 0.0, plain.clone());
-        let after = &rest[i + m.len()..];
-        let (close, fmt) = match m {
-            "**" => ("**", TextFormat::simple(theme::semibold(size), color)),
-            "`" => {
-                let mut f = TextFormat::simple(FontId::monospace(size - 1.0), t.accent);
-                f.background = t.hover;
-                ("`", f)
-            }
-            "*" => {
-                let mut f = plain.clone();
-                f.italics = true;
-                ("*", f)
-            }
-            _ => ("]", TextFormat::simple(base.clone(), t.accent)),
-        };
-        match after.find(close) {
-            Some(j) if j > 0 => {
-                job.append(&after[..j], 0.0, fmt);
-                rest = &after[j + close.len()..];
-                // [texto](url): la url no se muestra.
-                if m == "[" && rest.starts_with('(') {
-                    rest = rest.find(')').map_or(rest, |k| &rest[k + 1..]);
-                }
-            }
-            _ => {
-                job.append(m, 0.0, plain.clone());
-                rest = after;
-            }
-        }
-    }
-    job
-}
-
-/// Markdown básico: títulos, listas, citas, código, separadores y formato en línea.
-pub fn markdown(ui: &mut Ui, t: &Theme, text: &str, size: f32) {
-    let mut in_code = false;
-    let width = ui.available_width();
-    for line in text.lines().take(3000) {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") {
-            in_code = !in_code;
-            continue;
-        }
-        if in_code {
-            egui::Frame::new().fill(t.hover).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
-                ui.set_width(width - 12.0);
-                ui.label(egui::RichText::new(line).font(FontId::monospace(size - 1.5)).color(t.text));
-            });
-            continue;
-        }
-        if trimmed.is_empty() {
-            ui.add_space(size * 0.5);
-            continue;
-        }
-        let level = trimmed.chars().take_while(|&c| c == '#').count();
-        if (1..=6).contains(&level) && trimmed[level..].starts_with(' ') {
-            ui.add_space(if level <= 2 { 8.0 } else { 4.0 });
-            let fs = size + (4usize.saturating_sub(level)) as f32 * 2.5;
-            ui.label(inline_job(trimmed[level..].trim(), t, fs, t.text, theme::semibold(fs)));
-            if level <= 2 {
-                ui.separator();
-            }
-            continue;
-        }
-        if matches!(trimmed, "---" | "***" | "___") {
-            ui.separator();
-            continue;
-        }
-        let indent = (line.len() - trimmed.len()) as f32 * 4.0;
-        let list = ["- ", "* ", "+ "].iter().find(|m| trimmed.starts_with(*m)).map(|_| ("•".to_string(), &trimmed[2..])).or_else(|| {
-            let n: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
-            (!n.is_empty() && trimmed[n.len()..].starts_with(". ")).then(|| (format!("{n}."), &trimmed[n.len() + 2..]))
-        });
-        if let Some((mark, rest)) = list {
-            let (rest, mark) = match rest.strip_prefix("[ ] ").map(|r| (r, "☐".to_string())).or_else(|| rest.strip_prefix("[x] ").map(|r| (r, "☑".to_string()))) {
-                Some((r, m)) => (r, m),
-                None => (rest, mark),
-            };
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(indent + 4.0);
-                ui.label(egui::RichText::new(mark).size(size).color(t.dim));
-                ui.label(inline_job(rest, t, size, t.text, FontId::proportional(size)));
-            });
-            continue;
-        }
-        if let Some(q) = trimmed.strip_prefix('>') {
-            ui.horizontal_wrapped(|ui| {
-                let r = ui.label(inline_job(q.trim(), t, size, t.dim, FontId::proportional(size)));
-                ui.painter().line_segment([r.rect.left_top() - vec2(6.0, 0.0), r.rect.left_bottom() - vec2(6.0, 0.0)], egui::Stroke::new(2.0, t.border));
-            });
-            continue;
-        }
-        ui.label(inline_job(trimmed, t, size, t.text, FontId::proportional(size)));
     }
 }
 
