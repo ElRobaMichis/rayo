@@ -260,6 +260,8 @@ impl App {
         fsx::props::set_wake(wake.clone());
         fsx::dirsize::set_wake(wake.clone());
         fsx::git::set_wake(wake.clone());
+        // Ctrl+G en un diálogo de Abrir / Guardar lo lleva a la carpeta de Rayo.
+        crate::quickswitch::start();
         if let Some(h) = hwnd {
             let w = wake.clone();
             crate::instance::listen(h, move || w());
@@ -4023,6 +4025,15 @@ impl eframe::App for App {
             self.palette.ui(&ctx, &t, &target, &data, &mut actions);
         }
         self.track_recent();
+        {
+            let tab = &self.tabs[self.cur];
+            if tab.tool.is_none() && !tab.search.active() {
+                let dir = tab.active_col().path.clone();
+                if fsx::archive::split(&dir).is_none() {
+                    crate::quickswitch::set_target(&dir);
+                }
+            }
+        }
         let outcome = self.batch.as_mut().map(|b| (b.ui(&ctx, &t), b.dir.clone()));
         match outcome {
             None | Some((super::tools::Outcome::Open, _)) => {}

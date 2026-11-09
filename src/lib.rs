@@ -36,4 +36,5 @@ pub mod index;
 pub mod install;
 pub mod instance;
 pub mod integration;
+pub mod quickswitch;
 pub mod ui;
