@@ -684,10 +684,15 @@ fn breadcrumb(ui: &mut Ui, t: &Theme, tab: &mut Tab, width: f32, actions: &mut V
             // Cursor al final tras completar.
             let n = buf.chars().count();
             out.state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(n))));
-            out.state.store(ui.ctx(), id);
+            out.state.clone().store(ui.ctx(), id);
         }
         if !r.has_focus() && !r.lost_focus() {
             r.request_focus();
+            // Al abrirse, la ruta queda toda seleccionada (como en el Explorador): Ctrl+C la copia
+            // y lo que se escriba la reemplaza.
+            let n = buf.chars().count();
+            out.state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(n))));
+            out.state.store(ui.ctx(), id);
         }
         if r.changed() {
             sel = None;
