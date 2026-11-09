@@ -60,6 +60,9 @@ pub struct BatchRename {
     exif_done: Arc<AtomicUsize>,
     exif_seen: usize,
     first_frame: bool,
+    /// Editar como texto: una línea por archivo con el nombre nuevo.
+    text_mode: bool,
+    text: String,
 }
 
 impl BatchRename {
@@ -77,6 +80,8 @@ impl BatchRename {
             exif_done: Default::default(),
             exif_seen: 0,
             first_frame: true,
+            text_mode: false,
+            text: String::new(),
         }
     }
 
@@ -126,7 +131,10 @@ impl BatchRename {
             }
         }
         let key = (self.rules.clone(), self.exif_seen);
-        if self.planned_for.as_ref() != Some(&key) {
+        if self.text_mode {
+            self.plan = rename::plan_text(&self.files, &self.text, &self.existing);
+            self.planned_for = None;
+        } else if self.planned_for.as_ref() != Some(&key) {
             let dir_name = fsx::file_name(&self.dir);
             self.plan = rename::plan(&dir_name, &self.files, &self.rules, &self.existing);
             self.planned_for = Some(key);
@@ -137,10 +145,36 @@ impl BatchRename {
             ui.horizontal(|ui| {
                 header(ui, t, ic::TEXT_AA, &tp!(self.files.len(), "herr.renombrar_elementos"));
                 ui.label(RichText::new(fsx::file_name(&self.dir)).color(t.dim));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let was = self.text_mode;
+                    widgets::toggle_chip(ui, t, &mut self.text_mode, ic::NOTE_PENCIL, t!("herr.editar_texto")).on_hover_text(t!("herr.editar_texto_ayuda"));
+                    if self.text_mode && !was {
+                        // Empieza con lo que dejaría el plan actual (o los nombres de ahora).
+                        self.text = match &self.plan {
+                            Ok(p) => p.iter().map(|x| x.new.as_str()).collect::<Vec<_>>().join("\n"),
+                            Err(_) => self.files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join("\n"),
+                        };
+                    }
+                });
             });
             ui.add_space(12.0);
+            if self.text_mode {
+                widgets::caption(ui, t, t!("herr.editar_texto_ayuda"));
+                egui::Frame::new().fill(t.bg).stroke(egui::Stroke::new(1.0, if self.plan.is_err() { t.danger } else { t.border })).corner_radius(8).inner_margin(6).show(ui, |ui| {
+                    egui::ScrollArea::vertical().id_salt("batch-text").max_height(240.0).show(ui, |ui| {
+                        let te = ui.add(egui::TextEdit::multiline(&mut self.text).font(egui::TextStyle::Monospace).frame(egui::Frame::NONE).desired_width(f32::INFINITY).desired_rows(8));
+                        if self.first_frame {
+                            te.request_focus();
+                            self.first_frame = false;
+                        }
+                    });
+                });
+                ui.add_space(12.0);
+            }
             let plan_err = self.plan.is_err();
+            let text_mode = self.text_mode;
             let r = &mut self.rules;
+            if !text_mode {
 
             // Nombre nuevo: plantilla y piezas para insertar donde está el cursor.
             widgets::caption(ui, t, t!("herr.nombre_nuevo"));
@@ -237,6 +271,7 @@ impl BatchRename {
                 });
             });
             ui.add_space(14.0);
+            }
 
             // Vista previa.
             let (changes, problems, first_problem) = match &self.plan {

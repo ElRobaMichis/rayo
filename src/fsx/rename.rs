@@ -150,13 +150,31 @@ pub fn plan(dir_name: &str, files: &[Source], rules: &Rules, existing: &HashSet<
         let new = if new_ext.is_empty() { new_stem.clone() } else { format!("{new_stem}.{new_ext}") };
         out.push(Planned { old: f.name.clone(), new, problem: None });
     }
-    // Problemas: vacío, caracteres inválidos, repetidos, choques con archivos que se quedan.
+    check(&mut out, existing);
+    let _ = ext_of;
+    Ok(out)
+}
+
+/// Plan escrito a mano: una línea por archivo, en el mismo orden, con el nombre nuevo completo
+/// (como editar la lista en un editor de texto).
+pub fn plan_text(files: &[Source], text: &str, existing: &HashSet<String>) -> Result<Vec<Planned>, String> {
+    let lines: Vec<&str> = text.trim_end_matches(['\n', '\r']).lines().map(|l| l.trim_end_matches('\r')).collect();
+    if lines.len() != files.len() {
+        return Err(tf!("renombrar.lineas_no_coinciden", lineas = lines.len(), archivos = files.len()));
+    }
+    let mut out: Vec<Planned> = files.iter().zip(lines).map(|(f, l)| Planned { old: f.name.clone(), new: l.trim().to_string(), problem: None }).collect();
+    check(&mut out, existing);
+    Ok(out)
+}
+
+/// Problemas: vacío, caracteres inválidos, repetidos, choques con archivos que se quedan.
+fn check(out: &mut [Planned], existing: &HashSet<String>) {
     let renamed: HashSet<String> = out.iter().map(|p| p.old.to_lowercase()).collect();
     let mut seen: HashMap<String, usize> = HashMap::new();
-    for p in &out {
+    for p in out.iter() {
         *seen.entry(p.new.to_lowercase()).or_default() += 1;
     }
-    for p in &mut out {
+    for p in out.iter_mut() {
         let l = p.new.to_lowercase();
         p.problem = if p.new.trim().is_empty() || p.new.starts_with('.') && split_name(&p.new).0.is_empty() {
             Some(t!("renombrar.nombre_quedaria_vacio").into())
@@ -172,8 +190,6 @@ pub fn plan(dir_name: &str, files: &[Source], rules: &Rules, existing: &HashSet<
             None
         };
     }
-    let _ = ext_of;
-    Ok(out)
 }
 
 /// Reemplazo sin distinguir mayúsculas.
@@ -284,5 +300,18 @@ mod tests {
         assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "B");
         assert_eq!(std::fs::read_to_string(d.join("b.txt")).unwrap(), "A");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn plan_from_text() {
+        let files = src(&["a.txt", "b.txt", "c.txt"]);
+        let existing: HashSet<String> = ["a.txt", "b.txt", "c.txt", "otro.txt"].iter().map(|s| s.to_string()).collect();
+        let p = plan_text(&files, "uno.txt\nb.txt\ntres.md\n", &existing).unwrap();
+        assert_eq!(p.iter().map(|x| x.new.as_str()).collect::<Vec<_>>(), ["uno.txt", "b.txt", "tres.md"]);
+        assert!(p.iter().all(|x| x.problem.is_none()));
+        // Choques y líneas de más o de menos.
+        let p = plan_text(&files, "otro.txt\nb.txt\nc.txt", &existing).unwrap();
+        assert!(p[0].problem.is_some());
+        assert!(plan_text(&files, "x.txt\ny.txt", &existing).is_err());
     }
 }

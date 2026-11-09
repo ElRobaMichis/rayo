@@ -744,3 +744,6 @@ previa.titulo,Título,,
 previa.comentarios,Comentarios,,
 previa.calificacion,Calificación,,
 previa.agregar,Agregar…,,
+herr.editar_texto,Editar como texto,,
+herr.editar_texto_ayuda,Una línea por archivo y en el mismo orden: cambia los nombres como en un editor de texto.,,
+renombrar.lineas_no_coinciden,Hay {lineas} líneas para {archivos} archivos: tiene que haber una por archivo.,,{lineas} y {archivos} = números

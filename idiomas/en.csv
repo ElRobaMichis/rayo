@@ -750,3 +750,6 @@ previa.titulo,Title,Título,
 previa.comentarios,Comments,Comentarios,
 previa.calificacion,Rating,Calificación,
 previa.agregar,Add…,Agregar…,
+herr.editar_texto,Edit as text,Editar como texto,
+herr.editar_texto_ayuda,One line per file in the same order: change the names as in a text editor.,Una línea por archivo y en el mismo orden: cambia los nombres como en un editor de texto.,
+renombrar.lineas_no_coinciden,There are {lineas} lines for {archivos} files: there must be one per file.,Hay {lineas} líneas para {archivos} archivos: tiene que haber una por archivo.,{lineas} y {archivos} = números
