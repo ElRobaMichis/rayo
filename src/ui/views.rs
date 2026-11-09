@@ -342,8 +342,14 @@ fn rename_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, x: f32) {
 #[allow(clippy::too_many_arguments)]
 fn file_icon(p: &Painter, t: &Theme, center: Pos2, points: f32, glyph: f32, path: &str, is_dir: bool, ext: &str, color: Option<Color32>, alpha: f32) {
     if !is_dir {
-        if let Some(tex) = super::shellicons::get(path, ext, super::shellicons::px_for(p.ctx(), points)) {
-            let r = Rect::from_center_size(center, vec2(points, points));
+        let px = super::shellicons::px_for(p.ctx(), points);
+        if let Some(tex) = super::shellicons::get(path, ext, px) {
+            // Alineado a los píxeles de la pantalla y del tamaño exacto: nítido, como en el Explorador.
+            let ppp = p.ctx().pixels_per_point();
+            let side = px as f32 / ppp;
+            let min = center - vec2(side, side) / 2.0;
+            let min = pos2((min.x * ppp).round() / ppp, (min.y * ppp).round() / ppp);
+            let r = Rect::from_min_size(min, vec2(side, side));
             p.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE.gamma_multiply(alpha));
             return;
         }
@@ -365,7 +371,7 @@ fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, sele
     let path = fsx::join(dir, &e.name);
     let faded = e.hidden || cx.cut.contains(&path);
     let alpha = if faded { 0.5 } else { 1.0 };
-    file_icon(&p, cx.t, pos2(rect.left() + 22.0, rect.center().y), 18.0, 16.0, &path, e.is_dir, &e.ext, icolor, alpha);
+    file_icon(&p, cx.t, pos2(rect.left() + 22.0, rect.center().y), 16.0, 16.0, &path, e.is_dir, &e.ext, icolor, alpha);
     let name_x = rect.left() + 36.0;
     let mut right_w = 12.0;
     if chevron {
@@ -900,7 +906,7 @@ pub fn search_results(ui: &mut Ui, cx: &mut Cx, res: Option<&Results>, cursor: &
         let p = ui.painter_at(r);
         row_bg(&p, r, &t, selected, true, resp.hovered());
         let (text_c, dim_c) = fg(&t, selected, true);
-        file_icon(&p, &t, pos2(r.left() + 22.0, r.center().y), 18.0, 16.0, &row.path(), row.is_dir, &row.ext, selected.then_some(t.accent_text), 1.0);
+        file_icon(&p, &t, pos2(r.left() + 22.0, r.center().y), 16.0, 16.0, &row.path(), row.is_dir, &row.ext, selected.then_some(t.accent_text), 1.0);
         let (nx, dir_x, size_r, date_x) = search_columns(r);
         let name_w = dir_x - nx - 12.0;
         let g = if selected {
@@ -1022,7 +1028,7 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                     }
                 }
                 if !drew {
-                    file_icon(&p, &t, thumb.center(), 64.0, 54.0, &path, e.is_dir, &e.ext, None, 1.0);
+                    file_icon(&p, &t, thumb.center(), 48.0, 54.0, &path, e.is_dir, &e.ext, None, 1.0);
                 }
                 if let Some((g, c, _)) = cloud_glyph(&t, e.cloud) {
                     let b = Rect::from_center_size(pos2(thumb.right() - 6.0, thumb.top() + 8.0), vec2(20.0, 20.0));

@@ -87,7 +87,9 @@ pub fn deliver(ctx: &egui::Context, key: &ThumbKey, img: Option<Rgba>) {
         let tex = img.map(|img| {
             let size = [img.w as usize, img.h as usize];
             let ci = if img.premultiplied { ColorImage::from_rgba_premultiplied(size, &img.px) } else { ColorImage::from_rgba_unmultiplied(size, &img.px) };
-            ctx.load_texture(&cache, ci, TextureOptions::LINEAR)
+            // Se pide del tamaño exacto en pantalla: si llegó así, se copia píxel a píxel, sin suavizar.
+            let exact = img.w == key.size && img.h == key.size;
+            ctx.load_texture(&cache, ci, if exact { TextureOptions::NEAREST } else { TextureOptions::LINEAR })
         });
         if c.ready.len() > 4000 {
             c.ready.clear();
@@ -96,16 +98,9 @@ pub fn deliver(ctx: &egui::Context, key: &ThumbKey, img: Option<Rgba>) {
     });
 }
 
-/// Píxeles a pedir para dibujar un ícono de `points` puntos (nítido en pantallas con escala).
+/// Píxeles a pedir para dibujar un ícono de `points` puntos: exactamente los de la pantalla
+/// (16 a escala 100 %, 20 a 125 %…), así Windows entrega el ícono hecho para ese tamaño y no
+/// hace falta agrandarlo ni achicarlo.
 pub fn px_for(ctx: &egui::Context, points: f32) -> u32 {
-    let px = (points * ctx.pixels_per_point()).ceil() as u32;
-    match px {
-        0..=16 => 16,
-        17..=24 => 24,
-        25..=32 => 32,
-        33..=48 => 48,
-        49..=64 => 64,
-        65..=96 => 96,
-        _ => 128,
-    }
+    ((points * ctx.pixels_per_point()).round() as u32).clamp(8, 256)
 }
