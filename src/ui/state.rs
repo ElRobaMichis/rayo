@@ -189,9 +189,27 @@ impl DirCache {
     /// si cambió algo (lo desplegado, el orden o el contenido de esas carpetas).
     pub fn tree(&mut self, base: &str, expanded: &BTreeSet<String>, sort: SortKey, desc: bool, hidden: bool) -> Arc<Vec<FileEntry>> {
         let mut key = format!("{sort:?}{desc}{hidden}|{}", self.map.get(base).map_or(0, |s| s.generation));
+        // Las carpetas que arman el árbol: siguen en uso aunque el árbol salga del caché (si no,
+        // `evict` las suelta y el árbol parpadea vacío mientras se vuelven a leer).
+        let mut used = vec![base.to_string()];
         for rel in expanded {
-            let g = self.map.get(&fsx::join(base, rel)).or_else(|| self.map.iter().find(|(k, _)| k.eq_ignore_ascii_case(&fsx::join(base, rel))).map(|(_, v)| v)).map_or(0, |s| s.generation);
+            // `rel` va en minúsculas; la clave de la carpeta conserva sus mayúsculas ("Álbumes").
+            let full = fsx::join(base, rel);
+            let found = if self.map.contains_key(&full) {
+                Some(full)
+            } else {
+                let lower = full.to_lowercase();
+                self.map.keys().find(|k| k.to_lowercase() == lower).cloned()
+            };
+            let g = found.as_ref().and_then(|k| self.map.get(k)).map_or(0, |s| s.generation);
             key.push_str(&format!("|{rel}:{g}"));
+            used.extend(found);
+        }
+        let frame = self.frame;
+        for k in &used {
+            if let Some(s) = self.map.get_mut(k) {
+                s.last_used = frame;
+            }
         }
         if let Some(v) = self.trees.get(base).filter(|(k, _)| *k == key).map(|(_, v)| v.clone()) {
             return v;
@@ -364,7 +382,6 @@ pub struct SearchUi {
     pub cursor: usize,
     pub scroll_to_cursor: bool,
     pub focus: bool,
-    pub changes_seen: u64,
     /// Para el historial: el texto, desde cuándo está así y el último que se guardó.
     pub hist_seen: String,
     pub hist_since: f64,

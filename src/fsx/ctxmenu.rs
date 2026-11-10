@@ -155,7 +155,8 @@ fn worker(owner: HWND, rx: Receiver<Req>, ready: Arc<Mutex<Option<Arc<ShellMenu>
                 wake();
             }
             Req::Invoke { token, id, pos } => {
-                let Some(l) = live.as_ref().filter(|l| l.token == token) else { continue };
+                // id 0 no es un comando (submenú o separador): ignorarlo.
+                let Some(l) = live.as_ref().filter(|l| l.token == token && id != 0) else { continue };
                 let verb = unsafe { verb_of(&l.cm, id) };
                 if verb.eq_ignore_ascii_case("rename") {
                     *outcome.lock() = l.paths.first().cloned().map(Outcome::Rename);
@@ -281,7 +282,11 @@ unsafe fn read_menu(cm: &IContextMenu, cm3: Option<&IContextMenu3>, cm2: Option<
         let disabled = mii.fState.contains(MFS_DISABLED) || mii.fState.contains(MFS_GRAYED);
         let icon = unsafe { menu_icon(mii.hbmpItem) }.map(Arc::new);
         let mut children = Vec::new();
-        if !mii.hSubMenu.is_invalid() && depth < 3 {
+        if !mii.hSubMenu.is_invalid() && depth >= 3 {
+            // Submenú demasiado hondo: no se expande, y como hoja no tendría comando.
+            continue;
+        }
+        if !mii.hSubMenu.is_invalid() {
             // Los submenús de "Enviar a", 7-Zip, etc. se llenan recién al abrirse.
             let (wp, lp) = (WPARAM(mii.hSubMenu.0 as usize), LPARAM(i as isize));
             unsafe {

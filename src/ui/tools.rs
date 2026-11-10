@@ -85,9 +85,6 @@ impl BatchRename {
         }
     }
 
-    pub fn count(&self) -> usize {
-        self.files.len()
-    }
 
     /// Lee la fecha de las fotos en otro hilo (solo si la plantilla la usa).
     fn start_exif(&mut self, wake: Wake) {
@@ -1023,7 +1020,8 @@ impl DupesTool {
 
 pub struct RecycleTool {
     bin: fsx::recycle::Bin,
-    marked: HashSet<usize>,
+    /// Marcados por clave (no por posición: la lista se vuelve a leer tras cada orden).
+    marked: HashSet<String>,
     filter: String,
 }
 
@@ -1045,7 +1043,7 @@ impl RecycleTool {
     fn ui(&mut self, ui: &mut Ui, cx: &mut ToolCx) {
         let t = cx.t;
         let items = self.bin.items.lock().clone();
-        let busy = self.bin.busy.load(Ordering::Relaxed);
+        let busy = self.bin.is_busy();
         ui.horizontal(|ui| {
             header(ui, t, ic::TRASH_SIMPLE, t!("comun.papelera"));
             if busy {
@@ -1072,15 +1070,19 @@ impl RecycleTool {
         let total: u64 = items.iter().map(|i| i.size).sum();
         ui.label(RichText::new(tp!(items.len(), "herr.papelera_resumen", n = fsx::thousands(items.len()), tamano = fsx::human_size(total))).color(t.dim));
         ui.add_space(8.0);
-        self.marked.retain(|k| *k < items.len());
+        // Lo que ya no está en la papelera deja de estar marcado.
+        if !busy {
+            let ids: HashSet<&str> = items.iter().map(|i| i.id.as_str()).collect();
+            self.marked.retain(|k| ids.contains(k.as_str()));
+        }
         let n = self.marked.len();
         ui.horizontal(|ui| {
-            let all = !shown.is_empty() && shown.iter().all(|k| self.marked.contains(k));
+            let all = !shown.is_empty() && shown.iter().all(|&k| self.marked.contains(&items[k].id));
             if ui.button(if all { t!("herr.desmarcar_todo") } else { t!("herr.marcar_todo") }).clicked() {
                 if all {
                     self.marked.clear();
                 } else {
-                    self.marked.extend(shown.iter().copied());
+                    self.marked.extend(shown.iter().map(|&k| items[k].id.clone()));
                 }
             }
             let ok = n > 0 && !busy;
@@ -1113,7 +1115,7 @@ impl RecycleTool {
                 let it = &items[k];
                 let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
                 let p = ui.painter();
-                let on = self.marked.contains(&k);
+                let on = self.marked.contains(&it.id);
                 if on {
                     p.rect_filled(rect, 6.0, t.sel_inactive);
                 } else if resp.hovered() {
@@ -1134,11 +1136,12 @@ impl RecycleTool {
                     p.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, fsx::human_size(it.size), FontId::proportional(12.0), t.dim);
                 }
                 if resp.clicked() {
-                    toggle = Some(k);
+                    toggle = Some(it.id.clone());
                 }
                 resp.on_hover_text(it.original_path()).context_menu(|ui| {
-                    if ui.button(format!("{}  {}", ic::ARROW_COUNTER_CLOCKWISE, t!("comun.restaurar"))).clicked() {
-                        self.bin.restore(vec![k]);
+                    if ui.add_enabled(!busy, egui::Button::new(format!("{}  {}", ic::ARROW_COUNTER_CLOCKWISE, t!("comun.restaurar")))).clicked() {
+                        self.marked.remove(&it.id);
+                        self.bin.restore(vec![it.id.clone()]);
                         ui.close();
                     }
                     if ui.button(format!("{}  {}", ic::FOLDER_OPEN, t!("herr.abrir_carpeta_original"))).clicked() {
@@ -1148,9 +1151,9 @@ impl RecycleTool {
                 });
             }
         });
-        if let Some(k) = toggle {
-            if !self.marked.remove(&k) {
-                self.marked.insert(k);
+        if let Some(id) = toggle {
+            if !self.marked.remove(&id) {
+                self.marked.insert(id);
             }
         }
         if busy {

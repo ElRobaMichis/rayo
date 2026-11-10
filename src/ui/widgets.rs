@@ -134,12 +134,6 @@ pub fn field(ui: &mut Ui, t: &Theme, buf: &mut String, f: Field) -> FieldOut {
     FieldOut { outer, edit, trailing_clicked, cleared }
 }
 
-/// Botón de ícono cuadrado, sin fondo hasta pasar por encima.
-pub fn icon_button(ui: &mut Ui, t: &Theme, icon: &str, size: f32) -> Response {
-    let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
-    let id = ui.next_auto_id().with(icon);
-    icon_button_at(ui, t, rect, id, icon, false)
-}
 
 /// Igual, pero con un borde (para que se vea como botón aunque esté quieto).
 pub fn icon_button_outlined(ui: &mut Ui, t: &Theme, icon: &str, size: f32) -> Response {

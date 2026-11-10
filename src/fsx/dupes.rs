@@ -165,6 +165,11 @@ pub fn walk_candidates(dir: &str, min_size: u64, cancel: &AtomicBool) -> Vec<Can
         if let Ok(list) = super::list_dir(&d) {
             for e in list {
                 let p = super::join(&d, &e.name);
+                // Enlaces y uniones fuera: el mismo archivo por dos caminos parecería duplicado,
+                // y borrar "una copia" borraría la única.
+                if e.link {
+                    continue;
+                }
                 if e.is_dir {
                     stack.push(p);
                 } else if e.size >= min_size {

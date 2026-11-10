@@ -632,7 +632,7 @@ mod tests {
         px[0] = 255;
         let (out, w, h) = orient_pixels(px, 3, 2, 6);
         assert_eq!((w, h), (2, 3));
-        assert_eq!(out[((0 * w + 1) * 4) as usize], 255);
+        assert_eq!(out[4], 255);
     }
 }
 

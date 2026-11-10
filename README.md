@@ -190,7 +190,7 @@ Source layout: [`src/index`](src/index) (index and search), [`src/fsx`](src/fsx)
 
 ## Build from source
 
-You need [Rust](https://rustup.rs/) (stable, 1.85 or newer) on Windows.
+You need [Rust](https://rustup.rs/) (stable, 1.95 or newer) on Windows.
 
 ```bash
 git clone https://github.com/ElRobaMichis/rayo.git

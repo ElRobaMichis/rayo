@@ -16,7 +16,7 @@ request makes a difference. Contributions are welcome in **English or Spanish**.
 
 ## Development setup
 
-You need Windows 10/11 and [Rust](https://rustup.rs/) (stable, 1.85 or newer).
+You need Windows 10/11 and [Rust](https://rustup.rs/) (stable, 1.95 or newer).
 
 ```bash
 git clone https://github.com/ElRobaMichis/rayo.git

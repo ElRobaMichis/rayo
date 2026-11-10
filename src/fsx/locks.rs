@@ -37,11 +37,6 @@ pub struct Locker {
     start: FILETIME,
 }
 
-/// ¿El error es "otro proceso lo está usando"? (32 = uso compartido, 33 = bloqueo).
-pub fn is_in_use_error(e: &std::io::Error) -> bool {
-    matches!(e.raw_os_error(), Some(32 | 33))
-}
-
 /// Archivos a registrar: los mismos, o los de adentro de cada carpeta.
 fn files_of(paths: &[String]) -> Vec<String> {
     let mut out = Vec::new();
@@ -209,17 +204,6 @@ impl Locker {
             let r = if same { TerminateProcess(h, 1).map_err(|e| e.message()) } else { Err(t!("uso.programa_ya_cerro").into()) };
             let _ = CloseHandle(h);
             r
-        }
-    }
-
-    /// ¿Sigue abierto?
-    pub fn alive(&self) -> bool {
-        unsafe {
-            let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, self.pid) else { return false };
-            let mut code = 0u32;
-            let ok = GetExitCodeProcess(h, &mut code).is_ok() && code == 259; // STILL_ACTIVE
-            let _ = CloseHandle(h);
-            ok
         }
     }
 }

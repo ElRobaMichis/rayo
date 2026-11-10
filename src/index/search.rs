@@ -138,7 +138,7 @@ fn parse_date_range(v: &str, now: u32) -> Option<(Option<u32>, Option<u32>)> {
                 "y" | "a" => 365 * day,
                 _ => return None,
             };
-            (Some(now.saturating_sub(n * secs)), None)
+            (Some(now.saturating_sub(n.saturating_mul(secs))), None)
         }
     })
 }
@@ -483,7 +483,11 @@ impl<'q> Compiled<'q> {
         if let Some(w) = self.within {
             let mut cur = v.parent[iu];
             let mut ok = false;
-            while cur != NONE {
+            // Con datos dañados podría haber ciclos: como mucho 512 niveles (igual que `full_path`).
+            for _ in 0..512 {
+                if cur == NONE {
+                    break;
+                }
                 if cur == w {
                     ok = true;
                     break;

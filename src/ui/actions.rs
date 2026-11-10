@@ -25,7 +25,6 @@ pub enum Action {
     SwitchTab(usize),
     Reveal(String),
     Select { col: usize, name: String, is_dir: bool, ctrl: bool, shift: bool },
-    FocusCol(usize),
     /// Reemplaza la selección de una columna (rectángulo o clic en vacío). Cierra las columnas a su derecha.
     SetSelection { col: usize, names: Vec<String> },
     /// Se empezó a arrastrar algo no seleccionado: queda seleccionado solo eso.

@@ -63,6 +63,8 @@ static MSG_HWND: OnceLock<usize> = OnceLock::new();
 static WAKE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 /// Se pidió salir de verdad (no quedarse en segundo plano).
 static QUIT: AtomicBool = AtomicBool::new(false);
+/// ¿Está puesto el ícono de la bandeja? (para volver a ponerlo si el Explorador se reinicia).
+static TRAY_ON: AtomicBool = AtomicBool::new(false);
 /// Arrancó oculto (`--background`) y todavía no se mostró.
 pub static START_HIDDEN: AtomicBool = AtomicBool::new(false);
 /// La ventana volvió a mostrarse desde segundo plano (la app recarga lo visible).
@@ -104,6 +106,11 @@ pub fn claim(path_arg: Option<&str>) -> bool {
     }
 }
 
+/// La ventana principal de este proceso (para que los diálogos de Windows salgan encima de ella).
+pub fn main_hwnd() -> Option<HWND> {
+    MAIN_HWND.get().map(|&h| HWND(h as *mut _))
+}
+
 /// ¿Hay un Rayo abierto (visible o en segundo plano)?
 pub fn is_running() -> bool {
     find_running().is_some()
@@ -115,6 +122,37 @@ pub fn quit_running() -> bool {
         Some(h) => unsafe { SendMessageW(h, WM_QUIT_REQ, None, None).0 == 1 },
         None => false,
     }
+}
+
+/// Cierra el Rayo abierto y espera a que termine de verdad (al salir guarda la configuración y el
+/// índice). Devuelve `false` si después de `timeout_ms` sigue abierto.
+pub fn quit_and_wait(timeout_ms: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+    let start = std::time::Instant::now();
+    while let Some(h) = find_running() {
+        let left = (timeout_ms as u128).saturating_sub(start.elapsed().as_millis()) as u32;
+        if left == 0 {
+            return false;
+        }
+        unsafe {
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(h, Some(&mut pid));
+            let proc = OpenProcess(PROCESS_SYNCHRONIZE, false, pid).ok();
+            let _ = SendMessageTimeoutW(h, WM_QUIT_REQ, WPARAM(0), LPARAM(0), SMTO_ABORTIFHUNG, 2000, None);
+            match proc {
+                Some(p) => {
+                    let r = WaitForSingleObject(p, left);
+                    let _ = CloseHandle(p);
+                    if r == WAIT_TIMEOUT {
+                        return false;
+                    }
+                }
+                None => std::thread::sleep(std::time::Duration::from_millis(100)),
+            }
+        }
+    }
+    true
 }
 
 /// ¿Se pidió salir de verdad?
@@ -143,6 +181,7 @@ pub fn set_tray(visible: bool) {
 
 fn tray(hwnd: HWND, add: bool) {
     let mut nid = NOTIFYICONDATAW { cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32, hWnd: hwnd, uID: 1, ..Default::default() };
+    TRAY_ON.store(add, Ordering::Relaxed);
     unsafe {
         if !add {
             let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
@@ -161,7 +200,9 @@ fn tray(hwnd: HWND, add: bool) {
             None => LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
         };
         let tip: Vec<u16> = t!("fondo.rayo_segundo_plano").encode_utf16().collect();
-        nid.szTip[..tip.len()].copy_from_slice(&tip);
+        // Una traducción larga no entra: se corta (y queda lugar para el 0 final).
+        let n = tip.len().min(nid.szTip.len() - 1);
+        nid.szTip[..n].copy_from_slice(&tip[..n]);
         let _ = Shell_NotifyIconW(NIM_ADD, &nid);
     }
 }
@@ -218,7 +259,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             return LRESULT(0);
         }
-        _ => {}
+        _ => {
+            // El Explorador se reinició (por ejemplo, tras colgarse): la bandeja nueva no tiene
+            // el ícono, y sin él no habría forma de volver a Rayo.
+            static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
+            let created = *TASKBAR_CREATED.get_or_init(|| unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) });
+            if created != 0 && msg == created && TRAY_ON.load(Ordering::Relaxed) {
+                tray(hwnd, true);
+                return LRESULT(0);
+            }
+        }
     }
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }

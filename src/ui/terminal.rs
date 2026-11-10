@@ -7,7 +7,7 @@
 use super::theme::Theme;
 use egui::{Color32, FontId, Key, Rect, Sense, Ui, pos2, vec2};
 use parking_lot::Mutex;
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,7 +16,8 @@ pub struct Terminal {
     parser: Arc<Mutex<vt100::Parser>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
-    child: Box<dyn Child + Send + Sync>,
+    /// Para cerrar el shell al quitar el panel (el proceso lo espera otro hilo).
+    killer: Box<dyn ChildKiller + Send + Sync>,
     exited: Arc<AtomicBool>,
     size: (u16, u16),
     /// Líneas hacia atrás que se están viendo (0 = lo último).
@@ -36,7 +37,8 @@ impl Terminal {
         let mut cmd = CommandBuilder::new(shell());
         cmd.arg("-NoLogo");
         cmd.cwd(cwd);
-        let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+        let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+        let killer = child.clone_killer();
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(pair.master.take_writer().map_err(|e| e.to_string())?));
@@ -71,7 +73,18 @@ impl Terminal {
                 c.request_repaint();
             })
             .map_err(|e| e.to_string())?;
-        Ok(Terminal { parser, writer, master: pair.master, child, exited, size, scroll: 0 })
+        // Con ConPTY la salida no se corta cuando el shell termina (`exit`): sigue abierta hasta
+        // cerrar la pseudoconsola. Por eso se espera al proceso mismo.
+        let (done, c) = (exited.clone(), ctx.clone());
+        std::thread::Builder::new()
+            .name("terminal-espera".into())
+            .spawn(move || {
+                let _ = child.wait();
+                done.store(true, Ordering::Relaxed);
+                c.request_repaint();
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Terminal { parser, writer, master: pair.master, killer, exited, size, scroll: 0 })
     }
 
     pub fn exited(&self) -> bool {
@@ -196,6 +209,8 @@ impl Terminal {
                     // Ctrl+C en una terminal interrumpe (como en la consola).
                     self.send(b"\x03");
                 }
+                // egui convierte Ctrl+X en "cortar": a la terminal le llega como ^X.
+                egui::Event::Cut => self.send(b"\x18"),
                 egui::Event::Key { key, pressed: true, modifiers, .. } => {
                     if let Some(bytes) = key_bytes(*key, *modifiers) {
                         self.send(&bytes);
@@ -212,7 +227,7 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        let _ = self.killer.kill();
     }
 }
 

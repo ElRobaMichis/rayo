@@ -222,10 +222,14 @@ fn run_file_op(op: FileOp, srcs: &[String], dest: Option<&str>) -> (bool, bool) 
         let (func, flags) = match op {
             FileOp::Copy => (FO_COPY, FOF_ALLOWUNDO.0 | FOF_NOCONFIRMMKDIR.0),
             FileOp::Move => (FO_MOVE, FOF_ALLOWUNDO.0 | FOF_NOCONFIRMMKDIR.0),
-            FileOp::Recycle => (FO_DELETE, FOF_ALLOWUNDO.0 | FOF_NOCONFIRMATION.0 | FOF_NOERRORUI.0),
+            // Donde no hay papelera (red, algunos USB, más grande que la papelera) Windows borraría
+            // para siempre sin decir nada: WANTNUKEWARNING hace que pregunte antes.
+            FileOp::Recycle => (FO_DELETE, FOF_ALLOWUNDO.0 | FOF_NOCONFIRMATION.0 | FOF_NOERRORUI.0 | FOF_WANTNUKEWARNING.0),
             FileOp::DeleteForever => (FO_DELETE, FOF_NOERRORUI.0),
         };
         let mut s = SHFILEOPSTRUCTW {
+            // Sin ventana dueña, el aviso puede quedar detrás de Rayo.
+            hwnd: crate::instance::main_hwnd().unwrap_or_default(),
             wFunc: func,
             pFrom: PCWSTR(from.as_ptr()),
             pTo: to.as_ref().map_or(PCWSTR::null(), |t| PCWSTR(t.as_ptr())),
@@ -238,10 +242,14 @@ fn run_file_op(op: FileOp, srcs: &[String], dest: Option<&str>) -> (bool, bool) 
 }
 
 pub fn rename(path: &str, new_name: &str) -> Result<String, String> {
+    // Un separador movería el elemento a otra carpeta; el resto Windows no lo acepta.
+    if new_name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) {
+        return Err(format!("{new_name}: {}", t!("renombrar.tiene_caracteres_no_permitidos")));
+    }
     let parent = super::parent_of(path).ok_or(t!("shell.ruta_invalida"))?;
     let target = super::join(&parent, new_name);
-    // Nunca pisar otro elemento (cambiar solo mayúsculas sí se permite).
-    if !target.eq_ignore_ascii_case(path) && std::fs::symlink_metadata(super::long_path(&target)).is_ok() {
+    // Nunca pisar otro elemento (cambiar solo mayúsculas sí se permite, también en "á" → "Á").
+    if target.to_lowercase() != path.to_lowercase() && std::fs::symlink_metadata(super::long_path(&target)).is_ok() {
         return Err(tf!("comun.ya_existe", nombre = new_name));
     }
     std::fs::rename(super::long_path(path), super::long_path(&target)).map_err(|e| e.to_string())?;
@@ -250,7 +258,15 @@ pub fn rename(path: &str, new_name: &str) -> Result<String, String> {
 
 /// Saca de la papelera los elementos que estaban en estas rutas (el borrado más
 /// reciente de cada una). Devuelve cuántos se restauraron.
-pub fn restore_from_recycle_bin(paths: &[String]) -> usize {
+/// Hora actual como FILETIME (para comparar con la fecha de borrado de la papelera).
+pub fn filetime_now() -> u64 {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    secs * 10_000_000 + 116_444_736_000_000_000
+}
+
+/// `since`: solo lo borrado desde ese momento (FILETIME). Si el borrado no llegó a la papelera
+/// (se canceló, o era para siempre), así no se restaura una versión vieja de la misma ruta.
+pub fn restore_from_recycle_bin(paths: &[String], since: u64) -> usize {
     use windows::Win32::Foundation::PROPERTYKEY;
     use windows::Win32::System::Com::CoTaskMemFree;
     // System.Recycle.DeletedFrom y System.Recycle.DateDeleted; System.ItemNameDisplay.
@@ -284,6 +300,10 @@ pub fn restore_from_recycle_bin(paths: &[String]) -> usize {
                 continue;
             }
             let when = item2.GetFileTime(&DATE_DELETED).map(|f| ((f.dwHighDateTime as u64) << 32) | f.dwLowDateTime as u64).unwrap_or(0);
+            // 2 s de margen (la fecha la pone Windows, con su propio redondeo).
+            if when < since.saturating_sub(20_000_000) {
+                continue;
+            }
             if best.get(&full).is_none_or(|(t, _)| when > *t) {
                 best.insert(full, (when, item2));
             }

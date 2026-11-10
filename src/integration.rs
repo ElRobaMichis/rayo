@@ -118,6 +118,12 @@ pub fn is_default(r: &Roots) -> bool {
     get_str(&format!("{}\\Directory\\shell", r.classes), "").as_deref() == Some(VERB) && key_exists(&format!("{}\\Directory\\shell\\{VERB}\\command", r.classes))
 }
 
+/// ¿Quedó algo de Rayo en el registro? (aunque otro programa se haya puesto después como
+/// predeterminado: al desinstalar hay que quitar igual lo de Rayo, o Win+E queda roto).
+pub fn has_traces(r: &Roots) -> bool {
+    get_str(r.backup, "Activo").is_some() || CLASSES.iter().any(|c| key_exists(&format!("{}\\{c}\\shell\\{VERB}", r.classes)))
+}
+
 /// Hace de Rayo el explorador predeterminado. Guarda antes lo que había.
 pub fn enable(r: &Roots) -> Result<(), String> {
     let exe = exe()?;
@@ -166,24 +172,40 @@ pub fn disable(r: &Roots) -> Result<(), String> {
     for class in CLASSES {
         let shell = format!("{c}\\{class}\\shell");
         delete_tree(&format!("{shell}\\{VERB}"));
-        match get_str(r.backup, &format!("{class}Antes")) {
-            Some(v) => set_str(&shell, "", &v)?,
-            None => {
-                if get_str(&shell, "").as_deref() == Some(VERB) {
-                    delete_value(&shell, "");
-                }
+        // Solo si sigue siendo Rayo: si otro programa tomó el relevo, se le deja.
+        if get_str(&shell, "").as_deref() == Some(VERB) {
+            match get_str(r.backup, &format!("{class}Antes")) {
+                Some(v) => set_str(&shell, "", &v)?,
+                None => delete_value(&shell, ""),
             }
         }
         delete_if_empty(&shell);
         delete_if_empty(&format!("{c}\\{class}"));
     }
-    if get_str(r.backup, "ClsidExistia").as_deref() == Some("1") {
-        delete_tree(&format!("{c}\\{WINE_CLSID}\\shell\\opennewwindow"));
-        delete_if_empty(&format!("{c}\\{WINE_CLSID}\\shell"));
-    } else {
-        delete_tree(&format!("{c}\\{WINE_CLSID}"));
+    let wine = format!("{c}\\{WINE_CLSID}");
+    match get_str(r.backup, "ClsidExistia").as_deref() {
+        Some("1") => {
+            delete_tree(&format!("{wine}\\shell\\opennewwindow"));
+            delete_if_empty(&format!("{wine}\\shell"));
+        }
+        Some(_) => delete_tree(&wine),
+        // Sin respaldo no se sabe de quién es la clave: solo se quita el comando si es de Rayo.
+        None => {
+            let cmd = get_str(&format!("{wine}\\shell\\opennewwindow\\command"), "").unwrap_or_default();
+            if cmd.to_lowercase().contains("rayo") {
+                delete_tree(&format!("{wine}\\shell\\opennewwindow"));
+                delete_if_empty(&format!("{wine}\\shell"));
+                delete_if_empty(&wine);
+            }
+        }
     }
     delete_tree(r.backup);
+    if r.backup == REAL.backup {
+        // La clave de Rayo queda vacía, y el .reg para deshacer a mano ya no sirve (usarlo
+        // después podría pisar lo que puso otro programa).
+        delete_if_empty("Software\\Rayo");
+        let _ = std::fs::remove_file(undo_file());
+    }
     notify_shell();
     Ok(())
 }

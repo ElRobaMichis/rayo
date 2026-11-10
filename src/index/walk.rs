@@ -5,7 +5,7 @@
 use super::store::*;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use windows::Win32::Foundation::{ERROR_NO_MORE_FILES, HANDLE};
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::*;
 use windows::core::PCWSTR;
 
@@ -68,10 +68,8 @@ pub fn list_dir_raw(dir: &str, mut f: impl FnMut(&[u16], &WIN32_FIND_DATAW)) {
         if !dot {
             f(name, &data);
         }
-        if let Err(e) = unsafe { FindNextFileW(h, &mut data) } {
-            if e.code() != ERROR_NO_MORE_FILES.to_hresult() {
-                // Error a mitad de camino: nos quedamos con lo leído.
-            }
+        // Sin más entradas, o un error a mitad de camino: nos quedamos con lo leído.
+        if unsafe { FindNextFileW(h, &mut data) }.is_err() {
             break;
         }
     }

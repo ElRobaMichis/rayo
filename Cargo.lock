@@ -1782,7 +1782,6 @@ dependencies = [
  "eframe",
  "egui",
  "egui-phosphor",
- "egui-winit",
  "memchr",
  "parking_lot",
  "pinyin",

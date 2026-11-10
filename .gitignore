@@ -1,3 +1,5 @@
 /target
 /dist
+/reports
+/research_notes
 *.log

@@ -350,6 +350,12 @@ struct Item {
     rel: String,
     is_dir: bool,
     size: u64,
+    /// Se llegó pasando por un enlace o unión (también el enlace mismo): lo de adentro está en
+    /// otro lado, así que al mover se copia pero nunca se borra.
+    via_link: bool,
+    /// Es un enlace o unión al que se llegó sin pasar por otro: al mover, si todo salió bien,
+    /// se quita el enlace (solo el enlace, no lo de adentro).
+    link: bool,
 }
 
 fn meta(p: &str) -> Option<std::fs::Metadata> {
@@ -358,6 +364,11 @@ fn meta(p: &str) -> Option<std::fs::Metadata> {
 
 fn mtime_of(m: &std::fs::Metadata) -> u32 {
     m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as u32)
+}
+
+/// ¿Están en el mismo volumen? (misma letra, o mismo `\\servidor\recurso`).
+pub fn same_volume(a: &str, b: &str) -> bool {
+    volume_of(a) == volume_of(b)
 }
 
 fn volume_of(p: &str) -> String {
@@ -373,26 +384,67 @@ fn volume_of(p: &str) -> String {
 /// Recorre las fuentes y arma la lista de carpetas y archivos a copiar.
 fn scan(sources: &[(String, String)], cancel: &AtomicBool, errors: &mut Vec<String>) -> Vec<Item> {
     let mut out = Vec::new();
-    scan_each(sources, cancel, errors, &mut |it| out.push(it));
+    scan_each(sources, None, cancel, errors, &mut |it| out.push(it));
     out
 }
 
+/// Ruta real (siguiendo enlaces y uniones), sin `\\?\` ni barra final y en minúsculas, para comparar.
+fn canon(p: &str) -> std::io::Result<String> {
+    let c = std::fs::canonicalize(long_path(p))?;
+    Ok(short_path(&c.to_string_lossy()).trim_end_matches('\\').to_lowercase())
+}
+
+/// ¿`a` es `b` o está dentro de `b`? (rutas de `canon`)
+fn within(a: &str, b: &str) -> bool {
+    a.starts_with(b) && (a.len() == b.len() || a.as_bytes()[b.len()] == b'\\')
+}
+
+/// Al entrar en el enlace `link` (que está en `parent` y va a `rel` en el destino): adónde apunta
+/// de verdad, o el error si entrar sería un bucle (apunta a una carpeta que ya se está recorriendo)
+/// o mezclaría origen y destino (`cdest` = destino real del trabajo).
+fn cross_link(link: &str, parent: &str, rel: &str, chain: &[String], cdest: Option<&str>) -> Result<String, String> {
+    let target = canon(link).map_err(|e| format!("{}: {e}", short_path(link)))?;
+    let here = canon(parent).ok();
+    let to = cdest.map(|d| format!("{d}\\{}", rel.to_lowercase()));
+    let looped = here.as_deref().is_some_and(|h| within(h, &target))
+        || chain.iter().any(|c| within(c, &target))
+        || to.as_deref().is_some_and(|t| within(t, &target) || within(&target, t));
+    if looped { Err(tf!("copia.enlace_bucle", ruta = short_path(link))) } else { Ok(target) }
+}
+
 /// Igual que `scan`, pero entrega cada elemento apenas lo encuentra (cada carpeta antes que lo de
-/// adentro), para empezar a copiar sin esperar a terminar de contar.
-fn scan_each(sources: &[(String, String)], cancel: &AtomicBool, errors: &mut Vec<String>, emit: &mut dyn FnMut(Item)) {
+/// adentro), para empezar a copiar sin esperar a terminar de contar. Entra en enlaces y uniones
+/// (se copia lo de adentro), pero no en uno que daría vueltas o que apunta al destino (`dest`).
+fn scan_each(sources: &[(String, String)], dest: Option<&str>, cancel: &AtomicBool, errors: &mut Vec<String>, emit: &mut dyn FnMut(Item)) {
+    use std::os::windows::fs::FileTypeExt;
+    let cdest = dest.and_then(|d| canon(d).ok());
     for (src, name) in sources {
         let name = name.clone();
         let Some(m) = meta(src) else {
             errors.push(tf!("copia.no_existe", origen = src));
             continue;
         };
-        if !m.is_dir() {
-            emit(Item { src: src.clone(), rel: name, is_dir: false, size: m.len() });
+        // `symlink_metadata` no ve un enlace a carpeta (o unión) como carpeta.
+        let is_link = m.file_type().is_symlink_dir();
+        if !m.is_dir() && !is_link {
+            emit(Item { src: src.clone(), rel: name, is_dir: false, size: m.len(), via_link: false, link: false });
             continue;
         }
-        emit(Item { src: src.clone(), rel: name.clone(), is_dir: true, size: 0 });
-        let mut stack = vec![(src.clone(), name)];
-        while let Some((dir, rel)) = stack.pop() {
+        // Enlaces cruzados hasta cada carpeta (adónde apuntan de verdad), para no dar vueltas.
+        let mut chain: Vec<String> = Vec::new();
+        if is_link {
+            let parent = super::parent_of(src).unwrap_or_default();
+            match cross_link(src, &parent, &name, &[], cdest.as_deref()) {
+                Ok(t) => chain.push(t),
+                Err(e) => {
+                    errors.push(e);
+                    continue;
+                }
+            }
+        }
+        emit(Item { src: src.clone(), rel: name.clone(), is_dir: true, size: 0, via_link: is_link, link: is_link });
+        let mut stack = vec![(src.clone(), name, is_link, chain)];
+        while let Some((dir, rel, via, chain)) = stack.pop() {
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
@@ -405,14 +457,24 @@ fn scan_each(sources: &[(String, String)], cancel: &AtomicBool, errors: &mut Vec
                         let s = join(&dir, &e.name);
                         let r = format!("{rel}\\{}", e.name);
                         if e.is_dir {
-                            subdirs.push((s, r));
+                            subdirs.push((s, r, e.link));
                         } else {
-                            emit(Item { src: s, rel: r, is_dir: false, size: e.size });
+                            emit(Item { src: s, rel: r, is_dir: false, size: e.size, via_link: via, link: false });
                         }
                     }
-                    for (s, r) in subdirs.into_iter().rev() {
-                        emit(Item { src: s.clone(), rel: r.clone(), is_dir: true, size: 0 });
-                        stack.push((s, r));
+                    for (s, r, lnk) in subdirs.into_iter().rev() {
+                        let mut sub_chain = chain.clone();
+                        if lnk {
+                            match cross_link(&s, &dir, &r, &chain, cdest.as_deref()) {
+                                Ok(t) => sub_chain.push(t),
+                                Err(e) => {
+                                    errors.push(e);
+                                    continue;
+                                }
+                            }
+                        }
+                        emit(Item { src: s.clone(), rel: r.clone(), is_dir: true, size: 0, via_link: via || lnk, link: lnk && !via });
+                        stack.push((s, r, via || lnk, sub_chain));
                     }
                 }
                 Err(e) => errors.push(format!("{dir}: {e}")),
@@ -430,15 +492,23 @@ fn free_space(path: &str) -> Option<u64> {
 
 /// "foto.jpg" → "foto (2).jpg", "foto (3).jpg"… hasta encontrar un nombre libre.
 pub fn free_name(dst: &str) -> String {
+    free_name_except(dst, &|_| false)
+}
+
+/// Como `free_name`, pero salteando también los nombres que `taken` da por ocupados (los que ya
+/// le tocaron a otro archivo de la misma copia, aunque todavía no estén en el disco).
+fn free_name_except(dst: &str, taken: &dyn Fn(&str) -> bool) -> String {
     let dir = super::parent_of(dst).unwrap_or_default();
     let name = super::file_name(dst);
+    // Una carpeta no tiene extensión: "Proyecto v1.2" → "Proyecto v1.2 (2)".
+    let is_dir = meta(dst).is_some_and(|m| m.is_dir());
     let (stem, ext) = match name.rfind('.') {
-        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        Some(i) if i > 0 && !is_dir => (&name[..i], &name[i..]),
         _ => (name.as_str(), ""),
     };
     for k in 2..10_000 {
         let candidate = join(&dir, &format!("{stem} ({k}){ext}"));
-        if meta(&candidate).is_none() {
+        if meta(&candidate).is_none() && !taken(&candidate) {
             return candidate;
         }
     }
@@ -496,7 +566,8 @@ unsafe extern "system" fn progress_cb(
 /// la memoria todo lo demás: sin caché solo los que pasan de la mitad de la memoria libre.
 fn unbuffered_from() -> u64 {
     use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-    if let Some(mb) = std::env::var("RAYO_COPY_UNBUFFERED_MB").ok().and_then(|v| v.parse::<u64>().ok()) {
+    static FORCED: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    if let Some(mb) = *FORCED.get_or_init(|| std::env::var("RAYO_COPY_UNBUFFERED_MB").ok().and_then(|v| v.parse::<u64>().ok())) {
         return mb << 20;
     }
     let mut m = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
@@ -504,17 +575,30 @@ fn unbuffered_from() -> u64 {
     (free / 2).max(512 << 20)
 }
 
+/// ¿Falló porque el destino ya existe? (con `COPY_FILE_FAIL_IF_EXISTS`)
+fn exists_error(e: &windows::core::Error) -> bool {
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};
+    e.code() == ERROR_FILE_EXISTS.to_hresult() || e.code() == ERROR_ALREADY_EXISTS.to_hresult()
+}
+
 /// Copia un archivo sumando lo copiado a `total`. Al volver, el archivo cuenta entero (también si
-/// falló: así la barra no se queda corta).
-fn copy_file(job: &Job, src: &str, dst: &str, size: u64, total: &AtomicU64, started: Instant, compress: bool, wake: &(dyn Fn() + Sync)) -> Result<(), String> {
+/// falló: así la barra no se queda corta), salvo si el destino ya existía (se reintenta con otro
+/// nombre). Sin `replace` nunca pisa un archivo que ya está.
+#[allow(clippy::too_many_arguments)]
+fn copy_file(job: &Job, src: &str, dst: &str, size: u64, total: &AtomicU64, started: Instant, compress: bool, replace: bool, wake: &(dyn Fn() + Sync)) -> windows::core::Result<()> {
     let s: Vec<u16> = long_path(src).encode_utf16().chain([0]).collect();
     let d: Vec<u16> = long_path(dst).encode_utf16().chain([0]).collect();
     let progress = Progress { job, total, last: AtomicU64::new(0), started, wake, last_wake: Mutex::new(Instant::now()) };
     // Sin caché del sistema para archivos grandes: más rápido y no desplaza lo que hay en memoria.
-    let mut flags = if size > unbuffered_from() { COPY_FILE_NO_BUFFERING } else { COPYFILE_FLAGS(0) };
+    // (Nunca baja de 512 MB salvo forzado: para los archivos chicos ni se pregunta la memoria.)
+    let mut flags = if (size > 512 << 20 || std::env::var_os("RAYO_COPY_UNBUFFERED_MB").is_some()) && size > unbuffered_from() { COPY_FILE_NO_BUFFERING } else { COPYFILE_FLAGS(0) };
     if compress {
         // En la red: que SMB comprima lo que viaja (si el servidor no sabe, se ignora).
         flags |= COPY_FILE_REQUEST_COMPRESSED_TRAFFIC;
+    }
+    if !replace {
+        // Si otro (otra fuente de esta copia, otro programa) lo creó mientras tanto: falla, no pisa.
+        flags |= COPY_FILE_FAIL_IF_EXISTS;
     }
     let run = |flags: COPYFILE_FLAGS| unsafe { CopyFileExW(PCWSTR(s.as_ptr()), PCWSTR(d.as_ptr()), Some(progress_cb), Some(&progress as *const _ as *const _), None, flags) };
     let mut r = run(flags);
@@ -523,27 +607,36 @@ fn copy_file(job: &Job, src: &str, dst: &str, size: u64, total: &AtomicU64, star
         r = run(flags & !COPY_FILE_REQUEST_COMPRESSED_TRAFFIC);
     }
     let counted = progress.last.load(Ordering::Relaxed);
-    total.fetch_add(size.saturating_sub(counted), Ordering::Relaxed);
-    r.map_err(|e| e.message())
+    if r.as_ref().is_err_and(exists_error) {
+        // Se va a reintentar con otro nombre: este intento no cuenta.
+        total.fetch_sub(counted, Ordering::Relaxed);
+    } else {
+        total.fetch_add(size.saturating_sub(counted), Ordering::Relaxed);
+    }
+    r
 }
 
-fn move_path(src: &str, dst: &str) -> Result<(), String> {
+fn move_path(src: &str, dst: &str) -> windows::core::Result<()> {
     let s: Vec<u16> = long_path(src).encode_utf16().chain([0]).collect();
     let d: Vec<u16> = long_path(dst).encode_utf16().chain([0]).collect();
-    unsafe { MoveFileExW(PCWSTR(s.as_ptr()), PCWSTR(d.as_ptr()), MOVE_FILE_FLAGS(0)) }.map_err(|e| e.message())
+    unsafe { MoveFileExW(PCWSTR(s.as_ptr()), PCWSTR(d.as_ptr()), MOVE_FILE_FLAGS(0)) }
 }
 
 /// Pregunta qué hacer con un archivo que ya existe y espera la respuesta.
 fn ask(job: &Job, info: ConflictInfo, wake: &dyn Fn()) -> (Choice, bool) {
+    // La respuesta vieja se limpia antes de mostrar la pregunta: si no, un "cancelar" que llegue
+    // justo entre las dos cosas se perdería.
+    *job.answer.lock() = None;
     {
         let mut v = job.view.lock();
         v.state = State::Conflict;
         v.conflict = Some(info);
     }
-    *job.answer.lock() = None;
     wake();
     loop {
-        if let Some(a) = job.answer.lock().take() {
+        // Cancelado (también si fue antes de que apareciera la pregunta): no esperar respuesta.
+        let answer = if job.cancel.load(Ordering::Relaxed) { Some((Choice::Skip, true)) } else { job.answer.lock().take() };
+        if let Some(a) = answer {
             let mut v = job.view.lock();
             v.state = State::Running;
             v.conflict = None;
@@ -877,6 +970,13 @@ fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
         })
         .collect();
 
+    // Fuentes con el mismo nombre (de carpetas distintas) irían al mismo destino: esas se copian
+    // archivo por archivo, anotando qué destinos ya le tocaron a alguna (ver `assigned`).
+    let dup_names: std::collections::HashSet<String> = {
+        let mut seen = std::collections::HashSet::new();
+        sources.iter().map(|(_, r)| r.to_lowercase()).filter(|r| !seen.insert(r.clone())).collect()
+    };
+
     // Mover dentro del mismo disco: se renombra cada elemento (instantáneo).
     let mut created: Vec<(String, String)> = Vec::new();
     let mut pending = sources.clone();
@@ -889,16 +989,19 @@ fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
             if short_path(src).eq_ignore_ascii_case(&short_path(&dst)) {
                 return false;
             }
-            if meta(&dst).is_some() {
-                return true; // Ya existe: se resuelve archivo por archivo más abajo.
+            if meta(&dst).is_some() || dup_names.contains(&rel.to_lowercase()) {
+                return true; // Ya existe (o lo comparte con otra fuente): archivo por archivo más abajo.
             }
             match move_path(src, &dst) {
                 Ok(()) => {
                     created.push((src.clone(), dst));
                     false
                 }
+                // Misma letra pero otro volumen (un punto de montaje, o una unión a otro disco):
+                // no se puede renombrar, se copia y se borra como entre discos.
+                Err(e) if e.code() == windows::Win32::Foundation::ERROR_NOT_SAME_DEVICE.to_hresult() => true,
                 Err(e) => {
-                    errors.push(format!("{src}: {e}"));
+                    errors.push(format!("{src}: {}", e.message()));
                     false
                 }
             }
@@ -935,9 +1038,15 @@ fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
         src: String,
         rel: String,
         target: String,
+        /// El nombre pedido antes de "conservar ambos" (para buscar otro libre si alguien lo ocupó).
+        base: String,
         size: u64,
         /// Anotarlo para deshacer (no si reemplazó a otro o si está dentro de una carpeta nueva).
         record: bool,
+        /// El usuario eligió reemplazar: sin esto, un archivo que ya está nunca se pisa.
+        replace: bool,
+        /// Llegó por un enlace o unión: al mover no se borra el original (es de otra carpeta).
+        via_link: bool,
     }
     struct Shared {
         errors: Vec<String>,
@@ -946,11 +1055,13 @@ fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
         copied: Vec<String>,
         /// Carpetas de origen (al mover, se borran las que quedaron vacías).
         dirs: Vec<String>,
+        /// Enlaces y uniones de origen (al mover, se quitan solo si no hubo ningún error).
+        links: Vec<String>,
     }
     let started = Instant::now();
     let done = AtomicU64::new(0);
     let out_of_space = AtomicBool::new(false);
-    let shared = Mutex::new(Shared { errors, created, copied: Vec::new(), dirs: Vec::new() });
+    let shared = Mutex::new(Shared { errors, created, copied: Vec::new(), dirs: Vec::new(), links: Vec::new() });
     let (job_r, done_r, shared_r, oos_r, pending_r, dest_r) = (job, &done, &shared, &out_of_space, &pending, dest.as_str());
 
     std::thread::scope(|sc| {
@@ -959,7 +1070,7 @@ fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
         sc.spawn(move || {
             let mut errs = Vec::new();
             let (mut bytes, mut files) = (0u64, 0usize);
-            scan_each(pending_r, &job_r.cancel, &mut errs, &mut |it: Item| {
+            scan_each(pending_r, Some(dest_r), &job_r.cancel, &mut errs, &mut |it: Item| {
                 if !it.is_dir {
                     bytes += it.size;
                     files += 1;
@@ -993,19 +1104,36 @@ fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
                         continue;
                     }
                     job_r.view.lock().current = t.rel.clone();
-                    match copy_file(job_r, &t.src, &t.target, t.size, done_r, started, network, wake) {
+                    let mut target = t.target.clone();
+                    let mut r = copy_file(job_r, &t.src, &target, t.size, done_r, started, network, t.replace, wake);
+                    // Alguien creó ese nombre mientras esperaba en la cola: otro nombre libre, nunca pisarlo.
+                    let mut tries = 0;
+                    while r.as_ref().is_err_and(exists_error) && tries < 50 && !job_r.cancel.load(Ordering::Relaxed) {
+                        tries += 1;
+                        target = free_name(&t.base);
+                        r = copy_file(job_r, &t.src, &target, t.size, done_r, started, network, false, wake);
+                    }
+                    if r.as_ref().is_err_and(exists_error) {
+                        done_r.fetch_add(t.size, Ordering::Relaxed);
+                    }
+                    match r {
                         Ok(()) => {
                             let mut sh = shared_r.lock();
-                            sh.copied.push(t.src.clone());
+                            if !t.via_link {
+                                sh.copied.push(t.src.clone());
+                            }
                             if t.record {
-                                sh.created.push((t.src, t.target));
+                                sh.created.push((t.src, target));
                             }
                         }
-                        Err(_) if job_r.cancel.load(Ordering::Relaxed) => {
-                            // Archivo a medias: se borra.
-                            let _ = std::fs::remove_file(long_path(&t.target));
+                        Err(e) if job_r.cancel.load(Ordering::Relaxed) => {
+                            // Archivo a medias: se borra. Solo si lo cortó la cancelación (entonces es
+                            // nuestro): con otro error podría ser uno que ya estaba o de otra tarea.
+                            if e.code() == windows::Win32::Foundation::ERROR_REQUEST_ABORTED.to_hresult() {
+                                let _ = std::fs::remove_file(long_path(&target));
+                            }
                         }
-                        Err(e) => shared_r.lock().errors.push(format!("{}: {e}", t.src)),
+                        Err(e) => shared_r.lock().errors.push(format!("{}: {}", t.src, e.message())),
                     }
                     let d = done_r.load(Ordering::Relaxed);
                     let mut v = job_r.view.lock();
@@ -1024,6 +1152,11 @@ fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
         // Fuentes de primer nivel y carpetas nuevas que crearon (lo de adentro se deshace con ellas).
         let tops: std::collections::HashSet<&str> = pending.iter().map(|(s, _)| s.as_str()).collect();
         let mut created_tops: Vec<String> = Vec::new();
+        // Destinos de archivo ya repartidos en esta copia (solo si hay fuentes con el mismo nombre:
+        // con un millón de archivos no se guarda nada). Uno repetido nunca se reemplaza: se
+        // perdería uno de los dos (y al mover, los dos originales se borran).
+        let key = |p: &str| short_path(p).to_lowercase();
+        let mut assigned: Option<std::collections::HashSet<String>> = (!dup_names.is_empty()).then(Default::default);
         for it in item_rx {
             if job.cancel.load(Ordering::Relaxed) {
                 break;
@@ -1038,7 +1171,12 @@ fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
                 }
             }
             if it.is_dir {
-                shared.lock().dirs.push(it.src.clone());
+                // Al mover, lo de adentro de un enlace nunca se borra; el enlace mismo, quizás al final.
+                if it.link {
+                    shared.lock().links.push(it.src.clone());
+                } else if !it.via_link {
+                    shared.lock().dirs.push(it.src.clone());
+                }
                 let same = short_path(&it.src).eq_ignore_ascii_case(&short_path(&dst));
                 if same && op == Op::Copy {
                     // Copiar una carpeta en su misma ubicación: "Carpeta (2)".
@@ -1059,7 +1197,12 @@ fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
             }
             let mut target = dst.clone();
             let mut replaced = false;
-            if let Some(dm) = meta(&dst) {
+            let taken = |p: &str| assigned.as_ref().is_some_and(|a| a.contains(&key(p)));
+            if taken(&dst) {
+                // Otra fuente de esta copia ya va a ese nombre: conservar ambos, aunque se haya
+                // elegido "reemplazar todos".
+                target = free_name_except(&dst, &taken);
+            } else if let Some(dm) = meta(&dst) {
                 let same = short_path(&it.src).eq_ignore_ascii_case(&short_path(&dst));
                 let choice = if same {
                     // Pegar en la misma carpeta: siempre una copia nueva.
@@ -1093,15 +1236,18 @@ fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
                         v.done_files += 1;
                         continue;
                     }
-                    Choice::KeepBoth => target = free_name(&dst),
+                    Choice::KeepBoth => target = free_name_except(&dst, &taken),
                     Choice::Replace => replaced = true,
                 }
+            }
+            if let Some(a) = assigned.as_mut() {
+                a.insert(key(&target));
             }
             if let Some(parent) = super::parent_of(&target) {
                 let _ = std::fs::create_dir_all(long_path(&parent));
             }
             let inside_new = created_tops.iter().any(|d| target.to_lowercase().starts_with(d.as_str()));
-            let task = Task { src: it.src.clone(), rel: it.rel.clone(), target, size: it.size, record: !replaced && !inside_new };
+            let task = Task { src: it.src.clone(), rel: it.rel.clone(), target, base: dst, size: it.size, record: !replaced && !inside_new, replace: replaced, via_link: it.via_link };
             if task_tx.send(task).is_err() {
                 break;
             }
@@ -1109,7 +1255,7 @@ fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
         drop(task_tx);
     });
 
-    let Shared { mut errors, created, copied, dirs } = shared.into_inner();
+    let Shared { mut errors, created, copied, dirs, links } = shared.into_inner();
     let out_of_space = out_of_space.load(Ordering::Relaxed);
 
     // Mover entre discos: borrar los originales copiados bien y las carpetas que quedaron vacías.
@@ -1120,6 +1266,11 @@ fn run_job(job: &Job, wake: &(dyn Fn() + Sync)) -> Vec<String> {
             }
         }
         let mut dirs = dirs;
+        // Un enlace o unión se quita (solo el enlace: lo de adentro sigue en su lugar) si todo se
+        // copió bien; si no, queda para llegar a lo que faltó.
+        if errors.is_empty() {
+            dirs.extend(links);
+        }
         dirs.sort_by_key(|d| std::cmp::Reverse(d.len()));
         for d in dirs {
             let _ = std::fs::remove_dir(long_path(&d));
@@ -1371,6 +1522,125 @@ mod tests {
         assert!(std::fs::symlink_metadata(long_path(&tree)).is_err(), "el árbol sigue ahí");
         assert!(std::fs::metadata(long_path(&join(&outside, "importante.txt"))).is_ok(), "borró lo de afuera del enlace");
         let _ = std::fs::remove_dir_all(long_path(&root));
+    }
+
+    /// Como `wait`, pero contesta los conflictos con `choice` (para todos).
+    fn wait_answering(t: &Transfers, id: u64, choice: Choice) -> JobView {
+        for _ in 0..3000 {
+            let v = t.snapshot().into_iter().find(|j| j.id == id).unwrap();
+            if v.state == State::Conflict {
+                t.resolve(id, choice, true);
+            }
+            if v.finished() {
+                return v;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("el trabajo no terminó");
+    }
+
+    /// Una unión (no hace falta ser administrador). None si no se pudo crear.
+    fn junction(link: &str, target: &str) -> Option<()> {
+        let _ = std::process::Command::new("cmd").args(["/c", "mklink", "/J", link, target]).output();
+        std::fs::symlink_metadata(long_path(link)).ok().filter(|m| m.file_type().is_symlink()).map(|_| ())
+    }
+
+    /// Lo de adentro de una unión se marca como tal, y una unión a una carpeta de más arriba no se
+    /// recorre (daría vueltas para siempre).
+    #[test]
+    fn scan_marks_links_and_stops_loops() {
+        let root = tmp("enlaces");
+        let tree = join(&root, "arbol");
+        let outside = join(&root, "afuera");
+        std::fs::create_dir_all(join(&outside, "sub")).unwrap();
+        std::fs::write(join(&outside, r"sub\dato.txt"), b"x").unwrap();
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(join(&tree, "propio.txt"), b"x").unwrap();
+        if junction(&join(&tree, "enlace"), &outside).is_none() || junction(&join(&tree, "bucle"), &root).is_none() {
+            println!("no se pudo crear la unión: se omite");
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let dest = join(&root, "destino");
+        std::fs::create_dir_all(&dest).unwrap();
+        let (cancel, mut errors, mut items) = (AtomicBool::new(false), Vec::new(), Vec::new());
+        scan_each(&[(tree.clone(), "arbol".to_string())], Some(dest.as_str()), &cancel, &mut errors, &mut |it| items.push(it));
+        let find = |rel: &str| items.iter().find(|i| i.rel == rel).unwrap_or_else(|| panic!("{rel}: {:?}", items.iter().map(|i| &i.rel).collect::<Vec<_>>()));
+        assert!(!find(r"arbol\propio.txt").via_link);
+        let l = find(r"arbol\enlace");
+        assert!(l.is_dir && l.link && l.via_link);
+        let s = find(r"arbol\enlace\sub");
+        assert!(s.via_link && !s.link);
+        assert!(find(r"arbol\enlace\sub\dato.txt").via_link);
+        // La unión a una carpeta de más arriba: ni se entra ni se lista, y queda el error.
+        assert!(items.iter().all(|i| !i.rel.starts_with(r"arbol\bucle")), "entró en el bucle");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        let _ = std::fs::remove_dir(long_path(&join(&tree, "bucle")));
+        let _ = std::fs::remove_dir(long_path(&join(&tree, "enlace")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Mover por el camino de copiar y borrar (dos fuentes con el mismo nombre lo fuerzan aun en el
+    /// mismo disco): lo de adentro de una unión se copia, pero el original queda intacto.
+    #[test]
+    fn move_through_junction_keeps_target() {
+        let root = tmp("mover-enlace");
+        let outside = join(&root, "afuera");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(join(&outside, "importante.txt"), b"vale").unwrap();
+        let (a, b) = (join(&root, r"a\datos"), join(&root, r"b\datos"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(join(&a, "uno.txt"), b"1").unwrap();
+        std::fs::write(join(&b, "dos.txt"), b"2").unwrap();
+        if junction(&join(&a, "enlace"), &outside).is_none() {
+            println!("no se pudo crear la unión: se omite");
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let dest = join(&root, "destino");
+        let t = Transfers::new(Arc::new(|| {}), Arc::new(|_| {}));
+        let v = wait(&t, t.enqueue(Op::Move, vec![a.clone(), b.clone()], dest.clone()));
+        assert!(v.errors.is_empty(), "{:?}", v.errors);
+        assert_eq!(std::fs::read(join(&outside, "importante.txt")).unwrap(), b"vale", "borró lo de adentro de la unión");
+        assert_eq!(std::fs::read(join(&dest, r"datos\enlace\importante.txt")).unwrap(), b"vale");
+        assert!(exists(&join(&dest, r"datos\uno.txt")) && exists(&join(&dest, r"datos\dos.txt")));
+        // El origen se fue (la unión también: solo el enlace).
+        assert!(std::fs::symlink_metadata(long_path(&a)).is_err(), "quedó el origen");
+        assert!(std::fs::symlink_metadata(long_path(&b)).is_err(), "quedó el origen");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Dos fuentes con el mismo nombre en un mismo destino: llegan las dos, aunque se elija
+    /// "reemplazar todos" y aunque se mueva (antes una pisaba a la otra y se borraban los dos originales).
+    #[test]
+    fn same_name_sources_both_survive() {
+        let root = tmp("mismo-nombre");
+        let (s1, s2) = (join(&root, r"s1\x.txt"), join(&root, r"s2\x.txt"));
+        std::fs::create_dir_all(join(&root, "s1")).unwrap();
+        std::fs::create_dir_all(join(&root, "s2")).unwrap();
+        let t = Transfers::new(Arc::new(|| {}), Arc::new(|_| {}));
+        let read = |dir: &str| {
+            let mut v: Vec<Vec<u8>> = ["x.txt", "x (2).txt"].iter().map(|n| std::fs::read(join(dir, n)).unwrap_or_default()).collect();
+            v.sort();
+            v
+        };
+        // Copiar.
+        std::fs::write(&s1, b"uno").unwrap();
+        std::fs::write(&s2, b"dos").unwrap();
+        let d1 = join(&root, "copia");
+        let v = wait(&t, t.enqueue(Op::Copy, vec![s1.clone(), s2.clone()], d1.clone()));
+        assert!(v.errors.is_empty(), "{:?}", v.errors);
+        assert_eq!(read(&d1), vec![b"dos".to_vec(), b"uno".to_vec()]);
+        // Mover sobre uno que ya estaba, con "reemplazar todos".
+        let d2 = join(&root, "movido");
+        std::fs::create_dir_all(&d2).unwrap();
+        std::fs::write(join(&d2, "x.txt"), b"viejo").unwrap();
+        let v = wait_answering(&t, t.enqueue(Op::Move, vec![s1.clone(), s2.clone()], d2.clone()), Choice::Replace);
+        assert!(v.errors.is_empty(), "{:?}", v.errors);
+        assert_eq!(read(&d2), vec![b"dos".to_vec(), b"uno".to_vec()]);
+        assert!(!exists(&s1) && !exists(&s2));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Cuánto tarda borrar una carpeta grande (20.000 archivos en 200 subcarpetas). Medición, no prueba.

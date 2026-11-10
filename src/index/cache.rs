@@ -24,14 +24,24 @@ fn as_bytes<T: Copy>(s: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(s.as_ptr() as *const u8, std::mem::size_of_val(s)) }
 }
 
-fn read_vec<T: Copy + Default>(r: &mut impl Read, len: usize) -> std::io::Result<Vec<T>> {
-    let mut v = vec![T::default(); len];
+/// Lee `len` elementos. `budget` son los bytes que quedan por leer como mucho: un largo
+/// imposible (caché dañada) da error en vez de pedir memoria sin fin.
+fn read_vec<T: Copy + Default>(r: &mut impl Read, len: usize, budget: &mut u64) -> std::io::Result<Vec<T>> {
+    let bytes = len.checked_mul(std::mem::size_of::<T>()).filter(|&b| b as u64 <= *budget).ok_or_else(|| std::io::Error::other("caché dañada: largo imposible"))?;
+    *budget -= bytes as u64;
+    let mut v = Vec::new();
+    v.try_reserve_exact(len).map_err(std::io::Error::other)?;
+    v.resize(len, T::default());
     let bytes = unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, std::mem::size_of_val(v.as_slice())) };
     r.read_exact(bytes)?;
     Ok(v)
 }
 
+/// Un guardado a la vez: dos hilos guardando el mismo disco escribirían el mismo `.tmp`.
+static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn save(v: &VolumeIndex) -> std::io::Result<()> {
+    let _g = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = cache_path(v.letter);
     let tmp = path.with_extension("tmp");
     {
@@ -74,21 +84,11 @@ pub fn write_index(w: &mut impl Write, v: &VolumeIndex) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Lee solo el origen guardado en la caché (MFT o recorrido).
-pub fn load_source(letter: char) -> Option<Source> {
-    let mut f = File::open(cache_path(letter)).ok()?;
-    let mut head = [0u8; 13];
-    f.read_exact(&mut head).ok()?;
-    Some(match head[12] {
-        1 => Source::Mft,
-        2 => Source::Walk,
-        _ => Source::Cache,
-    })
-}
-
 pub fn load(letter: char) -> std::io::Result<VolumeIndex> {
-    let mut r = BufReader::with_capacity(1 << 20, File::open(cache_path(letter))?);
-    let res = read_index(&mut r, letter);
+    let f = File::open(cache_path(letter))?;
+    let size = f.metadata()?.len();
+    let mut r = BufReader::with_capacity(1 << 20, f);
+    let res = read_index_limited(&mut r, letter, size);
     if res.is_err() {
         // Dañada (p. ej. un corte de luz mientras se guardaba): se borra y el índice se
         // vuelve a armar desde el disco.
@@ -135,6 +135,11 @@ fn validate(v: &VolumeIndex) -> std::io::Result<()> {
 
 /// Lee un índice escrito con `write_index`.
 pub fn read_index(r: &mut impl Read, letter: char) -> std::io::Result<VolumeIndex> {
+    read_index_limited(r, letter, u64::MAX)
+}
+
+/// Como `read_index`, sabiendo que no hay más de `budget` bytes para leer (el tamaño del archivo).
+fn read_index_limited(r: &mut impl Read, letter: char, mut budget: u64) -> std::io::Result<VolumeIndex> {
     let mut magic = [0u8; 8];
     r.read_exact(&mut magic)?;
     if &magic != MAGIC {
@@ -160,28 +165,28 @@ pub fn read_index(r: &mut impl Read, letter: char) -> std::io::Result<VolumeInde
         },
         ..Default::default()
     };
-    v.lower = read_vec(r, lower_len)?;
-    v.upper = read_vec(r, upper_len)?;
-    v.name_off = read_vec(r, n)?;
-    v.parent = read_vec(r, n)?;
-    v.flags = read_vec(r, n)?;
-    v.size = read_vec(r, n)?;
-    v.mtime = read_vec(r, n)?;
+    v.lower = read_vec(r, lower_len, &mut budget)?;
+    v.upper = read_vec(r, upper_len, &mut budget)?;
+    v.name_off = read_vec(r, n, &mut budget)?;
+    v.parent = read_vec(r, n, &mut budget)?;
+    v.flags = read_vec(r, n, &mut budget)?;
+    v.size = read_vec(r, n, &mut budget)?;
+    v.mtime = read_vec(r, n, &mut budget)?;
     let mut b8 = [0u8; 8];
     r.read_exact(&mut b8)?;
     let n_ids = u64::from_le_bytes(b8) as usize;
     r.read_exact(&mut b8)?;
     let n_data = u64::from_le_bytes(b8) as usize;
-    v.acc_ids = read_vec(r, n_ids)?;
-    v.acc_start = read_vec(r, n_ids)?;
-    v.acc_data = read_vec(r, n_data)?;
+    v.acc_ids = read_vec(r, n_ids, &mut budget)?;
+    v.acc_start = read_vec(r, n_ids, &mut budget)?;
+    v.acc_data = read_vec(r, n_data, &mut budget)?;
     r.read_exact(&mut b8)?;
     v.usn_journal = u64::from_le_bytes(b8);
     r.read_exact(&mut b8)?;
     v.usn_next = i64::from_le_bytes(b8);
     r.read_exact(&mut b8)?;
     let n_pairs = u64::from_le_bytes(b8) as usize;
-    let pairs: Vec<[u32; 2]> = read_vec(r, n_pairs)?;
+    let pairs: Vec<[u32; 2]> = read_vec(r, n_pairs, &mut budget)?;
     v.dir_map = pairs.into_iter().map(|[r, e]| (r, e)).collect();
     validate(&v)?;
     v.deleted = v.flags.iter().filter(|&&f| f & F_DELETED != 0).count();

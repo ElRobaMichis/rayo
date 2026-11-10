@@ -379,6 +379,7 @@ comun.tamano,Size,Tamaño,
 comun.ya_existe,“{nombre}” already exists,ya existe «{nombre}»,{nombre} = un nombre de archivo o carpeta
 copia.deshaciendo.uno,Undoing: moving {n} item back to {destino},Deshaciendo: devolviendo {n} elemento a {destino},"Cuando la cantidad es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
 copia.deshaciendo.varios,Undoing: moving {n} items back to {destino},Deshaciendo: devolviendo {n} elementos a {destino},"Cuando la cantidad no es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
+copia.enlace_bucle,"Link loop (its contents weren’t copied): {ruta}",Enlace en bucle (no se copió lo de adentro): {ruta},{ruta} = la ruta del enlace
 copia.etiqueta,{accion} {que} to {destino},{accion} {que} a {destino},"{accion} = la acción («Copiar a la derecha»); {destino} = el nombre de la carpeta de destino; {que} = «nombre» o «N elementos»"
 copia.extrayendo,Extracting {que} into {destino},Extrayendo {que} en {destino},"{destino} = el nombre de la carpeta de destino; {que} = «nombre» o «N elementos»"
 copia.no_comprimido,Not an archive: {origen},No es un comprimido: {origen},{origen} = una ruta
@@ -393,6 +394,7 @@ enlace.enlace_simbolico,symbolic link,enlace simbólico,
 enlace.nombre_enlace,{nombre} - link{extension},{nombre} - enlace{extension},"{extension} = una extensión (PDF, TXT…); {nombre} = un nombre de archivo o carpeta"
 enlace.nombre_enlace_n,{nombre} - link ({k}){extension},{nombre} - enlace ({k}){extension},"{extension} = una extensión (PDF, TXT…); {k} = un número; {nombre} = un nombre de archivo o carpeta"
 enlace.union_carpeta,folder junction,unión de carpeta,
+enlace.union_solo_local,A junction can only point to a folder on a local drive,Una unión solo puede apuntar a una carpeta de un disco local,
 enlace.windows_no_permite_enlaces_simbolicos,"Windows doesn't allow symbolic links without permission (turn on Developer Mode), and a hard link can only be on the same drive",Windows no permite enlaces simbólicos sin permisos (activa el modo de desarrollador) y un enlace duro solo puede ir en el mismo disco,
 etiqueta.amarillo,Yellow,Amarillo,Etiqueta de color
 etiqueta.azul,Blue,Azul,Etiqueta de color
@@ -574,6 +576,7 @@ Windows will ask for administrator permission.","¿Quitar también el servicio d
 
 Windows va a pedir permiso de administrador.",
 instalar.rayo_desinstalo,Rayo was uninstalled.,Rayo se desinstaló.,
+instalar.rayo_sigue_abierto,Rayo is still open and couldn’t be closed. Close it and try again.,Rayo sigue abierto y no se pudo cerrar. Ciérralo y vuelve a intentar.,
 lista.ajustar_columna,Drag to resize · double-click: original width,Arrastra para cambiar el ancho · doble clic: ancho original,
 lista.buscando,Searching…,Buscando…,
 lista.cambia_extension,Changes the extension: {antes} → {despues},Cambia la extensión: {antes} → {despues},Al renombrar · {antes} y {despues} = extensiones como «.pdf» o «sin extensión»

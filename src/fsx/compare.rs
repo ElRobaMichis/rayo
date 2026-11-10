@@ -108,7 +108,10 @@ pub fn compare(left: &str, right: &str, cancel: &AtomicBool, scanned: &AtomicUsi
                 (Some(_), None) => Status::OnlyLeft,
                 (None, Some(_)) => Status::OnlyRight,
                 (Some(a), Some(b)) if a.is_dir && b.is_dir => {
-                    stack.push(child);
+                    // Por un enlace o unión no se entra: sincronizar escribiría fuera de las carpetas.
+                    if !a.link && !b.link {
+                        stack.push(child);
+                    }
                     continue;
                 }
                 (Some(a), Some(b)) => {

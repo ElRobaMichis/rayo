@@ -37,7 +37,8 @@ enum Undo {
     Rename { dir: String, old: String, new: String },
     /// Renombrado en lote: (viejo, nuevo).
     Batch { dir: String, pairs: Vec<(String, String)> },
-    Recycle(Vec<String>),
+    /// Lo enviado a la papelera y cuándo (FILETIME).
+    Recycle(Vec<String>, u64),
     /// Copias creadas (se mandan a la papelera).
     Copied(Vec<String>),
     /// Movimientos: (dónde estaba, dónde quedó).
@@ -513,11 +514,43 @@ impl App {
             self.toast(ctx, tp!(n, "app.extrayendo_a", destino = fsx::file_name(&dest)));
             return;
         }
-        let id = self.xfer.enqueue(if mv { transfer::Op::Move } else { transfer::Op::Copy }, paths.clone(), dest.clone());
-        self.awaiting.push((id, mv));
-        self.admin_watch.push((id, paths, dest.clone(), mv));
-        self.dirs.reload(&dest);
+        self.enqueue_transfer(ctx, paths, &dest, mv);
         self.toast(ctx, if mv { tp!(n, "app.moviendo_a", destino = fsx::file_name(&dest)) } else { tp!(n, "app.copiando_a", destino = fsx::file_name(&dest)) });
+    }
+
+    /// Lo común a pegar, arrastrar y enviar al otro panel: suelta la vista previa de lo que se
+    /// mueve, hace que las pestañas abiertas en una carpeta movida la sigan, ofrece repetir como
+    /// administrador si Windows no deja, y recarga el destino.
+    fn enqueue_transfer(&mut self, ctx: &egui::Context, paths: Vec<String>, dest: &str, mv: bool) {
+        if mv {
+            if let Some(h) = &self.prevhost {
+                h.release(&paths);
+            }
+            let now = ctx.input(|i| i.time);
+            for p in &paths {
+                let to = fsx::join(dest, &fsx::file_name(p));
+                if to.eq_ignore_ascii_case(p) {
+                    continue;
+                }
+                let pl = p.to_lowercase();
+                let open = self.tabs.iter().any(|t| t.cols.iter().any(|c| {
+                    let l = c.path.to_lowercase();
+                    l == pl || l.starts_with(&format!("{pl}\\"))
+                }));
+                if open {
+                    self.follow_moves.push((p.clone(), to, now + 120.0));
+                }
+            }
+        }
+        // Todo ya en el destino (pegar en la misma carpeta crea "nombre (2)"): el reintento como
+        // administrador no sabría hacer eso, así que no se ofrece.
+        let all_here = paths.iter().all(|p| fsx::parent_of(p).is_some_and(|d| d.eq_ignore_ascii_case(dest)));
+        let id = self.xfer.enqueue(if mv { transfer::Op::Move } else { transfer::Op::Copy }, paths.clone(), dest.to_string());
+        self.awaiting.push((id, mv));
+        if !all_here {
+            self.admin_watch.push((id, paths, dest.to_string(), mv));
+        }
+        self.dirs.reload(dest);
     }
 
     fn toast(&mut self, ctx: &egui::Context, msg: impl Into<String>) {
@@ -626,7 +659,8 @@ impl App {
             let inside = |k: &str| {
                 let k = k.to_lowercase();
                 match k.strip_prefix(fsx::FLAT_KEY) {
-                    Some(root) => dirty.iter().any(|d| d.starts_with(root)),
+                    // "c:\proyectos2" no está dentro de "c:\proyectos".
+                    Some(root) => dirty.iter().any(|d| d.strip_prefix(root).is_some_and(|r| r.is_empty() || r.starts_with('\\') || root.ends_with('\\'))),
                     None => dirty.contains(&k),
                 }
             };
@@ -662,7 +696,12 @@ impl App {
             // Lo de una carpeta desplegada en la lista ("sub\archivo") no está en esta carpeta: se
             // revisa contra la lista desplegada (si ya no está ahí, es porque se plegó o desapareció).
             let tree: Option<Arc<Vec<FileEntry>>> = (!tab.flat && !col.expanded.is_empty()).then(|| self.dirs.tree(&col.path, &col.expanded.clone(), self.cfg.sort, self.cfg.sort_desc, self.cfg.show_hidden));
-            let present = |n: &str| if n.contains('\\') { tree.as_ref().is_some_and(|t| t.iter().any(|e| e.name == n)) } else { raw.iter().any(|e| e.name == n) };
+            // En vista plana, los nombres "sub\archivo" son de la propia lista plana.
+            let in_flat = tab.flat && i == last;
+            // Con mucho seleccionado, buscar uno por uno en la lista costaría selección × lista.
+            let names: Option<std::collections::HashSet<&str>> = (col.multi.len() > 32).then(|| raw.iter().map(|e| e.name.as_str()).collect());
+            let in_raw = |n: &str| names.as_ref().map_or_else(|| raw.iter().any(|e| e.name == n), |s| s.contains(n));
+            let present = |n: &str| if n.contains('\\') && !in_flat { tree.as_ref().is_some_and(|t| t.iter().any(|e| e.name == n)) } else { in_raw(n) };
             col.multi.retain(|n| present(n));
             let Some(c) = col.cursor.clone() else { continue };
             // Una carpeta que se está moviendo: la pestaña la va a seguir, no cerrarla.
@@ -1103,8 +1142,8 @@ impl App {
             }
         }
         if consume(ctrl, Key::A) {
-            let path = self.tabs[self.cur].active_col().path.clone();
-            let list = self.view_of(&path);
+            // Igual que el comando "select_all": solo lo que deja ver el filtro escrito.
+            let (_, _, list) = self.active_list();
             let col = self.tab().active_col_mut();
             col.multi = list.iter().map(|e| e.name.clone()).collect();
         }
@@ -1173,6 +1212,8 @@ impl App {
                 }
                 Action::Forward | Action::Select { .. } => return,
                 Action::Navigate(_) | Action::Reveal(_) | Action::Open { is_dir: true, .. } => self.tabs[self.cur].tool = None,
+                // Un comprimido se abre como carpeta.
+                Action::Open { path, .. } if fsx::archive::is_dir(path) => self.tabs[self.cur].tool = None,
                 _ => {}
             }
         }
@@ -1181,6 +1222,10 @@ impl App {
             match &a {
                 Action::Back | Action::Forward | Action::Up | Action::Select { .. } => return,
                 Action::Navigate(_) | Action::Reveal(_) | Action::Open { is_dir: true, .. } => {
+                    let path = self.tabs[self.cur].path().to_string();
+                    self.apply(ctx, Action::NewTab(Some(path)));
+                }
+                Action::Open { path, .. } if fsx::archive::is_dir(path) => {
                     let path = self.tabs[self.cur].path().to_string();
                     self.apply(ctx, Action::NewTab(Some(path)));
                 }
@@ -1411,25 +1456,8 @@ impl App {
                 }
                 // Como en el Explorador: mismo disco = mover; otro disco = copiar.
                 // Ctrl fuerza copiar y Mayús fuerza mover.
-                let same_drive = paths.first().is_some_and(|p| p.get(..2).map(str::to_lowercase) == dest.get(..2).map(str::to_lowercase));
+                let same_drive = paths.first().is_some_and(|p| fsx::transfer::same_volume(p, &dest));
                 let mv = force.unwrap_or(same_drive);
-                if mv {
-                    if let Some(h) = &self.prevhost {
-                        h.release(&paths);
-                    }
-                    // Si se mueve una carpeta que está abierta (p. ej. arrastrando la ruta), la pestaña la sigue.
-                    let now = ctx.input(|i| i.time);
-                    for p in &paths {
-                        let pl = p.to_lowercase();
-                        let open = self.tabs.iter().any(|t| t.cols.iter().any(|c| {
-                            let l = c.path.to_lowercase();
-                            l == pl || l.starts_with(&format!("{pl}\\"))
-                        }));
-                        if open {
-                            self.follow_moves.push((p.clone(), fsx::join(&dest, &fsx::file_name(p)), now + 120.0));
-                        }
-                    }
-                }
                 self.transfer(ctx, paths, dest, mv);
             }
             Action::TransferPause(id, p) => self.xfer.set_paused(id, p),
@@ -1517,11 +1545,11 @@ impl App {
             }
             Action::ToggleFlat => {
                 let on = !self.tabs[self.cur].flat;
-                if on && self.cfg.view == ViewMode::Columns {
-                    self.apply(ctx, Action::SetView(ViewMode::Details));
-                }
                 let tab = self.tab();
                 tab.flat = on;
+                // Que `resolve_views` vuelva a elegir la vista: en plano, Columnas pasa a Detalles sin
+                // dejarlo recordado para la carpeta (al apagarlo, vuelve la vista de siempre).
+                tab.view = None;
                 tab.filter.clear();
                 let c = tab.active_col_mut();
                 c.cursor = None;
@@ -1735,12 +1763,6 @@ impl App {
                     c.anchor = Some(name);
                 }
             }
-            Action::FocusCol(ci) => {
-                let tab = self.tab();
-                if ci < tab.cols.len() {
-                    tab.active = ci;
-                }
-            }
             Action::Open { path, is_dir } => {
                 // Un comprimido (o una carpeta de adentro) se abre como carpeta.
                 if is_dir || fsx::archive::is_dir(&path) {
@@ -1800,6 +1822,11 @@ impl App {
                     let new = r.buf.trim().to_string();
                     if !new.is_empty() && new != r.old {
                         let old_path = fsx::join(&r.dir, &r.old);
+                        // En vista plana o de árbol, `old` es "sub\nombre": el nombre nuevo va en la misma subcarpeta.
+                        let new_rel = match r.old.rfind('\\') {
+                            Some(i) => format!("{}\\{new}", &r.old[..i]),
+                            None => new.clone(),
+                        };
                         if let Some(h) = &self.prevhost {
                             h.release(std::slice::from_ref(&old_path));
                         }
@@ -1811,14 +1838,10 @@ impl App {
                                 }
                                 self.dirs.reload(&r.dir);
                                 self.retarget_cols(&old_path, &new_path);
-                                self.push_undo(Undo::Rename { dir: r.dir.clone(), old: r.old.clone(), new: new.clone() });
-                                let new = match r.old.rfind('\\') {
-                                    Some(i) => format!("{}\\{new}", &r.old[..i]),
-                                    None => new,
-                                };
+                                self.push_undo(Undo::Rename { dir: r.dir.clone(), old: r.old.clone(), new: new_rel.clone() });
                                 let tab = self.tab();
                                 if let Some(c) = tab.cols.iter_mut().find(|c| c.path == r.dir) {
-                                    c.cursor = Some(new);
+                                    c.cursor = Some(new_rel);
                                     c.multi.clear();
                                 }
                             }
@@ -1829,7 +1852,7 @@ impl App {
                                 self.locks = Some(super::tools::LocksDialog::new(vec![old_path], Some(t!("app.no_pudo_renombrar").into()), Some(retry), ctx));
                             }
                             Err(e) if crate::admin::is_access_denied(&e) => {
-                                let to = fsx::join(&r.dir, &new);
+                                let to = fsx::join(&r.dir, &new_rel);
                                 self.admin = Some((t!("app.windows_pide_permiso_administrador_renom").into(), crate::admin::AdminOp::Rename { from: old_path, to }));
                             }
                             Err(e) => self.toast(ctx, tf!("app.no_pudo_renombrar_error", error = e)),
@@ -1860,8 +1883,7 @@ impl App {
                     }
                     // Pegar en la misma carpeta de donde se copió crea una copia ("nombre (2)").
                     let n = files.len();
-                    let id = self.xfer.enqueue(if cut { transfer::Op::Move } else { transfer::Op::Copy }, files, dest.clone());
-                    self.awaiting.push((id, cut));
+                    self.enqueue_transfer(ctx, files, &dest, cut);
                     self.toast(ctx, if cut { tp!(n, "app.moviendo_n") } else { tp!(n, "app.copiando_n") });
                 }
             }
@@ -1874,7 +1896,7 @@ impl App {
                 self.confirm_delete = Some(paths);
             }
             Action::Delete(paths, _) => {
-                self.push_undo(Undo::Recycle(paths.clone()));
+                self.push_undo(Undo::Recycle(paths.clone(), shell::filetime_now()));
                 if let Some(h) = &self.prevhost {
                     h.release(&paths);
                 }
@@ -1958,6 +1980,7 @@ impl App {
             Action::SetView(v) => {
                 self.cfg.view = v;
                 self.remember_view();
+                self.save_cfg();
                 if v == ViewMode::Details {
                     // En detalles se muestra la carpeta enfocada.
                     let tab = self.tab();
@@ -2001,6 +2024,7 @@ impl App {
                     self.cfg.sort_desc = matches!(k, crate::fsx::SortKey::Modified | crate::fsx::SortKey::Size);
                 }
                 self.remember_view();
+                self.save_cfg();
             }
             Action::ToggleTheme => {
                 self.cfg.dark ^= true;
@@ -2017,8 +2041,15 @@ impl App {
                 native_menu_theme(self.cfg.dark);
                 self.save_cfg();
             }
-            Action::TogglePreview => self.cfg.show_preview ^= true,
-            Action::ToggleHidden => self.cfg.show_hidden ^= true,
+            // Como los demás ajustes: se guardan enseguida (por si el proceso se corta).
+            Action::TogglePreview => {
+                self.cfg.show_preview ^= true;
+                self.save_cfg();
+            }
+            Action::ToggleHidden => {
+                self.cfg.show_hidden ^= true;
+                self.save_cfg();
+            }
             Action::Back => self.tab().go_back(),
             Action::Forward => self.tab().go_forward(),
             Action::Up => self.tab().go_up(),
@@ -2952,8 +2983,14 @@ impl App {
         if now - self.key_seq.1 > 1.2 {
             self.key_seq.0.clear();
         }
+        // Escribiendo (búsqueda, barra de ruta, renombrar), una tecla sin Ctrl ni Alt es texto:
+        // un atajo "D" o "Supr" no puede robarla. Las teclas F siguen valiendo.
+        let typing = ctx.egui_wants_keyboard_input() || self.rename.is_some();
         let pressed: Vec<(Key, Modifiers)> = ctx.input(|i| i.events.iter().filter_map(|e| if let egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } = e { Some((*key, *modifiers)) } else { None }).collect());
         for (k, m) in pressed {
+            if typing && !m.ctrl && !m.alt && !matches!(k, Key::F1 | Key::F2 | Key::F3 | Key::F4 | Key::F5 | Key::F6 | Key::F7 | Key::F8 | Key::F9 | Key::F10 | Key::F11 | Key::F12) {
+                continue;
+            }
             let mut seq = self.key_seq.0.clone();
             seq.push(super::commands::chord(k, m));
             let typed = seq.join(" ");
@@ -3217,8 +3254,9 @@ impl App {
         };
         match u {
             Undo::Rename { dir, old, new } => {
+                // `old` y `new` pueden ser "sub\nombre" (vista plana o de árbol): se renombra solo el nombre.
                 let cur = fsx::join(&dir, &new);
-                match shell::rename(&cur, &old) {
+                match shell::rename(&cur, &fsx::file_name(&old)) {
                     Ok(back) => {
                         self.dirs.reload(&dir);
                         self.retarget_cols(&cur, &back);
@@ -3236,11 +3274,11 @@ impl App {
                     Some(e) => self.toast(ctx, tf!("app.no_pudieron_restaurar", n = errors.len(), error = e)),
                 }
             }
-            Undo::Recycle(paths) => {
+            Undo::Recycle(paths, since) => {
                 self.toast(ctx, t!("app.sacando_papelera"));
                 let (mgr, result) = (self.mgr.clone(), self.service_result.clone());
                 std::thread::spawn(move || {
-                    let n = shell::restore_from_recycle_bin(&paths);
+                    let n = shell::restore_from_recycle_bin(&paths, since);
                     *result.lock() = Some(if n == 0 { t!("app.no_encontro_papelera").to_string() } else { tp!(n, "app.deshecho_restaurados") });
                     reload_parents(&mgr, &paths);
                 });
@@ -3552,12 +3590,11 @@ impl App {
         let bar_h = if self.tabs[ti].tool.is_some() { 0.0 } else { 46.0 };
         let bar_rect = egui::Rect::from_min_size(egui::pos2(rect.left(), tabs_rect.bottom()), vec2(rect.width(), bar_h));
         let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        let cfg_snapshot = self.cfg.clone();
         let search_id = Id::new(("search", self.tabs[ti].id));
         if bar_h > 0.0 {
             let target = self.target();
-            let enabled: Vec<bool> = cfg_snapshot.toolbar.iter().map(|id| super::commands::ALL.iter().find(|c| c.id == id).is_some_and(|c| super::commands::available(c, &target))).collect();
-            chrome::toolbar(&mut bui, &t, &cfg_snapshot, &mut self.tabs[ti], search_id, &enabled, &cfg_snapshot.shortcuts, actions);
+            let enabled: Vec<bool> = self.cfg.toolbar.iter().map(|id| super::commands::ALL.iter().find(|c| c.id == id).is_some_and(|c| super::commands::available(c, &target))).collect();
+            chrome::toolbar(&mut bui, &t, &self.cfg, &mut self.tabs[ti], search_id, &enabled, &self.cfg.shortcuts, actions);
         }
         ui.painter().line_segment([bar_rect.left_bottom(), bar_rect.right_bottom()], egui::Stroke::new(1.0, t.border));
         // Con dos paneles, una línea de acento marca el panel activo.
@@ -3745,6 +3782,7 @@ impl App {
                 mtime: row.mtime,
                 ctime: 0,
                 cloud: if !row.is_dir && fsx::is_online_only(&path) { fsx::Cloud::OnlineOnly } else { fsx::Cloud::None },
+                link: false,
                 name: row.name,
             };
             let children = if row.is_dir { self.dirs.state(&path).and_then(|s| s.raw.as_ref().map(|r| r.len())) } else { None };
@@ -3895,7 +3933,9 @@ impl eframe::App for App {
             let is_dir = fsx::probe_dir(&p, 300).unwrap_or(true) || fsx::archive::split(&p).is_some();
             crate::diag::log(&format!("abrir en Rayo: «{p}» ({})", if is_dir { "carpeta" } else { "archivo: se marca" }));
             let dir = if is_dir { fsx::normalize(&p) } else { fsx::parent_of(&p).unwrap_or_default() };
-            match self.tabs.iter().position(|t| t.tool.is_none() && t.search.text.is_empty() && t.path().eq_ignore_ascii_case(&dir)) {
+            // Solo en un panel visible: una pestaña de un panel oculto no se puede mostrar.
+            let panes = self.panes();
+            match self.tabs.iter().position(|t| (t.pane as usize) < panes && t.tool.is_none() && t.search.text.is_empty() && t.path().eq_ignore_ascii_case(&dir)) {
                 Some(i) => actions.push(Action::SwitchTab(i)),
                 None => actions.push(Action::NewTab(Some(dir))),
             }
@@ -3950,7 +3990,6 @@ impl eframe::App for App {
         self.keys(&ctx, &mut actions);
         self.dispatch_search();
 
-        let search_id = Id::new(("search", self.tabs[self.cur].id));
         let collection = fsx::collections::query_name(&self.tabs[self.cur].search.text).unwrap_or_default();
         // Qué marcar en la barra lateral: la carpeta de la pestaña, o Recientes / Papelera
         // (esas pestañas no son una carpeta: no se marca la carpeta desde donde se abrieron).
@@ -4001,7 +4040,6 @@ impl eframe::App for App {
                 }
             });
 
-        let _ = search_id;
         // ---- barra de estado
         let (left, right, busy) = self.status();
         let mode = self.mgr.mode();
@@ -4191,8 +4229,9 @@ impl eframe::App for App {
         }
 
         // ---- paleta de comandos y renombrado en lote
-        let target = self.target();
-        {
+        // `target` mira el disco (¿es carpeta?): solo con la paleta abierta.
+        if self.palette.open {
+            let target = self.target();
             let c = &self.cfg;
             let data = super::commands::PaletteData { workspaces: &c.workspaces, recent: &c.recent_dirs, aliases: &c.aliases, shortcuts: &c.shortcuts };
             self.palette.ui(&ctx, &t, &target, &data, &mut actions);

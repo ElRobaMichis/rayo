@@ -291,11 +291,12 @@ impl Store {
     /// El texto guardado tal cual (sin el formato de pantalla).
     fn text(&self, name: &str) -> Option<String> {
         let (_, v) = self.value(name)?;
+        // Sin límite de largo: con un búfer fijo un comentario largo fallaba y se guardaba vacío.
         unsafe {
-            let mut buf = [0u16; 2048];
-            windows::Win32::System::Com::StructuredStorage::PropVariantToString(&v.0, &mut buf).ok()?;
-            let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-            Some(String::from_utf16_lossy(&buf[..n]))
+            let p = windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc(&v.0).ok()?;
+            let s = String::from_utf16_lossy(p.as_wide());
+            windows::Win32::System::Com::CoTaskMemFree(Some(p.0 as *const _));
+            Some(s)
         }
     }
 

@@ -45,8 +45,15 @@ pub struct Repo {
 struct Entry {
     repo: Option<Arc<Repo>>,
     at: Instant,
+    /// Cuánto esperar desde `at` para volver a preguntar (más si la última vez falló).
+    wait: Duration,
     running: bool,
 }
+
+/// Cada cuánto se relee un repositorio a la vista.
+const REFRESH: Duration = Duration::from_secs(3);
+/// Si `git status` falló (repositorio roto, git trabado…), no insistir tan seguido.
+const BACKOFF: Duration = Duration::from_secs(60);
 
 fn git_exe() -> Option<&'static std::path::PathBuf> {
     static G: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
@@ -100,8 +107,8 @@ pub fn repo(root: &str) -> Option<Arc<Repo>> {
     let key = root.to_lowercase();
     let mut g = REPOS.lock();
     let m = g.get_or_insert_with(HashMap::new);
-    let e = m.entry(key).or_insert_with(|| Entry { repo: None, at: Instant::now() - Duration::from_secs(60), running: false });
-    if !e.running && e.at.elapsed() > Duration::from_secs(3) {
+    let e = m.entry(key).or_insert_with(|| Entry { repo: None, at: Instant::now(), wait: Duration::ZERO, running: false });
+    if !e.running && e.at.elapsed() >= e.wait {
         e.running = true;
         let r = root.to_string();
         std::thread::Builder::new()
@@ -109,7 +116,11 @@ pub fn repo(root: &str) -> Option<Arc<Repo>> {
             .spawn(move || {
                 let repo = read(&r).map(Arc::new);
                 if let Some(e) = REPOS.lock().get_or_insert_with(HashMap::new).get_mut(&r.to_lowercase()) {
-                    e.repo = repo;
+                    // Si falló, se queda con el último estado bueno y espera más antes de reintentar.
+                    e.wait = if repo.is_some() { REFRESH } else { BACKOFF };
+                    if repo.is_some() {
+                        e.repo = repo;
+                    }
                     e.at = Instant::now();
                     e.running = false;
                 }

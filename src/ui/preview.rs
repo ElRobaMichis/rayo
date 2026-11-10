@@ -190,6 +190,8 @@ pub fn kind(item: &PreviewItem, has_text: bool) -> Kind {
 
 /// Texto plano, código con colores o Markdown con formato.
 pub fn text_view(ui: &mut Ui, t: &Theme, text: &str, ext: &str, size: f32) {
+    // Un texto en chino o japonés en una carpeta con nombres ASCII: que se cargue la fuente.
+    super::theme::want_cjk(text);
     if matches!(ext, "md" | "markdown" | "mdx") {
         super::richtext::markdown(ui, t, text, size);
     } else if super::richtext::is_code(ext) {

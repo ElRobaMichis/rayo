@@ -241,6 +241,11 @@ impl Applier {
         v.dir_map.get(&rec).copied().filter(|&e| !v.is_deleted(e))
     }
 
+    /// Carpeta (ruta completa) donde ocurrió el cambio, si está en el índice.
+    pub fn parent_path(v: &VolumeIndex, c: &Change) -> Option<String> {
+        Self::dir_entry(v, c.parent).map(|p| v.full_path(p))
+    }
+
     /// Aplica un cambio. Devuelve la carpeta afectada (para refrescar la vista).
     pub fn apply(&mut self, v: &mut VolumeIndex, c: &Change) -> Option<u32> {
         let rec = (c.frn & REC_MASK) as u32;
@@ -250,32 +255,37 @@ impl Applier {
         if c.reason & REASON_RENAME_OLD != 0 {
             // Primera mitad de un renombrado/movimiento: recordar qué entrada era.
             let p = parent?;
-            let e = v.find_child(p, &c.name)?;
+            let e = v.find_child_exact(p, &c.name)?;
             self.pending_old.insert(c.frn, e);
             return Some(p);
         }
-        if c.reason & REASON_DELETE != 0 {
-            let p = parent?;
-            let e = v.find_child(p, &c.name)?;
+        // Segunda mitad: la entrada que se estaba renombrando o moviendo.
+        let moving = if c.reason & REASON_RENAME_NEW != 0 { self.pending_old.remove(&c.frn).filter(|&e| !v.is_deleted(e)) } else { None };
+        if c.reason & REASON_DELETE != 0 || parent.is_none() {
+            // Borrado, o movido a una carpeta que el índice no tiene. Lo segundo es lo normal al
+            // borrar algo que otro programa todavía tiene abierto: NTFS lo pasa primero a la
+            // carpeta oculta $Extend\$Deleted y lo borra de verdad cuando se cierra.
+            let e = moving.or_else(|| v.find_child_exact(parent?, &c.name))?;
+            let from = v.parent[e as usize];
             if v.is_dir(e) {
                 v.dir_map.remove(&rec);
             }
             v.remove_subtree(e);
-            return Some(p);
+            return (from != NONE).then_some(from);
         }
         let p = parent?;
-        if c.reason & REASON_RENAME_NEW != 0 {
-            if let Some(old) = self.pending_old.remove(&c.frn) {
-                if !v.is_deleted(old) {
-                    let new = v.rename_entry(old, p, &c.name, c.mtime);
-                    if v.is_dir(new) {
-                        v.dir_map.insert(rec, new);
-                    }
-                    return Some(p);
-                }
+        if let Some(old) = moving {
+            // Si el nombre de destino ya existía, el renombrado lo reemplazó.
+            if let Some(replaced) = v.find_child_exact(p, &c.name).filter(|&e| e != old) {
+                v.remove_subtree(replaced);
             }
+            let new = v.rename_entry(old, p, &c.name, c.mtime);
+            if v.is_dir(new) {
+                v.dir_map.insert(rec, new);
+            }
+            return Some(p);
         }
-        match v.find_child(p, &c.name) {
+        match v.find_child_exact(p, &c.name) {
             Some(e) => {
                 if c.mtime != 0 {
                     v.update_file(e, c.size, c.mtime);
@@ -290,6 +300,21 @@ impl Applier {
             }
         }
         Some(p)
+    }
+}
+
+/// ¿Es un cambio de enlaces duros sin más pista? El journal anota igual crear un segundo nombre
+/// para un archivo que quitarle uno de los que tenía (quitar un nombre no cuenta como borrar el
+/// archivo mientras le quede otro): solo mirando el disco se sabe cuál de las dos cosas pasó.
+pub fn is_link_change(c: &Change) -> bool {
+    c.reason & REASON_HARD_LINK != 0 && c.reason & (REASON_DELETE | REASON_RENAME_OLD | REASON_RENAME_NEW) == 0
+}
+
+/// Deja resuelto un cambio de enlaces duros: si el nombre ya no existe, es un borrado.
+pub fn resolve_link_change(c: &mut Change, exists: bool) {
+    c.reason &= !REASON_HARD_LINK;
+    if !exists {
+        c.reason |= REASON_DELETE;
     }
 }
 
@@ -364,5 +389,68 @@ mod tests {
         a.apply(&mut v, &ch(40, 50, REASON_DELETE, true, "Fotos 2024", 0));
         assert_eq!(v.find_path("C:\\Archivo\\Fotos 2024"), None);
         assert_eq!(v.size[0], 0);
+    }
+
+    #[test]
+    fn deleting_something_still_open_removes_it() {
+        // Borrar algo que otro programa tiene abierto: NTFS lo mueve a $Extend/$Deleted
+        // (registro 29, que el índice no tiene) y lo borra al cerrarse.
+        let mut v = VolumeIndex::new('c', Source::Mft);
+        v.compute_dir_sizes();
+        let mut a = Applier::default();
+        a.apply(&mut v, &ch(40, 5, REASON_CREATE, true, "target", 0));
+        a.apply(&mut v, &ch(41, 40, REASON_CREATE, false, "a.o", 700));
+        a.apply(&mut v, &ch(42, 40, REASON_CREATE, true, "tmp", 0));
+        a.apply(&mut v, &ch(43, 42, REASON_CREATE, false, "b.o", 300));
+        assert_eq!(v.size[0], 1000);
+        a.apply(&mut v, &ch(41, 40, REASON_RENAME_OLD, false, "a.o", 0));
+        a.apply(&mut v, &ch(41, 29, REASON_RENAME_NEW, false, "0006000000132AB8", 0));
+        a.apply(&mut v, &ch(41, 29, REASON_RENAME_NEW | REASON_DELETE, false, "0006000000132AB8", 0));
+        assert_eq!(v.find_path("C:/target/a.o"), None);
+        a.apply(&mut v, &ch(42, 40, REASON_RENAME_OLD, true, "tmp", 0));
+        a.apply(&mut v, &ch(42, 29, REASON_RENAME_NEW, true, "0007000000132AB9", 0));
+        assert_eq!(v.find_path("C:/target/tmp"), None);
+        assert_eq!(v.find_path("C:/target/tmp/b.o"), None);
+        assert_eq!(v.size[0], 0);
+        assert_eq!(v.live_len(), 2);
+        // El registro 42 se reutiliza para otra carpeta: lo nuevo cuelga de ella.
+        a.apply(&mut v, &ch(42, 40, REASON_CREATE, true, "otra", 0));
+        a.apply(&mut v, &ch(44, 42, REASON_CREATE, false, "c.o", 5));
+        assert!(v.find_path("C:/target/otra/c.o").is_some());
+    }
+
+    #[test]
+    fn hard_links_and_replacing_renames_leave_no_ghosts() {
+        let mut v = VolumeIndex::new('c', Source::Mft);
+        v.compute_dir_sizes();
+        let mut a = Applier::default();
+        a.apply(&mut v, &ch(40, 5, REASON_CREATE, true, "deps", 0));
+        a.apply(&mut v, &ch(41, 40, REASON_CREATE, false, "lib.rlib", 100));
+        // Segundo nombre para el mismo archivo (existe en disco: se agrega).
+        let mut link = ch(41, 40, REASON_HARD_LINK, false, "lib-copia.rlib", 100);
+        assert!(is_link_change(&link));
+        resolve_link_change(&mut link, true);
+        a.apply(&mut v, &link);
+        assert!(v.find_path("C:/deps/lib-copia.rlib").is_some());
+        // Se quita el primer nombre (ya no existe en disco: es un borrado).
+        let mut unlink = ch(41, 40, REASON_HARD_LINK, false, "lib.rlib", 100);
+        resolve_link_change(&mut unlink, false);
+        assert!(!is_link_change(&unlink));
+        a.apply(&mut v, &unlink);
+        assert_eq!(v.find_path("C:/deps/lib.rlib"), None);
+        assert!(v.find_path("C:/deps/lib-copia.rlib").is_some());
+        // Un archivo temporal se renombra encima de uno que ya existía: queda uno solo.
+        a.apply(&mut v, &ch(45, 40, REASON_CREATE, false, "lib.tmp", 250));
+        a.apply(&mut v, &ch(45, 40, REASON_RENAME_OLD, false, "lib.tmp", 0));
+        a.apply(&mut v, &ch(45, 40, REASON_RENAME_NEW, false, "lib-copia.rlib", 250));
+        let deps = v.find_path("C:/deps").unwrap();
+        let names: Vec<String> = v.children(deps).map(|c| v.name(c)).collect();
+        assert_eq!(names, ["lib-copia.rlib"]);
+        assert_eq!(v.size[0], 250);
+        // Cambiar solo mayúsculas del nombre no borra nada.
+        a.apply(&mut v, &ch(45, 40, REASON_RENAME_OLD, false, "lib-copia.rlib", 0));
+        a.apply(&mut v, &ch(45, 40, REASON_RENAME_NEW, false, "Lib-Copia.rlib", 250));
+        let names: Vec<String> = v.children(deps).map(|c| v.name(c)).collect();
+        assert_eq!(names, ["Lib-Copia.rlib"]);
     }
 }

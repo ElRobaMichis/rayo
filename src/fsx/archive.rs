@@ -175,11 +175,12 @@ fn read_7z(archive: &str) -> Result<Vec<Entry>, String> {
         return Err(if msg.to_lowercase().contains("password") { t!("comprimido.comprimido_tiene_contrasena").into() } else { msg });
     }
     let mut res = Vec::new();
-    for block in text.split("\n\n").chain(text.split("\r\n\r\n")).filter(|b| b.contains("Path = ")) {
+    // 7-Zip escribe \r\n: se normaliza para partir una sola vez por bloques.
+    let text = text.replace("\r\n", "\n");
+    for block in text.split("\n\n").filter(|b| b.contains("Path = ")) {
         let mut path = None;
         let (mut size, mut mtime, mut is_dir) = (0u64, 0u32, false);
         for line in block.lines() {
-            let line = line.trim_end_matches('\r');
             if let Some(v) = line.strip_prefix("Path = ") {
                 path = clean(v);
             } else if let Some(v) = line.strip_prefix("Size = ") {
@@ -196,9 +197,6 @@ fn read_7z(archive: &str) -> Result<Vec<Entry>, String> {
             res.push(Entry { path, is_dir, size, mtime });
         }
     }
-    // Con saltos de línea \r\n el texto se partió dos veces: quitar repetidos.
-    let mut seen = HashSet::new();
-    res.retain(|e| seen.insert(e.path.to_lowercase()));
     Ok(res)
 }
 
@@ -232,6 +230,7 @@ pub fn list(archive: &str, inner: &str) -> Result<Vec<FileEntry>, String> {
             mtime: e.mtime,
             ctime: 0,
             cloud: super::Cloud::None,
+            link: false,
             name,
         });
     }
@@ -299,8 +298,9 @@ fn set_mtime(path: &str, unix: u32) {
 fn extract_zip(archive: &str, items: &[(String, String)], progress: &dyn Fn(u64), cancel: &AtomicBool) -> Result<(), String> {
     let f = std::fs::File::open(long_path(archive)).map_err(|e| e.to_string())?;
     let mut z = zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| e.to_string())?;
-    for (_, t) in items {
-        if items.iter().any(|(i, _)| i.is_empty()) {
+    // Solo el comprimido entero (ruta interna vacía) tiene una carpeta como destino.
+    for (i, t) in items {
+        if i.is_empty() {
             let _ = std::fs::create_dir_all(long_path(t));
         }
     }
@@ -323,20 +323,25 @@ fn extract_zip(archive: &str, items: &[(String, String)], progress: &dyn Fn(u64)
             let _ = std::fs::create_dir_all(long_path(&parent));
         }
         let mut w = std::fs::File::create(long_path(&out)).map_err(|err| format!("{out}: {err}"))?;
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                drop(w);
-                let _ = std::fs::remove_file(long_path(&out));
-                return Err("cancelado".into());
+        let copied = (|| -> Result<(), String> {
+            loop {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err("cancelado".into());
+                }
+                let n = e.read(&mut buf).map_err(|err| format!("{name}: {err}"))?;
+                if n == 0 {
+                    return Ok(());
+                }
+                w.write_all(&buf[..n]).map_err(|err| format!("{out}: {err}"))?;
+                progress(n as u64);
             }
-            let n = e.read(&mut buf).map_err(|err| format!("{name}: {err}"))?;
-            if n == 0 {
-                break;
-            }
-            w.write_all(&buf[..n]).map_err(|err| format!("{out}: {err}"))?;
-            progress(n as u64);
-        }
+        })();
         drop(w);
+        // Cancelado o falló a medias: no dejar un archivo trunco que parezca bueno.
+        if let Err(err) = copied {
+            let _ = std::fs::remove_file(long_path(&out));
+            return Err(err);
+        }
         let mtime = e.last_modified().map_or(0, |d| local_to_unix(d.year(), d.month(), d.day(), d.hour(), d.minute(), d.second()));
         set_mtime(&out, mtime);
         // Si también va a otros destinos, se copia lo ya extraído.
@@ -415,15 +420,22 @@ fn extract_7z(archive: &str, items: &[(String, String)], progress: &dyn Fn(u64),
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
-    let mut result = Ok(());
-    if !status.success() {
+    let mut result: Result<(), String> = Ok(());
+    // Código 1 de 7-Zip es solo una advertencia: lo extraído vale.
+    let warning = status.code() == Some(1);
+    if !status.success() || warning {
         let mut err = String::new();
         if let Some(mut e) = child.stderr.take() {
             let _ = e.read_to_string(&mut err);
         }
-        let msg = err.lines().find(|l| !l.trim().is_empty()).unwrap_or(t!("comprimido.7_zip_no_pudo_extraer")).trim().to_string();
-        result = Err(if msg.to_lowercase().contains("password") { t!("comprimido.comprimido_tiene_contrasena").into() } else { msg });
-    } else {
+        if warning {
+            crate::diag::log(&format!("7-Zip (advertencia) {archive}: {}", err.trim()));
+        } else {
+            let msg = err.lines().find(|l| !l.trim().is_empty()).unwrap_or(t!("comprimido.7_zip_no_pudo_extraer")).trim().to_string();
+            result = Err(if msg.to_lowercase().contains("password") { t!("comprimido.comprimido_tiene_contrasena").into() } else { msg });
+        }
+    }
+    if result.is_ok() {
         // Lo más profundo primero; si otro pedido lo contiene, se copia (el otro lo moverá después).
         let mut order: Vec<&(String, String)> = items.iter().collect();
         order.sort_by_key(|(inner, _)| std::cmp::Reverse(if inner.is_empty() { 0 } else { inner.len() + 1 }));
@@ -454,7 +466,21 @@ pub fn materialize(path: &str) -> Option<String> {
     if std::fs::metadata(long_path(&target)).is_ok() {
         return Some(target);
     }
-    extract(&archive, &[(inner, target.clone())], &|_| {}, &AtomicBool::new(false)).ok()?;
+    // Se extrae a ".part" y se renombra al terminar: si falla, no queda algo trunco que parezca válido.
+    let part = format!("{target}.part");
+    let clear = |p: &str| {
+        let _ = std::fs::remove_file(long_path(p));
+        let _ = std::fs::remove_dir_all(long_path(p));
+    };
+    clear(&part);
+    if extract(&archive, &[(inner, part.clone())], &|_| {}, &AtomicBool::new(false)).is_err() {
+        clear(&part);
+        return None;
+    }
+    if std::fs::rename(long_path(&part), long_path(&target)).is_err() {
+        clear(&part);
+        return None;
+    }
     Some(target)
 }
 

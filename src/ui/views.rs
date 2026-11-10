@@ -1483,13 +1483,12 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                 if renaming {
                     rename_row(ui, cx, Rect::from_min_size(name_rect.min, vec2(name_rect.width(), 24.0)), name_rect.left());
                 } else {
-                    let color = if selected && focused { t.text } else { t.text };
                     theme::want_cjk(&e.name);
-                    let mut job = LayoutJob::single_section(e.name.clone(), TextFormat::simple(FontId::proportional(12.5), color));
+                    let mut job = LayoutJob::single_section(e.name.clone(), TextFormat::simple(FontId::proportional(12.5), t.text));
                     job.wrap = TextWrapping { max_width: name_rect.width(), max_rows: 2, break_anywhere: false, overflow_character: Some('…') };
                     job.halign = egui::Align::Center;
                     let g = p.layout_job(job);
-                    p.galley(pos2(name_rect.center().x, name_rect.top()), g, color);
+                    p.galley(pos2(name_rect.center().x, name_rect.top()), g, t.text);
                 }
                 handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), None, name_rect, false);
             }

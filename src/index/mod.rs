@@ -60,6 +60,33 @@ pub struct Slot {
     pub usn_active: AtomicBool,
 }
 
+/// Cada borrado o renombrado deja un hueco en el índice (la entrada vieja queda marcada como
+/// borrada). Cuando los huecos pasan de la cuarta parte, conviene leer el disco otra vez: se
+/// recupera la memoria y, de paso, se corrige cualquier desfase acumulado.
+fn too_many_deleted(v: &VolumeIndex) -> bool {
+    v.deleted > 10_000 && v.deleted * 4 > v.len()
+}
+
+/// Un cambio de enlaces duros no dice si el nombre se creó o se quitó: se mira el disco. Se
+/// hace antes de tomar el índice para escribir, así ninguna búsqueda espera a esa consulta.
+fn resolve_links(slot: &Slot, list: &mut [usn::Change]) {
+    let links: Vec<usize> = (0..list.len()).filter(|&i| usn::is_link_change(&list[i])).collect();
+    if links.is_empty() {
+        return;
+    }
+    let dirs: Vec<Option<String>> = {
+        let v = slot.index.read();
+        links.iter().map(|&i| usn::Applier::parent_path(&v, &list[i])).collect()
+    };
+    for (i, dir) in links.into_iter().zip(dirs) {
+        // Si la carpeta todavía no está en el índice (se creó en este mismo lote), el cambio
+        // se queda como un nombre nuevo.
+        let Some(dir) = dir else { continue };
+        let gone = matches!(std::fs::symlink_metadata(std::path::Path::new(&dir).join(&list[i].name)), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+        usn::resolve_link_change(&mut list[i], !gone);
+    }
+}
+
 /// Quién lee la MFT y el journal: el servicio, o la propia app si tiene permisos.
 enum Backend {
     Service(service::Client),
@@ -68,7 +95,9 @@ enum Backend {
 
 impl Backend {
     fn detect(letter: char) -> Option<(Backend, &'static str)> {
-        if let Some(c) = service::Client::connect() {
+        if let Some(mut c) = service::Client::connect() {
+            // Sin journal en este disco el servicio no sirve: vigilancia clásica.
+            c.journal(letter).ok().filter(|&(id, _)| id != 0)?;
             return Some((Backend::Service(c), MODE_SERVICE));
         }
         let v = usn::Volume::open(letter).ok()?;
@@ -143,9 +172,13 @@ fn pinyin_rows(v: &VolumeIndex) -> Vec<(u32, String, String)> {
         if v.is_deleted(id) {
             continue;
         }
-        // Solo nombres con algún carácter de 3 bytes (donde está el chino).
+        // Solo nombres con algún carácter de 3 bytes (donde está el chino). Se mira la clave en
+        // minúsculas (el chino queda igual) antes de armar el nombre.
+        if !v.name_lower(id).iter().any(|&b| b >= 0xE3) {
+            continue;
+        }
         let name = v.name(id);
-        if name.bytes().any(|b| b >= 0xE3) && crate::fsx::pinyin::has_cjk(&name) {
+        if crate::fsx::pinyin::has_cjk(&name) {
             let (i, f) = crate::fsx::pinyin::keys(&name);
             t.push((id, i, f));
         }
@@ -156,6 +189,8 @@ fn pinyin_rows(v: &VolumeIndex) -> Vec<(u32, String, String)> {
 /// Nombres en chino de un disco con su pinyin: (id, iniciales, completo).
 struct PinyinTable {
     epoch: u64,
+    /// Entradas que tenía el índice al armarla (si crece, hay nombres nuevos).
+    len: usize,
     built: Instant,
     building: bool,
     rows: Arc<Vec<(u32, String, String)>>,
@@ -267,7 +302,6 @@ pub fn release_free_memory() {
 /// Ordena todos los resultados por nombre, carpeta, tamaño o fecha.
 pub fn sort_hits(hits: &mut [search::Hit], vols: &[&VolumeIndex], ranks: &[Option<Arc<Ranks>>], sort: ResultSort, desc: bool) {
     use rayon::prelude::*;
-    use std::cmp::Ordering as O;
     let tie = |a: &search::Hit, b: &search::Hit| a.vol.cmp(&b.vol).then(a.id.cmp(&b.id));
     match sort {
         ResultSort::Relevance => {}
@@ -316,7 +350,6 @@ pub fn sort_hits(hits: &mut [search::Hit], vols: &[&VolumeIndex], ranks: &[Optio
     if desc {
         hits.reverse();
     }
-    let _ = O::Equal;
 }
 
 /// MFT si hay permisos de administrador; si no, recorrido en paralelo.
@@ -390,8 +423,12 @@ impl IndexManager {
             st.entries = v.live_len();
             st.memory = v.memory_bytes();
         }
-        *slot.index.write() = v;
-        let epoch = slot.epoch.fetch_add(1, Ordering::Relaxed) + 1;
+        // La versión sube sin soltar el índice: quien lo lea ve siempre la versión que le corresponde.
+        let epoch = {
+            let mut g = slot.index.write();
+            *g = v;
+            slot.epoch.fetch_add(1, Ordering::Relaxed) + 1
+        };
         self.changes.fetch_add(1, Ordering::Relaxed);
         self.wake_ui();
         // Órdenes por nombre y ruta, listos para cuando se ordene una búsqueda.
@@ -478,22 +515,18 @@ impl IndexManager {
             .creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS)
             .spawn()
             .ok()?;
-        // El hijo informa su avance en líneas "p <n>" y su origen en "s <fuente>".
+        // El hijo informa su avance en líneas "p <n>".
         let out = child.stdout.take()?;
         for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
             if let Some(n) = line.strip_prefix("p ").and_then(|n| n.parse().ok()) {
                 slot.progress.store(n, Ordering::Relaxed);
-            } else if let Some(note) = line.strip_prefix("n ") {
-                slot.state.lock().note = Some(note.to_string());
             }
         }
         if !child.wait().ok()?.success() {
             return None;
         }
-        let mut v = cache::load(slot.letter).ok()?;
         // La caché guarda el origen real (MFT o recorrido).
-        v.source = cache::load_source(slot.letter).unwrap_or(Source::Walk);
-        Some(v)
+        cache::load(slot.letter).ok()
     }
 
     /// Arranca todo en segundo plano: caché → índice fresco → vigilancia de cambios.
@@ -574,6 +607,10 @@ impl IndexManager {
             let r = backend.build(letter);
             slot.state.lock().building = false;
             let mut v = r?;
+            // Sin journal no hay cómo seguir los cambios (y pedirlos daría Reset sin fin).
+            if v.usn_journal == 0 {
+                return Err(format!("{letter}: sin USN Journal"));
+            }
             v.source = Source::Mft;
             let _ = cache::save(&v);
             self.replace(slot, v, t.elapsed().as_millis() as u64);
@@ -582,7 +619,7 @@ impl IndexManager {
         };
         let usable = {
             let v = slot.index.read();
-            v.len() > 1 && v.source == Source::Mft && v.usn_journal != 0
+            v.len() > 1 && v.source == Source::Mft && v.usn_journal != 0 && !too_many_deleted(&v)
         };
         if !usable {
             rebuild(&mut backend)?;
@@ -591,6 +628,7 @@ impl IndexManager {
         let mut caught_up = false;
         let mut dirty = false;
         let mut last_save = Instant::now();
+        let mut last_rebuild = Instant::now();
         while !self.shutdown.load(Ordering::Relaxed) {
             let (journal, from) = {
                 let v = slot.index.read();
@@ -603,14 +641,24 @@ impl IndexManager {
                     rebuild(&mut backend)?;
                     applier = usn::Applier::default();
                     caught_up = false;
+                    dirty = false;
+                    last_rebuild = Instant::now();
+                    // Si el journal sigue dando Reset, que no se rehaga el índice sin pausa.
+                    for _ in 0..10 {
+                        if self.shutdown.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
                 }
-                service::Changes::Batch(list, next) => {
+                service::Changes::Batch(mut list, next) => {
                     if list.is_empty() {
                         caught_up = true;
                         if next > from {
                             slot.index.write().usn_next = next;
                         }
                     } else {
+                        resolve_links(slot, &mut list);
                         let mut touched = std::collections::HashSet::new();
                         {
                             let mut v = slot.index.write();
@@ -631,6 +679,14 @@ impl IndexManager {
                         self.notify_dirs(paths.iter().map(String::as_str));
                     }
                 }
+            }
+            // Tras mucho movimiento en el disco, el índice arrastra demasiados huecos: se rehace.
+            if caught_up && last_rebuild.elapsed() > Duration::from_secs(600) && too_many_deleted(&slot.index.read()) {
+                rebuild(&mut backend)?;
+                applier = usn::Applier::default();
+                caught_up = false;
+                dirty = false;
+                last_rebuild = Instant::now();
             }
             // Guardar de vez en cuando (por si la app se cierra de golpe).
             if dirty && last_save.elapsed() > Duration::from_secs(300) {
@@ -741,39 +797,51 @@ impl IndexManager {
     }
 
     /// Nombres en chino cuyo pinyin (iniciales o completo) contiene lo escrito. La tabla de
-    /// pinyin de cada disco se arma una vez (y otra vez solo si el índice cambió).
+    /// pinyin de cada disco se arma una vez y se rehace si el índice cambió.
     fn pinyin_hits(&self, k: usize, v: &VolumeIndex, q: &str, within: Option<u32>, already: &[search::Hit]) -> Vec<search::Hit> {
-        // La tabla se arma en segundo plano (recorrer todos los nombres tarda ~100 ms en un disco
-        // grande) y se rehace como mucho cada 20 s: mientras, se usa la anterior. Así una
-        // búsqueda común nunca espera por el pinyin.
+        // La primera vez, y cada vez que el índice se reemplaza entero (los ids de la tabla vieja
+        // ya no valen), se arma ahora mismo para que esta búsqueda ya la tenga. Con cambios
+        // sueltos (USN, vigilancia) se rehace en segundo plano (recorrer todos los nombres tarda
+        // ~100 ms en un disco grande) y como mucho cada 20 s: mientras, se usa la anterior, que
+        // sigue valiendo porque en una misma versión del índice los ids no cambian.
+        // `search` tiene el índice tomado y `replace` cambia la versión sin soltarlo: coinciden.
         let epoch = self.slots[k].epoch.load(Ordering::Relaxed);
         let table = {
             let mut g = self.pinyin.lock();
-            let e = g.entry(k).or_insert_with(|| PinyinTable { epoch: u64::MAX, built: Instant::now() - Duration::from_secs(3600), building: false, rows: Arc::new(Vec::new()) });
-            if e.epoch == u64::MAX && !e.building {
-                // La primera vez en la sesión, ahora mismo (para que esta búsqueda ya lo tenga).
+            let e = g.entry(k).or_insert_with(|| PinyinTable { epoch: u64::MAX, len: 0, built: Instant::now(), building: false, rows: Arc::new(Vec::new()) });
+            if e.epoch != epoch {
                 e.rows = Arc::new(pinyin_rows(v));
                 e.epoch = epoch;
+                e.len = v.len();
                 e.built = Instant::now();
-            } else if e.epoch != epoch && !e.building && e.built.elapsed() > Duration::from_secs(20) {
-                e.building = true;
+            } else if e.len != v.len() && !e.building && e.built.elapsed() > Duration::from_secs(20) {
                 let (slot, all) = (self.slots[k].clone(), self.pinyin.clone());
-                std::thread::Builder::new()
+                e.building = std::thread::Builder::new()
                     .name("pinyin".into())
                     .spawn(move || {
-                        let rows = pinyin_rows(&slot.index.read());
+                        let (epoch, len, rows) = {
+                            let v = slot.index.read();
+                            (slot.epoch.load(Ordering::Relaxed), v.len(), pinyin_rows(&v))
+                        };
                         let mut g = all.lock();
                         if let Some(e) = g.get_mut(&k) {
-                            e.rows = Arc::new(rows);
-                            e.epoch = epoch;
-                            e.built = Instant::now();
                             e.building = false;
+                            // Si mientras tanto se armó para una versión más nueva, se queda esa.
+                            if epoch >= e.epoch {
+                                e.rows = Arc::new(rows);
+                                e.epoch = epoch;
+                                e.len = len;
+                                e.built = Instant::now();
+                            }
                         }
                     })
-                    .ok();
+                    .is_ok();
             }
             e.rows.clone()
         };
+        if table.is_empty() {
+            return Vec::new();
+        }
         let seen: std::collections::HashSet<u32> = already.iter().filter(|h| h.vol as usize == k).map(|h| h.id).collect();
         let inside = |mut id: u32| {
             let Some(w) = within else { return true };
@@ -782,7 +850,7 @@ impl IndexManager {
                     return true;
                 }
                 let p = v.parent[id as usize];
-                if p == id || id == 0 {
+                if p == id || id == 0 || p as usize >= v.len() {
                     return false;
                 }
                 id = p;
@@ -791,7 +859,7 @@ impl IndexManager {
         };
         table
             .iter()
-            .filter(|(id, i, f)| !seen.contains(id) && (i.contains(q) || f.contains(q)) && !v.is_deleted(*id) && inside(*id))
+            .filter(|(id, i, f)| (*id as usize) < v.len() && !seen.contains(id) && (i.contains(q) || f.contains(q)) && !v.is_deleted(*id) && inside(*id))
             .map(|(id, i, _)| search::Hit { vol: k as u8, id: *id, score: if i.starts_with(q) { 50 } else { 20 } })
             .collect()
     }
@@ -849,6 +917,7 @@ impl IndexManager {
                         mtime: v.mtime[c as usize],
                         ctime: 0,
                         cloud: crate::fsx::Cloud::None,
+                        link: false,
                         name: r,
                     });
                     if out.len() >= limit {
@@ -890,16 +959,6 @@ impl IndexManager {
             .map(|k| crate::fsx::dupes::Candidate { path: v.full_path(ids[k]), size: size(k), mtime: v.mtime[ids[k] as usize] })
             .collect();
         Some(out)
-    }
-
-    pub fn dir_size(&self, dir: &str) -> Option<u64> {
-        let slot = self.slot_for(dir)?;
-        let v = slot.index.read();
-        v.find_path(dir).map(|d| v.size[d as usize])
-    }
-
-    pub fn total_entries(&self) -> usize {
-        self.slots.iter().map(|s| s.state.lock().entries).sum()
     }
 
     pub fn building(&self) -> bool {

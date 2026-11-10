@@ -181,9 +181,14 @@ pub fn uninstall() -> i32 {
     }
     let testing = test_root().is_some();
     if !testing {
-        crate::instance::quit_running();
+        // Que el Rayo abierto termine de guardar antes de borrar nada.
+        if !crate::instance::quit_and_wait(15_000) {
+            tell(t!("instalar.rayo_sigue_abierto"));
+            return 1;
+        }
         // Explorador predeterminado e inicio con Windows: como antes de Rayo.
-        if crate::integration::is_default(&crate::integration::REAL) {
+        let real = &crate::integration::REAL;
+        if crate::integration::is_default(real) || crate::integration::has_traces(real) {
             let _ = crate::integration::disable(&crate::integration::REAL);
         }
         let _ = crate::instance::set_autostart(false);

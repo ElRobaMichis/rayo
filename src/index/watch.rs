@@ -38,7 +38,7 @@ fn add_or_update(v: &mut VolumeIndex, full: &str) {
     let Some((parent_path, name)) = split_parent(full) else { return };
     let Some(p) = v.find_path(parent_path) else { return };
     let is_dir = st.attrs & FILE_ATTRIBUTE_DIRECTORY.0 != 0;
-    if let Some(existing) = v.find_child(p, name) {
+    if let Some(existing) = v.find_child_exact(p, name) {
         v.update_file(existing, st.size, st.mtime);
         return;
     }

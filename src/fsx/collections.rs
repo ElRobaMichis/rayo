@@ -52,18 +52,21 @@ pub fn list() -> Vec<(String, usize)> {
     with(|s| s.iter().map(|(n, v)| (n.clone(), v.len())).collect())
 }
 
-/// Lo que hay en una colección (lo que ya no existe se olvida).
+/// Lo que hay en una colección. Lo que no está no se muestra; solo se olvida si su disco está
+/// y el archivo no (un USB desconectado no se borra de la colección).
 pub fn paths(name: &str) -> Vec<String> {
-    with(|s| {
-        let Some((_, v)) = s.iter_mut().find(|(n, _)| n == name) else { return Vec::new() };
-        let before = v.len();
-        v.retain(|p| std::path::Path::new(&super::long_path(p)).exists());
-        let out = v.clone();
-        if v.len() != before {
+    // Se mira el disco fuera del candado.
+    let Some(all) = with(|s| s.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone())) else { return Vec::new() };
+    let (out, gone) = super::split_existing(all);
+    if !gone.is_empty() {
+        with(|s| {
+            if let Some((_, v)) = s.iter_mut().find(|(n, _)| n == name) {
+                v.retain(|x| !gone.contains(x));
+            }
             save(s);
-        }
-        out
-    })
+        });
+    }
+    out
 }
 
 /// Agrega a una colección (la crea si no existe).

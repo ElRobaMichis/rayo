@@ -119,7 +119,8 @@ fn query(root: &str) -> Volume {
         disks.push(format!("vol:{root}"));
     }
     let kind = match (bus, seek_penalty) {
-        (Some(b), _) if b == BusTypeUsb => Kind::Usb,
+        // Tarjetas SD/MMC: igual que un USB (como en `is_usb`).
+        (Some(b), _) if b == BusTypeUsb || b == BusTypeSd || b == BusTypeMmc => Kind::Usb,
         (_, Some(true)) => Kind::Hdd,
         (Some(b), _) if b == BusTypeNvme => Kind::Nvme,
         (_, Some(false)) => Kind::Ssd,

@@ -9,13 +9,14 @@ fn icon() -> egui::IconData {
     egui::IconData { rgba, width: 64, height: 64 }
 }
 
-/// Si Rayo se cae, deja qué pasó y dónde en `%LOCALAPPDATA%\Rayo\errores.log` (se agrega al final),
-/// para poder mandarlo: con `panic = "abort"` la ventana desaparece sin decir nada.
+/// Si Rayo se cae, deja qué pasó y dónde en `%LOCALAPPDATA%\Rayo\errores.log` (o en la carpeta
+/// de `RAYO_DATA_DIR`; se agrega al final), para poder mandarlo: con `panic = "abort"` la ventana
+/// desaparece sin decir nada.
 fn log_crashes() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if let Some(base) = std::env::var_os("LOCALAPPDATA") {
-            let dir = std::path::Path::new(&base).join("Rayo");
+        let dir = rayo::instance::custom_data_dir().or_else(|| std::env::var_os("LOCALAPPDATA").map(|b| std::path::Path::new(&b).join("Rayo")));
+        if let Some(dir) = dir {
             let _ = std::fs::create_dir_all(&dir);
             let msg = info.payload().downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| info.payload().downcast_ref::<String>().cloned()).unwrap_or_default();
             let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
@@ -61,6 +62,10 @@ fn main() -> eframe::Result {
     // Modo indexador: lo lanza la propia app en un proceso aparte, para que la
     // memoria temporal del indexado se libere por completo al terminar.
     let args: Vec<String> = std::env::args().collect();
+    // Los modos que muestran mensajes, en el idioma elegido en Rayo (no en el de Windows).
+    if matches!(args.get(1).map(String::as_str), Some("--install-service" | "--uninstall-service" | "--admin-op" | "--instalar" | "--uninstall")) {
+        rayo::i18n::init(rayo::ui::config::Config::load().lang.as_deref());
+    }
     match args.get(1).map(String::as_str) {
         Some("--build-index") => {
             let letter = args.get(2).and_then(|s| s.chars().next()).unwrap_or('C');
@@ -84,8 +89,7 @@ fn main() -> eframe::Result {
         // Instalar o actualizar sin preguntar (para desarrollo): cierra el Rayo abierto,
         // copia esta versión a la instalación y la abre.
         Some("--instalar") => {
-            rayo::instance::quit_running();
-            std::thread::sleep(std::time::Duration::from_millis(800));
+            rayo::instance::quit_and_wait(30_000);
             let r = rayo::install::install().and_then(|_| rayo::install::launch_installed());
             std::process::exit(report(r));
         }

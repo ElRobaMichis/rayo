@@ -326,7 +326,9 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
                         Kind::Sftp => ic::LOCK_KEY,
                     };
                     let label = if c.name.trim().is_empty() { c.host.clone() } else { c.name.clone() };
-                    let sel = cur_lower.starts_with(&c.root().to_lowercase());
+                    // Con "\\nas\fotos" y "\\nas\fotos2", estar en la segunda no marca la primera.
+                    let root = c.root().to_lowercase();
+                    let sel = cur_lower.strip_prefix(&root).is_some_and(|r| r.is_empty() || r.starts_with('\\') || root.ends_with('\\'));
                     let r = side_item(ui, t, icon, if sel { t.accent } else { t.dim }, false, &label, sel).on_hover_text(c.unc());
                     if r.clicked() {
                         actions.push(Action::Connect(i));
@@ -951,10 +953,12 @@ pub fn toolbar(ui: &mut Ui, t: &Theme, cfg: &Config, tab: &mut Tab, search_id: I
 /// Subcarpetas que completan lo escrito en la barra de ruta (máximo 8).
 fn path_suggestions(ctx: &egui::Context, typed: &str) -> Vec<String> {
     let typed = typed.trim().trim_matches('"');
-    // Sin barra todavía: las unidades.
+    // Sin barra todavía: las unidades. Solo las letras (esto corre en cada cuadro: preguntarle a
+    // cada unidad su nombre y espacio trabaría la ventana con una unidad de red caída).
     let Some(cut) = typed.rfind(['\\', '/']) else {
         let t = typed.to_lowercase();
-        return fsx::list_drives().into_iter().map(|d| format!("{}:\\", d.letter)).filter(|d| t.is_empty() || d.to_lowercase().starts_with(&t)).collect();
+        let mask = fsx::drive_mask();
+        return (0..26u8).filter(|i| mask & (1 << i) != 0).map(|i| format!("{}:\\", (b'A' + i) as char)).filter(|d| t.is_empty() || d.to_lowercase().starts_with(&t)).collect();
     };
     let dir = &typed[..=cut];
     let prefix = typed[cut + 1..].to_lowercase();
@@ -1352,7 +1356,6 @@ fn search_box(ui: &mut Ui, t: &Theme, tab: &mut Tab, id: Id, width: f32, history
         tab.search.focus = false;
     }
     search_history(ui, t, tab, id, rect, r.has_focus() || hist_enter, hist_enter, history, actions);
-    let _ = Color32::TRANSPARENT;
 }
 
 /// Búsquedas recientes: con la caja vacía y enfocada, una lista para repetirlas (↑ ↓ Enter).
@@ -1374,7 +1377,8 @@ fn search_history(ui: &mut Ui, t: &Theme, tab: &mut Tab, id: Id, rect: Rect, foc
     }
     mark_overlay(ui.ctx());
     let shown = history.len().min(10);
-    let mut sel: Option<usize> = ui.data(|d| d.get_temp(sel_id)).flatten();
+    // La lista pudo achicarse (se olvidó una búsqueda): la fila elegida tiene que seguir existiendo.
+    let mut sel: Option<usize> = ui.data(|d| d.get_temp(sel_id)).flatten().filter(|&s| s < shown);
     let (down, up) = ui.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown), i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)));
     if down {
         sel = Some(sel.map_or(0, |s| (s + 1).min(shown - 1)));

@@ -188,20 +188,6 @@ pub fn available(c: &Command, t: &Target) -> bool {
     }
 }
 
-/// Un elemento de menú a partir del catálogo. Devuelve true si se eligió.
-pub fn menu_item(ui: &mut egui::Ui, id: &'static str, t: &Target, actions: &mut Vec<Action>) -> bool {
-    let c = get(id);
-    if !available(c, t) {
-        return false;
-    }
-    let r = ui.add(egui::Button::new(format!("{}  {}", c.icon, c.label())).shortcut_text(c.keys()).min_size(vec2(230.0, 0.0)));
-    if r.clicked() {
-        actions.push(Action::Command(id, t.clone()));
-        return true;
-    }
-    false
-}
-
 /// Puntaje de coincidencia en la paleta: las palabras del texto deben aparecer
 /// (sin acentos) en el nombre o en las palabras extra; mejor si es al inicio.
 fn score(c: &Command, query: &str) -> Option<i32> {

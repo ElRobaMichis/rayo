@@ -115,19 +115,23 @@ pub fn moved(from: &str, to: &str) {
     });
 }
 
-/// Todo lo que tiene ese color (lo que ya no existe se olvida).
+/// Todo lo que tiene ese color. Lo que no está no se muestra; solo se olvida si su disco está
+/// y el archivo no (un USB desconectado no pierde sus etiquetas).
 pub fn paths(color: usize) -> Vec<String> {
     let bit = 1u8 << color;
-    with(|m| {
-        let before = m.len();
-        m.retain(|_, e| std::path::Path::new(&super::long_path(&e.0)).exists());
-        if m.len() != before {
+    // Se mira el disco fuera del candado.
+    let all: Vec<String> = with(|m| m.values().filter(|e| e.1 & bit != 0).map(|e| e.0.clone()).collect());
+    let (mut v, gone) = super::split_existing(all);
+    if !gone.is_empty() {
+        with(|m| {
+            for p in &gone {
+                m.remove(&p.to_lowercase());
+            }
             save(m);
-        }
-        let mut v: Vec<String> = m.values().filter(|e| e.1 & bit != 0).map(|e| e.0.clone()).collect();
-        v.sort_by_key(|p| p.to_lowercase());
-        v
-    })
+        });
+    }
+    v.sort_by_key(|p| p.to_lowercase());
+    v
 }
 
 /// Cuántos elementos tiene cada color.

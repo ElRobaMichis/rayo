@@ -74,11 +74,17 @@ pub fn installed_exe() -> PathBuf {
 
 // ---------------------------------------------------------------- E/S sobre la tubería
 
+/// Extremo de la tubería dueño del handle: lo cierra al soltarse.
 pub struct Pipe(HANDLE);
 
-unsafe impl Send for Pipe {}
+/// El mismo handle visto desde el otro lado (lectura o escritura) sin ser su dueño: no lo
+/// cierra, así el handle se cierra una sola vez (lo cierra el `Pipe`).
+struct PipeRef(HANDLE);
 
-impl Read for Pipe {
+unsafe impl Send for Pipe {}
+unsafe impl Send for PipeRef {}
+
+impl Read for PipeRef {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let mut got = 0u32;
         let n = buf.len().min(1 << 20);
@@ -87,12 +93,27 @@ impl Read for Pipe {
     }
 }
 
-impl Write for Pipe {
+impl Write for PipeRef {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let mut put = 0u32;
         let n = buf.len().min(1 << 20);
         unsafe { WriteFile(self.0, Some(&buf[..n]), Some(&mut put), None) }.map_err(|e| std::io::Error::other(e.message()))?;
         Ok(put as usize)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Read for Pipe {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        PipeRef(self.0).read(buf)
+    }
+}
+
+impl Write for Pipe {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        PipeRef(self.0).write(buf)
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
@@ -180,7 +201,8 @@ fn letter_of(v: &Value) -> Option<char> {
 
 fn handle_client(pipe: Pipe) {
     let mut volumes: HashMap<char, Volume> = HashMap::new();
-    let mut reader = BufReader::new(Pipe(pipe.0));
+    // `reader` no es dueño del handle: lo cierra `writer` al terminar.
+    let mut reader = BufReader::new(PipeRef(pipe.0));
     let mut writer = BufWriter::with_capacity(1 << 20, pipe);
     log("cliente conectado");
     while let Ok(req) = read_msg(&mut reader) {
@@ -238,8 +260,6 @@ fn handle_client(pipe: Pipe) {
     unsafe {
         let _ = DisconnectNamedPipe(h);
     }
-    // Evitar cerrar dos veces: `reader` comparte el handle con `writer`.
-    std::mem::forget(reader);
 }
 
 /// Acepta clientes hasta que `stop` se active. Solo usuarios locales autenticados.
@@ -316,8 +336,9 @@ pub enum Changes {
 }
 
 pub struct Client {
+    /// Dueño del handle (lo cierra una vez); `writer` usa el mismo sin cerrarlo.
     reader: BufReader<Pipe>,
-    writer: Pipe,
+    writer: PipeRef,
 }
 
 /// PID del servicio RayoIndexer según el administrador de servicios de Windows.
@@ -371,7 +392,7 @@ impl Client {
                         }
                         return None;
                     }
-                    let mut c = Client { reader: BufReader::with_capacity(1 << 20, Pipe(h)), writer: Pipe(h) };
+                    let mut c = Client { reader: BufReader::with_capacity(1 << 20, Pipe(h)), writer: PipeRef(h) };
                     let hello = c.call(&json!({"cmd": "hello"})).ok()?;
                     if hello["protocol"].as_u64() != Some(PROTOCOL) {
                         return None;
@@ -462,18 +483,13 @@ pub fn diagnose() -> String {
     }
     out.push_str(&format!("PID del servicio según Windows: {:?}\n", service_pid()));
     out.push_str(&format!("de confianza: {}\n", server_is_trusted(h)));
-    let mut c = Client { reader: BufReader::new(Pipe(h)), writer: Pipe(h) };
+    // `c` cierra el handle una sola vez al soltarse.
+    let mut c = Client { reader: BufReader::new(Pipe(h)), writer: PipeRef(h) };
     match c.call(&json!({"cmd": "hello"})) {
         Ok(v) => out.push_str(&format!("saludo: {v}\n")),
         Err(e) => out.push_str(&format!("saludo: falló ({e})\n")),
     }
-    std::mem::forget(c.writer);
     out
-}
-
-/// ¿Está el servicio instalado y respondiendo?
-pub fn available() -> bool {
-    Client::connect().is_some()
 }
 
 // ---------------------------------------------------------------- servicio de Windows

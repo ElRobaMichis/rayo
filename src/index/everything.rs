@@ -110,19 +110,24 @@ fn u32_at(b: &[u8], o: usize) -> u32 {
 fn parse_list2(b: &[u8], elapsed: Duration) -> EvResult {
     let total = u32_at(b, 0) as usize;
     let num = u32_at(b, 4) as usize;
-    let mut paths = Vec::with_capacity(num);
+    // Cada item ocupa al menos 8 bytes: con datos dañados, `num` no puede pedir más memoria.
+    let mut paths = Vec::with_capacity(num.min(b.len() / 8));
     for i in 0..num {
+        if 20 + i * 8 + 8 > b.len() {
+            break;
+        }
         let off = u32_at(b, 20 + i * 8 + 4) as usize;
         let mut p = off;
-        let mut read_str = || {
+        let mut read_str = || -> Option<String> {
             let len = u32_at(b, p) as usize;
             p += 4;
-            let units: Vec<u16> = (0..len).map(|k| u16::from_le_bytes([b[p + k * 2], b[p + k * 2 + 1]])).collect();
+            let raw = b.get(p..p + len * 2)?;
+            let units: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
             p += len * 2 + 2;
-            String::from_utf16_lossy(&units)
+            Some(String::from_utf16_lossy(&units))
         };
-        let name = read_str();
-        let path = read_str();
+        let Some(name) = read_str() else { break };
+        let Some(path) = read_str() else { break };
         paths.push(format!("{path}\\{name}"));
     }
     EvResult { total, paths, elapsed }

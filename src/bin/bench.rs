@@ -1,6 +1,10 @@
 //! Benchmark del motor de búsqueda.
 //!
-//! Uso: rayo-bench [--walk | --mft] [--cache] [letras...]
+//! Uso: rayo-bench [--walk | --mft] [--cache] [--guardar] [--acentos] [letras...]
+//!
+//! `--guardar` escribe el índice en la caché de la app (la misma que usa Rayo: la reemplaza) y
+//! mide guardar y cargar; sin él, la caché no se toca. `--acentos` lista nombres con acento.
+//! Servicio: rayo-bench --servicio prueba el servicio RayoIndexer.
 //!
 //! Copias: rayo-bench --copia <origen> <carpeta-de-destino> [veces]
 //! compara el motor de copia del Explorador (IFileOperation) con el de Rayo, alternando el orden.
@@ -50,6 +54,7 @@ fn main() {
     let force_walk = args.iter().any(|a| a == "--walk");
     let force_mft = args.iter().any(|a| a == "--mft");
     let from_cache = args.iter().any(|a| a == "--cache");
+    let save_cache = args.iter().any(|a| a == "--guardar");
     if args.iter().any(|a| a == "--servicio") {
         service_test();
         return;
@@ -111,7 +116,7 @@ fn main() {
             v.size[0] as f64 / 1e9,
             v.accented_count()
         );
-        if !from_cache {
+        if !from_cache && save_cache {
             let t = Instant::now();
             cache::save(&v).ok();
             let save = t.elapsed();

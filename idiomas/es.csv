@@ -379,6 +379,7 @@ comun.tamano,Tamaño,,
 comun.ya_existe,ya existe «{nombre}»,,{nombre} = un nombre de archivo o carpeta
 copia.deshaciendo.uno,Deshaciendo: devolviendo {n} elemento a {destino},,"Cuando la cantidad es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
 copia.deshaciendo.varios,Deshaciendo: devolviendo {n} elementos a {destino},,"Cuando la cantidad no es 1 · {destino} = el nombre de la carpeta de destino; {n} = un número"
+copia.enlace_bucle,Enlace en bucle (no se copió lo de adentro): {ruta},,{ruta} = la ruta del enlace
 copia.etiqueta,{accion} {que} a {destino},,"{accion} = la acción («Copiar a la derecha»); {destino} = el nombre de la carpeta de destino; {que} = «nombre» o «N elementos»"
 copia.extrayendo,Extrayendo {que} en {destino},,"{destino} = el nombre de la carpeta de destino; {que} = «nombre» o «N elementos»"
 copia.no_comprimido,No es un comprimido: {origen},,{origen} = una ruta
@@ -393,6 +394,7 @@ enlace.enlace_simbolico,enlace simbólico,,
 enlace.nombre_enlace,{nombre} - enlace{extension},,"{extension} = una extensión (PDF, TXT…); {nombre} = un nombre de archivo o carpeta"
 enlace.nombre_enlace_n,{nombre} - enlace ({k}){extension},,"{extension} = una extensión (PDF, TXT…); {k} = un número; {nombre} = un nombre de archivo o carpeta"
 enlace.union_carpeta,unión de carpeta,,
+enlace.union_solo_local,Una unión solo puede apuntar a una carpeta de un disco local,,
 enlace.windows_no_permite_enlaces_simbolicos,Windows no permite enlaces simbólicos sin permisos (activa el modo de desarrollador) y un enlace duro solo puede ir en el mismo disco,,
 etiqueta.amarillo,Amarillo,,Etiqueta de color
 etiqueta.azul,Azul,,Etiqueta de color
@@ -568,6 +570,7 @@ instalar.quitar_tambien_servicio_indice_instantan,"¿Quitar también el servicio
 
 Windows va a pedir permiso de administrador.",,
 instalar.rayo_desinstalo,Rayo se desinstaló.,,
+instalar.rayo_sigue_abierto,Rayo sigue abierto y no se pudo cerrar. Ciérralo y vuelve a intentar.,,
 lista.ajustar_columna,Arrastra para cambiar el ancho · doble clic: ancho original,,
 lista.buscando,Buscando…,,
 lista.cambia_extension,Cambia la extensión: {antes} → {despues},,Al renombrar · {antes} y {despues} = extensiones como «.pdf» o «sin extensión»

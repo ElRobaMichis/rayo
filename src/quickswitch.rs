@@ -95,17 +95,26 @@ unsafe fn file_name_box(h: HWND) -> Option<HWND> {
 /// Escribe la carpeta en el cuadro de nombre, "Aceptar" (el diálogo navega ahí) y devuelve el
 /// nombre que había.
 fn jump(dlg: HWND, edit: HWND, dir: &str) {
-    unsafe {
-        let mut buf = [0u16; 1024];
-        let n = GetWindowTextW(edit, &mut buf);
-        let before = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
-        let path = wide(dir);
-        let _ = SendMessageW(edit, WM_SETTEXT, Some(WPARAM(0)), Some(LPARAM(path.as_ptr() as isize)));
-        // IDOK con un nombre que es una carpeta: el diálogo entra a ella (no abre ni guarda).
-        let _ = SendMessageW(dlg, WM_COMMAND, Some(WPARAM(1)), Some(LPARAM(0)));
-        std::thread::sleep(std::time::Duration::from_millis(120));
-        let old = wide(&before);
-        let _ = SendMessageW(edit, WM_SETTEXT, Some(WPARAM(0)), Some(LPARAM(old.as_ptr() as isize)));
+    // El diálogo es de otro programa: GetWindowTextW no le pregunta al cuadro (devuelve "")
+    // y SendMessageW se quedaría esperando para siempre si ese programa está colgado.
+    let send = |h: HWND, msg: u32, w: usize, l: isize| -> Option<usize> {
+        let mut out = 0usize;
+        let r = unsafe { SendMessageTimeoutW(h, msg, WPARAM(w), LPARAM(l), SMTO_ABORTIFHUNG, 1000, Some(&mut out)) };
+        (r.0 != 0).then_some(out)
+    };
+    let before = send(edit, WM_GETTEXTLENGTH, 0, 0).and_then(|len| {
+        let mut buf = vec![0u16; len + 1];
+        let n = send(edit, WM_GETTEXT, buf.len(), buf.as_mut_ptr() as isize)?;
+        Some(String::from_utf16_lossy(&buf[..n.min(len)]))
+    });
+    let path = wide(dir);
+    if send(edit, WM_SETTEXT, 0, path.as_ptr() as isize).is_none() {
+        return;
     }
+    // IDOK con un nombre que es una carpeta: el diálogo entra a ella (no abre ni guarda).
+    let _ = send(dlg, WM_COMMAND, 1, 0);
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    let old = wide(before.as_deref().unwrap_or(""));
+    let _ = send(edit, WM_SETTEXT, 0, old.as_ptr() as isize);
     crate::diag::log(&format!("quick switch: diálogo → «{dir}»"));
 }

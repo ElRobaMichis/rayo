@@ -412,6 +412,14 @@ impl VolumeIndex {
         fallback
     }
 
+    /// Hijo de `dir` con este nombre tal como lo compara NTFS: sin distinguir mayúsculas,
+    /// pero con los acentos exactos (para aplicar cambios del disco, nunca la entrada vecina).
+    pub fn find_child_exact(&self, dir: u32, name: &str) -> Option<u32> {
+        let key = search_key(name);
+        let exact = fold_str(name);
+        self.children(dir).find(|&c| self.name_lower(c) == key.as_bytes() && *self.name_casefold(c) == *exact.as_bytes())
+    }
+
     /// Busca la entrada de una ruta absoluta como `C:\Users\Ana`.
     pub fn find_path(&self, path: &str) -> Option<u32> {
         let p = path.trim_start_matches("\\\\?\\");

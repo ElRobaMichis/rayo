@@ -243,8 +243,10 @@ fn parse_chunk(buf: &mut [u8], first_rec: u32, rec_size: usize) -> ChunkOut {
                 0x80 if name_len == 0 => {
                     let size = if non_res {
                         if len >= 56 && u64le(a, 16) == 0 { Some(u64le(a, 48)) } else { None }
-                    } else {
+                    } else if len >= 24 {
                         Some(u32le(a, 16) as u64)
+                    } else {
+                        None
                     };
                     if let Some(s) = size {
                         if base != 0 {
@@ -309,8 +311,12 @@ pub fn read_mft(letter: char, progress: &AtomicUsize) -> Result<VolumeIndex, Str
         }
         if ty == 0x80 && rec0[p + 8] != 0 && rec0[p + 9] == 0 {
             let a = &rec0[p..p + len];
-            mft_bytes = u64le(a, 48);
-            runs = decode_runs(&a[u16le(a, 32) as usize..]);
+            // Cabecera no residente: 64 bytes; el runlist tiene que caer dentro del atributo.
+            let ro = if len >= 64 { u16le(a, 32) as usize } else { usize::MAX };
+            if ro <= len {
+                mft_bytes = u64le(a, 48);
+                runs = decode_runs(&a[ro..]);
+            }
             break;
         }
         p += len;

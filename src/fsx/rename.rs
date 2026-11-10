@@ -6,7 +6,7 @@
 //! `{carpeta}` nombre de la carpeta y `{ext}` extensión original. Cada pieza tiene su nombre
 //! en el idioma de Rayo (`{name}`, `{date}`…) y se aceptan siempre las de español e inglés.
 
-use super::{ext_of, join, long_path};
+use super::{join, long_path};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -151,7 +151,6 @@ pub fn plan(dir_name: &str, files: &[Source], rules: &Rules, existing: &HashSet<
         out.push(Planned { old: f.name.clone(), new, problem: None });
     }
     check(&mut out, existing);
-    let _ = ext_of;
     Ok(out)
 }
 
@@ -176,7 +175,7 @@ fn check(out: &mut [Planned], existing: &HashSet<String>) {
     }
     for p in out.iter_mut() {
         let l = p.new.to_lowercase();
-        p.problem = if p.new.trim().is_empty() || p.new.starts_with('.') && split_name(&p.new).0.is_empty() {
+        p.problem = if p.new.trim().is_empty() {
             Some(t!("renombrar.nombre_quedaria_vacio").into())
         } else if p.new.contains(INVALID) {
             Some(t!("renombrar.tiene_caracteres_no_permitidos").into())

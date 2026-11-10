@@ -45,6 +45,10 @@ pub struct FileEntry {
     pub ctime: u32,
     /// Estado en OneDrive (u otro proveedor de nube).
     pub cloud: Cloud,
+    /// Enlace simbólico o unión (lo de adentro está en otro lado): al mover se copia pero no se
+    /// borra, y no se recorre en la vista plana, los duplicados ni al comparar. Los archivos de
+    /// OneDrive no cuentan como enlace.
+    pub link: bool,
 }
 
 /// Estado de un archivo sincronizado con la nube (OneDrive, Dropbox, iCloud…).
@@ -84,7 +88,7 @@ pub fn cloud_of(attrs: u32, reparse_tag: u32) -> Cloud {
 pub fn is_online_only(path: &str) -> bool {
     let w = wide(&long_path(path));
     let a = unsafe { GetFileAttributesW(PCWSTR(w.as_ptr())) };
-    a != INVALID_FILE_ATTRIBUTES && a & (ATTR_RECALL_ON_DATA_ACCESS | ATTR_OFFLINE) != 0
+    a != INVALID_FILE_ATTRIBUTES && a & (ATTR_RECALL_ON_DATA_ACCESS | ATTR_OFFLINE | ATTR_RECALL_ON_OPEN) != 0
 }
 
 impl FileEntry {
@@ -211,7 +215,10 @@ pub fn list_flat(dir: &str, limit: usize) -> Result<Vec<FileEntry>, String> {
             let r = if rel.is_empty() { e.name.clone() } else { format!("{rel}\\{}", e.name) };
             let hidden = hidden_parent || e.hidden;
             if e.is_dir {
-                stack.push((join(&d, &e.name), r, hidden));
+                // Un enlace o unión no se recorre (podría dar vueltas o salir del árbol).
+                if !e.link {
+                    stack.push((join(&d, &e.name), r, hidden));
+                }
             } else {
                 e.hidden = hidden;
                 e.lower = r.to_lowercase();
@@ -259,6 +266,31 @@ pub fn probe_dir(p: &str, ms: u64) -> Option<bool> {
     rx.recv_timeout(std::time::Duration::from_millis(ms)).ok()
 }
 
+/// Separa (lo que existe, lo que ya no existe de verdad). Si falta su disco o recurso de red
+/// (USB desconectado, servidor apagado), no va a ninguno de los dos: no se sabe, no se olvida.
+pub fn split_existing(paths: Vec<String>) -> (Vec<String>, Vec<String>) {
+    let (mut here, mut gone) = (Vec::new(), Vec::new());
+    for p in paths {
+        if std::path::Path::new(&long_path(&p)).exists() {
+            here.push(p);
+        } else if volume_root(&p).is_some_and(|r| std::path::Path::new(&long_path(&r)).exists()) {
+            gone.push(p);
+        }
+    }
+    (here, gone)
+}
+
+/// "C:\a\b" → "C:\"; "\\servidor\recurso\a" → "\\servidor\recurso\".
+fn volume_root(p: &str) -> Option<String> {
+    if let Some(rest) = p.strip_prefix(r"\\").filter(|_| !p.starts_with(r"\\?\")) {
+        let mut parts = rest.split('\\').filter(|s| !s.is_empty());
+        let (server, share) = (parts.next()?, parts.next()?);
+        return Some(format!(r"\\{server}\{share}\"));
+    }
+    let b = p.as_bytes();
+    (b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic()).then(|| format!("{}\\", &p[..2]))
+}
+
 /// ¿Existe? (también dentro de un comprimido)
 pub fn exists_like(p: &str) -> bool {
     std::path::Path::new(&long_path(p)).exists() || archive::split(p).is_some_and(|(a, inner)| inner.is_empty() || archive::find(&a, &inner).is_some())
@@ -272,7 +304,7 @@ pub fn list_dir(dir: &str) -> Result<Vec<FileEntry>, String> {
     let base = long_path(dir);
     let pattern = wide(&format!("{}*", if base.ends_with('\\') { base } else { format!("{base}\\") }));
     let mut d = WIN32_FIND_DATAW::default();
-    let h: HANDLE = unsafe {
+    let found = unsafe {
         FindFirstFileExW(
             PCWSTR(pattern.as_ptr()),
             FindExInfoBasic,
@@ -281,8 +313,13 @@ pub fn list_dir(dir: &str) -> Result<Vec<FileEntry>, String> {
             None,
             FIND_FIRST_EX_LARGE_FETCH,
         )
-    }
-    .map_err(|e| e.message().trim().to_string())?;
+    };
+    let h: HANDLE = match found {
+        Ok(h) => h,
+        // La raíz de un disco o recurso vacío no tiene ni "." ni "..": no hay nada, no es un error.
+        Err(e) if e.code() == windows::Win32::Foundation::ERROR_FILE_NOT_FOUND.to_hresult() => return Ok(Vec::new()),
+        Err(e) => return Err(e.message().trim().to_string()),
+    };
     let mut out = Vec::new();
     loop {
         let len = d.cFileName.iter().position(|&c| c == 0).unwrap_or(d.cFileName.len());
@@ -301,6 +338,8 @@ pub fn list_dir(dir: &str) -> Result<Vec<FileEntry>, String> {
                 mtime: ft(d.ftLastWriteTime),
                 ctime: ft(d.ftCreationTime),
                 cloud: cloud_of(attrs, d.dwReserved0),
+                // Etiqueta de "sustituto de nombre" (como `is_symlink` de std): uniones y enlaces.
+                link: attrs & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 && d.dwReserved0 & 0x2000_0000 != 0,
                 name,
             });
         }
