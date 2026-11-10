@@ -186,10 +186,10 @@ pub fn cloud_folders() -> Vec<(String, String)> {
     for (name, path) in sync_roots() {
         add(&name, path);
     }
-    for (var, name) in [("OneDriveConsumer", "OneDrive"), ("OneDriveCommercial", "OneDrive (trabajo)"), ("OneDrive", "OneDrive")] {
-        if let Some(p) = std::env::var_os(var) {
-            add(name, p.to_string_lossy().into_owned());
-        }
+    // OneDrive: solo las cuentas con sesión iniciada. Windows crea la carpeta y la variable
+    // %OneDrive% aunque nunca se configure, así que eso solo no prueba nada.
+    for (name, path) in onedrive_accounts() {
+        add(&name, path);
     }
     // Dropbox: info.json dice dónde está.
     for base in ["APPDATA", "LOCALAPPDATA"].iter().filter_map(|v| std::env::var_os(v)) {
@@ -212,6 +212,47 @@ pub fn cloud_folders() -> Vec<(String, String)> {
             let my = ["My Drive", "Mi unidad"].iter().map(|n| format!("{root}{n}")).find(|p| std::path::Path::new(p).is_dir());
             add("Google Drive", my.unwrap_or(root));
         }
+    }
+    out
+}
+
+/// Cuentas de OneDrive con sesión iniciada: (nombre, carpeta). Una cuenta conectada guarda su
+/// correo (`UserEmail`); la "Personal" que Windows deja preparada sin iniciar sesión, solo la carpeta.
+fn onedrive_accounts() -> Vec<(String, String)> {
+    use windows::Win32::System::Registry::*;
+    let base = r"Software\Microsoft\OneDrive\Accounts";
+    let read = |sub: &str, value: &str| -> Option<String> {
+        let (k, v) = (wide(&format!(r"{base}\{sub}")), wide(value));
+        let mut buf = vec![0u16; 1024];
+        let mut len = (buf.len() * 2) as u32;
+        unsafe { RegGetValueW(HKEY_CURRENT_USER, windows::core::PCWSTR(k.as_ptr()), windows::core::PCWSTR(v.as_ptr()), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr() as *mut _), Some(&mut len)) }.ok().ok()?;
+        let n = (len as usize / 2).saturating_sub(1);
+        Some(String::from_utf16_lossy(&buf[..n.min(buf.len())])).filter(|s| !s.trim().is_empty())
+    };
+    let mut out = Vec::new();
+    unsafe {
+        let mut key = HKEY::default();
+        let path = wide(base);
+        if RegOpenKeyExW(HKEY_CURRENT_USER, windows::core::PCWSTR(path.as_ptr()), None, KEY_READ, &mut key).is_err() {
+            return out;
+        }
+        let mut i = 0;
+        loop {
+            let mut name = [0u16; 256];
+            let mut len = name.len() as u32;
+            if RegEnumKeyExW(key, i, Some(windows::core::PWSTR(name.as_mut_ptr())), &mut len, None, None, None, None).is_err() {
+                break;
+            }
+            i += 1;
+            let sub = String::from_utf16_lossy(&name[..len as usize]);
+            if read(&sub, "UserEmail").is_none() {
+                continue;
+            }
+            let Some(folder) = read(&sub, "UserFolder") else { continue };
+            let label = if sub.eq_ignore_ascii_case("Personal") { "OneDrive".to_string() } else { read(&sub, "DisplayName").map_or("OneDrive (trabajo)".to_string(), |d| format!("OneDrive · {d}")) };
+            out.push((label, folder));
+        }
+        let _ = RegCloseKey(key);
     }
     out
 }

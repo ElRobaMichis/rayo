@@ -568,6 +568,7 @@ pub fn known_places() -> Vec<Place> {
 
 // ---------------------------------------------------------------- formato
 
+/// Tamaño legible con tres cifras significativas y sin ceros finales: «82 KB», «12.4 KB», «2 MB».
 pub fn human_size(b: u64) -> String {
     const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     if b < 1024 {
@@ -579,7 +580,10 @@ pub fn human_size(b: u64) -> String {
         v /= 1024.0;
         i += 1;
     }
-    if v >= 100.0 { format!("{v:.0} {}", U[i]) } else if v >= 10.0 { format!("{v:.1} {}", U[i]) } else { format!("{v:.2} {}", U[i]) }
+    let n = if v >= 100.0 { format!("{v:.0}") } else if v >= 10.0 { format!("{v:.1}") } else { format!("{v:.2}") };
+    // «82.0» → «82», «1.50» → «1.5» (sin decimales no hay ceros que quitar).
+    let n = if n.contains('.') { n.trim_end_matches('0').trim_end_matches('.') } else { &n };
+    format!("{n} {}", U[i])
 }
 
 pub fn thousands(n: usize) -> String {
@@ -666,7 +670,17 @@ mod tests {
         assert_eq!(parent_of(r"\\srv\share\"), None);
         assert_eq!(normalize("c:"), "C:\\");
         assert_eq!(normalize("c:/users/"), "C:\\users");
-        assert_eq!(human_size(1536), "1.50 KB");
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(1023), "1023 B");
+        assert_eq!(human_size(1024), "1 KB");
+        assert_eq!(human_size(1536), "1.5 KB");
+        assert_eq!(human_size(1100), "1.07 KB");
+        assert_eq!(human_size(82 * 1024), "82 KB");
+        assert_eq!(human_size(12_698), "12.4 KB");
+        assert_eq!(human_size(100 * 1024), "100 KB");
+        assert_eq!(human_size(250 * 1024), "250 KB");
+        assert_eq!(human_size(2 * 1024 * 1024), "2 MB");
+        assert_eq!(human_size(1024u64.pow(5) * 3), "3072 TB");
         assert_eq!(thousands(1234567), "1,234,567");
         assert_eq!(long_path(r"C:\a"), r"\\?\C:\a");
         assert_eq!(long_path(r"\\srv\share\x"), r"\\?\UNC\srv\share\x");

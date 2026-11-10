@@ -4,8 +4,9 @@
 //! interpreta como una terminal (colores, cursor, borrar pantalla…), y aquí se dibuja esa
 //! cuadrícula de caracteres. Las teclas se traducen a lo que espera una terminal.
 
+use super::design::{self, sp, stroke};
 use super::theme::Theme;
-use egui::{Color32, FontId, Key, Rect, Sense, Ui, pos2, vec2};
+use egui::{Color32, CornerRadius, Key, Rect, Sense, Ui, pos2, vec2};
 use parking_lot::Mutex;
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{Read, Write};
@@ -117,12 +118,12 @@ impl Terminal {
     /// (un clic en ella le da el foco).
     pub fn ui(&mut self, ui: &mut Ui, t: &Theme, rect: Rect, focused: bool) -> egui::Response {
         let resp = ui.interact(rect, ui.id().with("terminal"), Sense::click());
-        let font = FontId::monospace(13.0);
+        let font = design::text::mono_l();
         let (cw, ch) = {
             let g = ui.painter().layout_no_wrap("M".into(), font.clone(), Color32::WHITE);
             (g.size().x.max(1.0), (g.size().y + 1.0).max(1.0))
         };
-        let inner = rect.shrink2(vec2(8.0, 6.0));
+        let inner = rect.shrink2(vec2(sp::S, sp::XS));
         let rows = (inner.height() / ch).floor().max(2.0) as u16;
         let cols = (inner.width() / cw).floor().max(10.0) as u16;
         self.resize(rows, cols);
@@ -138,12 +139,13 @@ impl Terminal {
             }
         }
         let p = ui.painter_at(rect);
-        p.rect_filled(rect, 0.0, if t.dark { Color32::from_rgb(0x0C, 0x0D, 0x10) } else { Color32::from_rgb(0xFA, 0xFA, 0xFB) });
+        // Superficie hundida; el texto y el fondo por omisión salen del tema.
+        p.rect_filled(rect, CornerRadius::ZERO, t.sidebar);
         let mut parser = self.parser.lock();
         parser.set_scrollback(self.scroll);
         self.scroll = parser.screen().scrollback();
         let screen = parser.screen();
-        let fg_default = if t.dark { Color32::from_rgb(0xD8, 0xDB, 0xE2) } else { Color32::from_rgb(0x1D, 0x21, 0x27) };
+        let fg_default = t.text;
         for r in 0..rows {
             let y = inner.top() + r as f32 * ch;
             let mut job = egui::text::LayoutJob::default();
@@ -152,29 +154,30 @@ impl Terminal {
                 if cell.is_wide_continuation() {
                     continue;
                 }
-                let mut fg = color(cell.fgcolor(), fg_default, t.dark);
+                let mut fg = color(cell.fgcolor(), fg_default, t);
                 let mut bg = match cell.bgcolor() {
                     vt100::Color::Default => None,
-                    other => Some(color(other, fg_default, t.dark)),
+                    other => Some(color(other, fg_default, t)),
                 };
                 if cell.inverse() {
                     let old = fg;
-                    fg = bg.unwrap_or(if t.dark { Color32::from_rgb(0x0C, 0x0D, 0x10) } else { Color32::WHITE });
+                    fg = bg.unwrap_or(t.sidebar);
                     bg = Some(old);
                 }
                 let x = inner.left() + c as f32 * cw;
                 if let Some(bg) = bg {
                     let w = if cell.is_wide() { 2.0 * cw } else { cw };
-                    p.rect_filled(Rect::from_min_size(pos2(x, y), vec2(w, ch)), 0.0, bg);
+                    p.rect_filled(Rect::from_min_size(pos2(x, y), vec2(w, ch)), CornerRadius::ZERO, bg);
                 }
                 let s = cell.contents();
                 let text = if s.is_empty() { " ".to_string() } else { s.to_string() };
                 let mut f = egui::text::TextFormat::simple(font.clone(), fg);
                 if cell.bold() {
-                    f.color = fg.gamma_multiply(1.15);
+                    // Negrita: un poco más de contraste (no hay peso bold en mono).
+                    f.color = fg.lerp_to_gamma(if t.dark { Color32::WHITE } else { Color32::BLACK }, 0.15);
                 }
                 if cell.underline() {
-                    f.underline = egui::Stroke::new(1.0, fg);
+                    f.underline = egui::Stroke::new(stroke::HAIR, fg);
                 }
                 job.append(&text, 0.0, f);
             }
@@ -185,10 +188,14 @@ impl Terminal {
         if self.scroll == 0 && !screen.hide_cursor() {
             let (cr, cc) = screen.cursor_position();
             let r = Rect::from_min_size(pos2(inner.left() + cc as f32 * cw, inner.top() + cr as f32 * ch), vec2(cw, ch));
+            // Con foco, bloque de acento («ahora») con la letra encima en blanco; sin foco, contorno.
             if focused {
-                p.rect_filled(r, 1.0, t.accent.gamma_multiply(0.7));
+                p.rect_filled(r, CornerRadius::ZERO, t.accent);
+                if let Some(cell) = screen.cell(cr, cc).filter(|c| !c.contents().is_empty()) {
+                    p.text(r.left_top(), egui::Align2::LEFT_TOP, cell.contents(), font.clone(), t.accent_text);
+                }
             } else {
-                p.rect_stroke(r, 1.0, egui::Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+                p.rect_stroke(r, CornerRadius::ZERO, egui::Stroke::new(stroke::HAIR, t.dim), egui::StrokeKind::Inside);
             }
         }
         resp
@@ -280,15 +287,12 @@ fn key_bytes(key: Key, m: egui::Modifiers) -> Option<Vec<u8>> {
     Some(b.to_vec())
 }
 
-/// Colores de la terminal (los 16 básicos según el tema, los 256 de xterm y RGB).
-fn color(c: vt100::Color, default: Color32, dark: bool) -> Color32 {
-    const DARK: [u32; 16] = [0x1E1F24, 0xF0616D, 0x7FD88F, 0xF5C76A, 0x5EA6F8, 0xC792EA, 0x5FC8D8, 0xC9CCD3, 0x5C6370, 0xFF7A85, 0x9EE6A9, 0xFFD98A, 0x82BBFF, 0xD7A9F2, 0x86DCE8, 0xFFFFFF];
-    const LIGHT: [u32; 16] = [0x1D2127, 0xC4262E, 0x2E7D32, 0x9A6700, 0x1F5FCC, 0x8B3FD9, 0x0B7285, 0x6A717D, 0x5D6573, 0xE03A3E, 0x3A8F3F, 0xB57F00, 0x2F6FED, 0xA25BE6, 0x1592A6, 0x1D2127];
-    let rgb = |v: u32| Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8);
+/// Colores de la terminal: los 16 básicos salen del tema (`t.ansi`); los 256 de xterm y RGB, tal cual.
+fn color(c: vt100::Color, default: Color32, t: &Theme) -> Color32 {
     match c {
         vt100::Color::Default => default,
         vt100::Color::Rgb(r, g, b) => Color32::from_rgb(r, g, b),
-        vt100::Color::Idx(i) if i < 16 => rgb(if dark { DARK[i as usize] } else { LIGHT[i as usize] }),
+        vt100::Color::Idx(i) if i < 16 => t.ansi[i as usize],
         vt100::Color::Idx(i) if i < 232 => {
             let i = i - 16;
             let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };

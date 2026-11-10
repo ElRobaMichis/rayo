@@ -2,9 +2,10 @@
 //! bloques de código) y código con colores de sintaxis. Sin dependencias: un resaltador simple
 //! que entiende lo común a casi todos los lenguajes (palabras clave, textos, números, comentarios).
 
-use super::theme::{self, Theme};
+use super::design::{self, icon, radius, sp, stroke};
+use super::theme::Theme;
 use egui::text::{LayoutJob, TextFormat};
-use egui::{Color32, FontId, Ui, vec2};
+use egui::{Color32, FontId, Margin, Sense, Stroke, Ui, pos2, vec2};
 use egui_phosphor::regular as ic;
 
 /// Extensiones que se muestran con colores de sintaxis.
@@ -17,6 +18,21 @@ pub fn is_code(ext: &str) -> bool {
     )
 }
 
+/// Texto del cuerpo: `small` en el panel, `body` en Vista rápida (`large`).
+fn body_font(large: bool) -> FontId {
+    if large { design::text::body() } else { design::text::small() }
+}
+
+/// Código: `mono` en el panel, `mono_l` en Vista rápida.
+fn code_font(large: bool) -> FontId {
+    if large { design::text::mono_l() } else { design::text::mono() }
+}
+
+/// La misma fuente en Medium (negrita de Markdown: el único peso extra).
+fn medium(f: &FontId) -> FontId {
+    FontId::new(f.size, design::family_medium())
+}
+
 struct Palette {
     keyword: Color32,
     string: Color32,
@@ -26,12 +42,10 @@ struct Palette {
     text: Color32,
 }
 
+/// Los colores de sintaxis salen del tema (`t.syntax`: palabra clave, cadena, número, tipo).
 fn palette(t: &Theme) -> Palette {
-    let c = |d: u32, l: u32| {
-        let v = if t.dark { d } else { l };
-        Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
-    };
-    Palette { keyword: c(0xC792EA, 0x8B3FD9), string: c(0x9ECE6A, 0x2E7D32), number: c(0xF7A35C, 0xB35C00), comment: t.faint, kind: c(0x5FC8D8, 0x0B7285), text: t.text }
+    let [keyword, string, number, kind] = t.syntax;
+    Palette { keyword, string, number, comment: t.faint, kind, text: t.text }
 }
 
 const KEYWORDS: &[&str] = &[
@@ -134,9 +148,9 @@ fn code_line(job: &mut LayoutJob, line: &str, p: &Palette, font: &FontId, block:
 }
 
 /// Código con colores de sintaxis (archivos de código y bloques de Markdown).
-pub fn code(ui: &mut Ui, t: &Theme, text: &str, size: f32) {
+pub fn code(ui: &mut Ui, t: &Theme, text: &str, large: bool) {
     let p = palette(t);
-    let font = FontId::monospace(size - 1.0);
+    let font = code_font(large);
     let mut job = LayoutJob::default();
     let mut block = false;
     for (k, line) in text.lines().take(4000).enumerate() {
@@ -149,7 +163,7 @@ pub fn code(ui: &mut Ui, t: &Theme, text: &str, size: f32) {
 }
 
 /// Texto de una línea de Markdown con **negrita**, *cursiva*, `código` y [enlaces](url).
-fn inline_job(text: &str, t: &Theme, size: f32, color: Color32, base: FontId, wrap: f32) -> LayoutJob {
+fn inline_job(text: &str, t: &Theme, large: bool, color: Color32, base: FontId, wrap: f32) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.wrap.max_width = wrap;
     let plain = TextFormat::simple(base.clone(), color);
@@ -164,9 +178,9 @@ fn inline_job(text: &str, t: &Theme, size: f32, color: Color32, base: FontId, wr
         job.append(&rest[..i], 0.0, plain.clone());
         let after = &rest[i + m.len()..];
         let (close, fmt) = match m {
-            "**" | "__" => (m, TextFormat::simple(theme::semibold(size), color)),
+            "**" | "__" => (m, TextFormat::simple(medium(&base), color)),
             "`" => {
-                let mut f = TextFormat::simple(FontId::monospace(size - 1.0), t.accent);
+                let mut f = TextFormat::simple(code_font(large), t.text);
                 f.background = t.hover;
                 ("`", f)
             }
@@ -211,10 +225,61 @@ fn is_table_rule(line: &str) -> bool {
     l.contains('-') && l.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
 }
 
+/// Hairline a lo ancho (bajo un título, `---`). En `border_strong`: el `border` no se ve sobre el
+/// pozo de la vista previa.
+fn rule(ui: &mut Ui, t: &Theme, width: f32) {
+    let (r, _) = ui.allocate_exact_size(vec2(width, stroke::HAIR), Sense::hover());
+    ui.painter().hline(r.x_range(), r.center().y, Stroke::new(stroke::HAIR, t.border_strong));
+}
+
+/// Tabla: encabezado en Medium, hairline entre filas, 8 de margen a cada lado de cada celda. Ocupa
+/// todo el ancho (lo que sobra va a la última columna); si no entra, se desplaza a lo ancho.
+fn table(ui: &mut Ui, t: &Theme, header: &[String], rows: &[Vec<String>], large: bool, body: &FontId, id: usize) {
+    let ncol = rows.iter().map(Vec::len).chain([header.len()]).max().unwrap_or(0);
+    if ncol == 0 {
+        return;
+    }
+    let p = ui.painter().clone();
+    let cells = |r: &[String], font: &FontId| -> Vec<_> { (0..ncol).map(|c| p.layout_job(inline_job(r.get(c).map_or("", String::as_str), t, large, t.text, font.clone(), f32::INFINITY))).collect() };
+    let grid: Vec<Vec<_>> = std::iter::once(cells(header, &medium(body))).chain(rows.iter().map(|r| cells(r, body))).collect();
+    let pad = vec2(sp::S, sp::XS);
+    let mut col_w: Vec<f32> = (0..ncol).map(|c| grid.iter().map(|r| r[c].size().x).fold(0.0, f32::max) + 2.0 * pad.x).collect();
+    let row_h: Vec<f32> = grid.iter().map(|r| r.iter().map(|g| g.size().y).fold(0.0, f32::max) + 2.0 * pad.y).collect();
+    let inner = ui.available_width() - 2.0 * stroke::HAIR;
+    let total: f32 = col_w.iter().sum();
+    if total < inner {
+        col_w[ncol - 1] += inner - total;
+    }
+    let size = vec2(col_w.iter().sum(), row_h.iter().sum());
+    let line = Stroke::new(stroke::HAIR, t.border_strong);
+    egui::Frame::new().stroke(line).corner_radius(radius::M).show(ui, |ui| {
+        // En el pozo del panel, sin barra (flotaba al pie antes de que se viera la tabla): se sigue
+        // desplazando, y en Vista rápida (`large`) se ve entera.
+        let vis = if large { egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded } else { egui::scroll_area::ScrollBarVisibility::AlwaysHidden };
+        egui::ScrollArea::horizontal().id_salt(("md-table", id)).scroll_bar_visibility(vis).show(ui, |ui| {
+            let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+            let p = ui.painter();
+            let mut y = rect.top();
+            for (k, (row, h)) in grid.into_iter().zip(&row_h).enumerate() {
+                if k > 0 {
+                    p.hline(rect.x_range(), y, line);
+                }
+                let mut x = rect.left();
+                for (g, w) in row.into_iter().zip(&col_w) {
+                    p.galley(pos2(x + pad.x, y + pad.y), g, t.text);
+                    x += w;
+                }
+                y += h;
+            }
+        });
+    });
+}
+
 /// Markdown: títulos, listas (y tareas), tablas, citas, bloques de código, separadores y
-/// formato en línea.
-pub fn markdown(ui: &mut Ui, t: &Theme, text: &str, size: f32) {
-    let width = ui.available_width();
+/// formato en línea. Se ajusta al ancho de `ui` (el de su `max_rect`, nunca uno infinito).
+pub fn markdown(ui: &mut Ui, t: &Theme, text: &str, large: bool) {
+    let width = ui.max_rect().width();
+    let body = body_font(large);
     let lines: Vec<&str> = text.lines().take(3000).collect();
     let mut i = 0;
     while i < lines.len() {
@@ -223,19 +288,21 @@ pub fn markdown(ui: &mut Ui, t: &Theme, text: &str, size: f32) {
         // Bloque de código: todo junto, en un recuadro, con colores.
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             let fence = &trimmed[..3];
-            let mut body = Vec::new();
+            let mut code_body = Vec::new();
             i += 1;
             while i < lines.len() && !lines[i].trim_start().starts_with(fence) {
-                body.push(lines[i]);
+                code_body.push(lines[i]);
                 i += 1;
             }
             i += 1;
-            ui.add_space(2.0);
-            egui::Frame::new().fill(t.hover).corner_radius(6).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
-                ui.set_width(width - 20.0);
-                egui::ScrollArea::horizontal().id_salt(("md-code", i)).show(ui, |ui| code(ui, t, &body.join("\n"), size - 0.5));
+            ui.add_space(sp::XXS);
+            // Hundido con borde fino: también se distingue sobre el pozo de la vista previa.
+            let frame = egui::Frame::new().fill(t.sidebar).stroke(Stroke::new(stroke::HAIR, t.border_strong)).corner_radius(radius::M).inner_margin(Margin::symmetric(sp::M as i8, sp::S as i8));
+            frame.show(ui, |ui| {
+                ui.set_width(width - 2.0 * sp::M - 2.0 * stroke::HAIR);
+                egui::ScrollArea::horizontal().id_salt(("md-code", i)).show(ui, |ui| code(ui, t, &code_body.join("\n"), large));
             });
-            ui.add_space(4.0);
+            ui.add_space(sp::XS);
             continue;
         }
         // Tabla: | a | b | seguida de |---|---|.
@@ -247,43 +314,32 @@ pub fn markdown(ui: &mut Ui, t: &Theme, text: &str, size: f32) {
                 rows.push(table_cells(lines[i]));
                 i += 1;
             }
-            ui.add_space(2.0);
-            egui::Frame::new().stroke(egui::Stroke::new(1.0, t.border)).corner_radius(6).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
-                egui::ScrollArea::horizontal().id_salt(("md-table", i)).show(ui, |ui| {
-                    egui::Grid::new(("md-grid", i)).striped(true).spacing(vec2(16.0, 4.0)).show(ui, |ui| {
-                        for h in &header {
-                            ui.label(inline_job(h, t, size, t.text, theme::semibold(size), f32::INFINITY));
-                        }
-                        ui.end_row();
-                        for r in &rows {
-                            for c in r {
-                                ui.label(inline_job(c, t, size, t.text, FontId::proportional(size), f32::INFINITY));
-                            }
-                            ui.end_row();
-                        }
-                    });
-                });
-            });
-            ui.add_space(4.0);
+            ui.add_space(sp::XXS);
+            table(ui, t, &header, &rows, large, &body, i);
+            ui.add_space(sp::XS);
             continue;
         }
         i += 1;
         if trimmed.is_empty() {
-            ui.add_space(size * 0.5);
+            ui.add_space(sp::S);
             continue;
         }
         let level = trimmed.chars().take_while(|&c| c == '#').count();
         if (1..=6).contains(&level) && trimmed[level..].starts_with(' ') {
-            ui.add_space(if level <= 2 { 8.0 } else { 4.0 });
-            let fs = size + (4usize.saturating_sub(level)) as f32 * 2.5;
-            ui.label(inline_job(trimmed[level..].trim(), t, fs, t.text, theme::semibold(fs), width));
+            ui.add_space(if level <= 2 { sp::S } else { sp::XS });
+            // Dentro de la escala: H1 y H2 en `title`, el resto en `strong`.
+            let font = if level <= 2 { design::text::title() } else { design::text::strong() };
+            ui.label(inline_job(trimmed[level..].trim(), t, large, t.text, font, width));
             if level <= 2 {
-                ui.separator();
+                ui.add_space(sp::XS);
+                rule(ui, t, width);
             }
             continue;
         }
         if matches!(trimmed, "---" | "***" | "___") {
-            ui.separator();
+            ui.add_space(sp::XS);
+            rule(ui, t, width);
+            ui.add_space(sp::XS);
             continue;
         }
         let indent = (line.len() - trimmed.len()) as f32 * 5.0;
@@ -294,24 +350,25 @@ pub fn markdown(ui: &mut Ui, t: &Theme, text: &str, size: f32) {
         if let Some((mark, rest)) = list {
             let task = rest.strip_prefix("[ ] ").map(|r| (r, false)).or_else(|| rest.strip_prefix("[x] ").or_else(|| rest.strip_prefix("[X] ")).map(|r| (r, true)));
             ui.horizontal_top(|ui| {
-                ui.add_space(indent + 2.0);
+                ui.add_space(indent + sp::XXS);
                 // La marca en su columna; el texto se acomoda debajo de sí mismo.
                 let (mark, color, rest) = match task {
                     Some((r, done)) => (if done { ic::CHECK_SQUARE } else { ic::SQUARE }.to_string(), if done { t.accent } else { t.dim }, r),
                     None => (mark, t.dim, rest),
                 };
-                let (mr, _) = ui.allocate_exact_size(vec2(16.0, size + 4.0), egui::Sense::hover());
-                let font = if task.is_some() { theme::icon_font(size, false) } else { FontId::proportional(size) };
+                let (mr, _) = ui.allocate_exact_size(vec2(icon::M, body.size + sp::XS), egui::Sense::hover());
+                let font = if task.is_some() { design::icon_font(if large { icon::M } else { icon::S }) } else { body.clone() };
                 ui.painter().text(mr.center(), egui::Align2::CENTER_CENTER, mark, font, color);
                 let w = ui.available_width();
                 let done = task.is_some_and(|t| t.1);
-                let mut job = inline_job(rest, t, size, if done { t.dim } else { t.text }, FontId::proportional(size), w);
+                let mut job = inline_job(rest, t, large, if done { t.dim } else { t.text }, body.clone(), w);
                 if done {
                     for s in &mut job.sections {
-                        s.format.strikethrough = egui::Stroke::new(1.0, t.dim);
+                        s.format.strikethrough = Stroke::new(stroke::HAIR, t.dim);
                     }
                 }
-                ui.label(job);
+                // En una fila horizontal egui no parte el texto si no se le pide.
+                ui.add(egui::Label::new(job).wrap());
             });
             continue;
         }
@@ -323,13 +380,16 @@ pub fn markdown(ui: &mut Ui, t: &Theme, text: &str, size: f32) {
                 quote.push(more.trim().to_string());
                 i += 1;
             }
-            let r = egui::Frame::new().inner_margin(egui::Margin { left: 12, right: 0, top: 2, bottom: 2 }).show(ui, |ui| {
-                ui.label(inline_job(&quote.join(" "), t, size, t.dim, FontId::proportional(size), width - 16.0));
+            let margin = Margin { left: sp::M as i8, right: 0, top: sp::XXS as i8, bottom: sp::XXS as i8 };
+            let r = egui::Frame::new().inner_margin(margin).show(ui, |ui| {
+                ui.label(inline_job(&quote.join(" "), t, large, t.dim, body.clone(), width - sp::L));
             });
+            // Barra neutra: el azul queda para lo que pasa «ahora».
             let rr = r.response.rect;
-            ui.painter().line_segment([rr.left_top() + vec2(3.0, 0.0), rr.left_bottom() + vec2(3.0, 0.0)], egui::Stroke::new(3.0, t.accent.gamma_multiply(0.5)));
+            let x = vec2(sp::XXS, 0.0);
+            ui.painter().line_segment([rr.left_top() + x, rr.left_bottom() + x], Stroke::new(stroke::MARK, t.border_strong));
             continue;
         }
-        ui.label(inline_job(trimmed, t, size, t.text, FontId::proportional(size), width));
+        ui.label(inline_job(trimmed, t, large, t.text, body.clone(), width));
     }
 }

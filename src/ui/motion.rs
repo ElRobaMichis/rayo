@@ -3,12 +3,24 @@
 //! contenido entra deslizándose y los íconos aparecen sin parpadear.
 //!
 //! Reglas: nada hace esperar (el contenido ya está; el movimiento corre encima), todo se puede
-//! interrumpir (si el destino cambia a medio camino, sigue desde donde iba) y dura menos de
-//! 200 ms. Solo se piden cuadros mientras algo se mueve: quieto, Rayo no gasta nada. Si en
-//! Windows están desactivadas las animaciones, aquí también.
+//! interrumpir (si el destino cambia a medio camino, sigue desde donde iba) y dura una de las
+//! tres duraciones de `design::dur` (80, 120 o 180 ms), siempre con `ease_out`. Solo se piden
+//! cuadros mientras algo se mueve: quieto, Rayo no gasta nada. Si en Windows están desactivadas
+//! las animaciones, aquí también.
 
+use super::design::dur;
 use egui::{Context, Id};
 use std::sync::atomic::{AtomicBool, Ordering};
+
+// Tiempos que no son animación (esperas y cuánto se muestra algo), en segundos.
+/// Arrastrando algo sobre una pestaña: cuánto hay que quedarse para que se abra.
+pub const DWELL_TAB: f64 = 0.45;
+/// Puntero quieto sobre una carpeta: cuánto esperar antes de leerla por adelantado.
+pub const DWELL_PREFETCH: f64 = 0.08;
+/// Cuánto se ve un aviso.
+pub const TOAST: f64 = 2.5;
+/// Cuánto se ve una confirmación en el lugar («Copiado»).
+pub const FEEDBACK: f64 = 1.5;
 
 static ON: AtomicBool = AtomicBool::new(true);
 
@@ -107,8 +119,9 @@ struct Nav {
 /// carpeta tenga algo que mostrar (`ready`), así no se anima un "Cargando…".
 /// Devuelve (desplazamiento x, opacidad).
 pub fn nav(ctx: &Context, id: Id, path: &str, ready: bool) -> (f32, f32) {
-    const DUR: f32 = 0.18;
-    const DIST: f32 = 22.0;
+    // La receta única de entrada de contenido: 12 px y opacidad desde 0.3.
+    const DIST: f32 = 12.0;
+    const FROM: f32 = 0.3;
     if !on() {
         return (0.0, 1.0);
     }
@@ -138,11 +151,11 @@ pub fn nav(ctx: &Context, id: Id, path: &str, ready: bool) -> (f32, f32) {
     }
     ctx.data_mut(|d| d.insert_temp(id, n.clone()));
     let Some(start) = n.start else { return (0.0, 1.0) };
-    let k = ((t - start) as f32 / DUR).clamp(0.0, 1.0);
+    let k = ((t - start) as f32 / dur::SLOW).clamp(0.0, 1.0);
     if k >= 1.0 {
         return (0.0, 1.0);
     }
     ctx.request_repaint();
     let e = ease_out(k);
-    (n.sign * DIST * (1.0 - e), 0.25 + 0.75 * e)
+    (n.sign * DIST * (1.0 - e), FROM + (1.0 - FROM) * e)
 }

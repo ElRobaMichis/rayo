@@ -3,6 +3,7 @@
 use super::actions::Action;
 use super::chrome;
 use super::config::{Config, FavGroup, ViewMode};
+use super::design::{self, DialogW, dur, h, icon, sp, stroke, text};
 use super::preview::{self, PreviewItem, Textures};
 use super::state::*;
 use super::theme::{self, Theme};
@@ -46,6 +47,24 @@ enum Undo {
     NewFolder(String),
 }
 
+/// Un aviso flotante (4.12).
+struct ToastMsg {
+    text: String,
+    tone: design::Tone,
+    /// Tecla en línea al final («Ctrl Z»).
+    keys: &'static str,
+    /// Botón fantasma («Deshacer») y lo que hace.
+    action: Option<(String, Action)>,
+    at: f64,
+}
+
+impl ToastMsg {
+    /// 2,5 s; 4 s si es un error o trae una acción.
+    fn life(&self) -> f64 {
+        if self.tone == design::Tone::Danger || self.action.is_some() { 4.0 } else { super::motion::TOAST }
+    }
+}
+
 pub struct App {
     t: Theme,
     cfg: Config,
@@ -61,7 +80,9 @@ pub struct App {
     quicklook: bool,
     rename: Option<Rename>,
     group_edit: Option<(usize, String)>,
-    toast: Option<(String, f64)>,
+    toast: Option<ToastMsg>,
+    /// Si en el cuadro anterior había un diálogo modal (al abrirse uno se descarta el aviso).
+    modal_seen: bool,
     hwnd: Option<HWND>,
     watched_sig: u64,
     /// Cuándo se anotó por última vez en el diagnóstico que cambió cada carpeta.
@@ -371,6 +392,7 @@ impl App {
             rename: None,
             group_edit: None,
             toast: None,
+            modal_seen: false,
             hwnd,
             watched_sig: 0,
             diag_dirty: std::collections::HashMap::new(),
@@ -515,7 +537,7 @@ impl App {
             return;
         }
         self.enqueue_transfer(ctx, paths, &dest, mv);
-        self.toast(ctx, if mv { tp!(n, "app.moviendo_a", destino = fsx::file_name(&dest)) } else { tp!(n, "app.copiando_a", destino = fsx::file_name(&dest)) });
+        self.toast_ok(ctx, if mv { tp!(n, "app.moviendo_a", destino = fsx::file_name(&dest)) } else { tp!(n, "app.copiando_a", destino = fsx::file_name(&dest)) });
     }
 
     /// Lo común a pegar, arrastrar y enviar al otro panel: suelta la vista previa de lo que se
@@ -554,8 +576,27 @@ impl App {
     }
 
     fn toast(&mut self, ctx: &egui::Context, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), ctx.input(|i| i.time)));
-        ctx.request_repaint_after(std::time::Duration::from_millis(2600));
+        self.toast_tone(ctx, design::Tone::Neutral, msg);
+    }
+
+    /// Aviso de algo que salió bien (copias, renombrados).
+    fn toast_ok(&mut self, ctx: &egui::Context, msg: impl Into<String>) {
+        self.toast_tone(ctx, design::Tone::Ok, msg);
+    }
+
+    /// Aviso de algo que no se pudo hacer.
+    fn toast_err(&mut self, ctx: &egui::Context, msg: impl Into<String>) {
+        self.toast_tone(ctx, design::Tone::Danger, msg);
+    }
+
+    fn toast_tone(&mut self, ctx: &egui::Context, tone: design::Tone, msg: impl Into<String>) {
+        self.toast_with(ctx, ToastMsg { text: msg.into(), tone, keys: "", action: None, at: 0.0 });
+    }
+
+    fn toast_with(&mut self, ctx: &egui::Context, mut m: ToastMsg) {
+        m.at = ctx.input(|i| i.time);
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(m.life() + 0.1));
+        self.toast = Some(m);
     }
 
     fn save_cfg(&mut self) {
@@ -1242,7 +1283,7 @@ impl App {
                 } else if fsx::exists_like(&p) {
                     self.tab().reveal(&p);
                 } else {
-                    self.toast(ctx, tf!("app.no_existe", ruta = p));
+                    self.toast_err(ctx, tf!("app.no_existe", ruta = p));
                 }
             }
             Action::PathInput(text) => {
@@ -1263,12 +1304,12 @@ impl App {
                     // Una carpeta (o archivo) de la carpeta actual.
                     self.apply(ctx, Action::Navigate(rel));
                 } else if p.contains(['\\', '/']) && !raw.contains("://") {
-                    self.toast(ctx, tf!("app.no_existe", ruta = p));
+                    self.toast_err(ctx, tf!("app.no_existe", ruta = p));
                 } else {
                     // Un programa: como en «Ejecutar», abierto en esta carpeta.
                     match shell::run_typed(&raw, &dir) {
                         Some(what) => self.toast(ctx, tf!("app.abriendo_esta_carpeta", que = what)),
-                        None => self.toast(ctx, tf!("app.no_carpeta_ni_programa", texto = raw)),
+                        None => self.toast_err(ctx, tf!("app.no_carpeta_ni_programa", texto = raw)),
                     }
                 }
             }
@@ -1428,7 +1469,7 @@ impl App {
                             self.terminal = Some(term);
                             self.term_focus = true;
                         }
-                        Err(e) => self.toast(ctx, tf!("app.no_pudo", error = e)),
+                        Err(e) => self.toast_err(ctx, tf!("app.no_pudo", error = e)),
                     }
                 }
             }
@@ -1778,7 +1819,7 @@ impl App {
                         _ => *result.lock() = Some(t!("app.no_pudo_abrir_archivo").into()),
                     });
                 } else if !shell::open(&path) {
-                    self.toast(ctx, t!("app.no_pudo_abrir_archivo"));
+                    self.toast_err(ctx, t!("app.no_pudo_abrir_archivo"));
                 }
             }
             Action::OpenWith(p) => {
@@ -1808,7 +1849,7 @@ impl App {
                         // Como en el Explorador: queda listo para escribirle el nombre.
                         self.rename = Some(Rename { dir, old: name.clone(), buf: name, first_frame: true });
                     }
-                    Err(e) => self.toast(ctx, tf!("app.no_pudo_crear_archivo", error = e)),
+                    Err(e) => self.toast_err(ctx, tf!("app.no_pudo_crear_archivo", error = e)),
                 }
             }
             Action::Paste(dest) if self.read_only(ctx, &dest) => {}
@@ -1834,7 +1875,11 @@ impl App {
                             Ok(new_path) => {
                                 fsx::tags::moved(&old_path, &new_path);
                                 if let Some((a, b)) = views::ext_change(&r.old, &new).filter(|_| !std::path::Path::new(&fsx::long_path(&new_path)).is_dir()) {
-                                    self.toast(ctx, tf!("app.extension_cambiada", antes = a, despues = b));
+                                    // El atajo va como tecla en línea: fuera del texto traducido (lo que sigue a « · »).
+                                    let msg = tf!("app.extension_cambiada", antes = a, despues = b);
+                                    let text = msg.rsplit_once(" · ").map_or(msg.as_str(), |(m, _)| m).to_string();
+                                    let action = Some((t!("cmd.undo").to_string(), Action::RunCommand("undo".into())));
+                                    self.toast_with(ctx, ToastMsg { text, tone: design::Tone::Warn, keys: "Ctrl Z", action, at: 0.0 });
                                 }
                                 self.dirs.reload(&r.dir);
                                 self.retarget_cols(&old_path, &new_path);
@@ -1855,7 +1900,7 @@ impl App {
                                 let to = fsx::join(&r.dir, &new_rel);
                                 self.admin = Some((t!("app.windows_pide_permiso_administrador_renom").into(), crate::admin::AdminOp::Rename { from: old_path, to }));
                             }
-                            Err(e) => self.toast(ctx, tf!("app.no_pudo_renombrar_error", error = e)),
+                            Err(e) => self.toast_err(ctx, tf!("app.no_pudo_renombrar_error", error = e)),
                         }
                     }
                 }
@@ -1873,7 +1918,7 @@ impl App {
                 if shell::clipboard_set_files(&paths, cut) {
                     let n = paths.len();
                     self.cut = if cut { paths } else { Vec::new() };
-                    self.toast(ctx, if cut { tp!(n, "app.cortado_n") } else { tp!(n, "app.copiado_n") });
+                    self.toast_ok(ctx, if cut { tp!(n, "app.cortado_n") } else { tp!(n, "app.copiado_n") });
                 }
             }
             Action::Paste(dest) => {
@@ -1884,12 +1929,12 @@ impl App {
                     // Pegar en la misma carpeta de donde se copió crea una copia ("nombre (2)").
                     let n = files.len();
                     self.enqueue_transfer(ctx, files, &dest, cut);
-                    self.toast(ctx, if cut { tp!(n, "app.moviendo_n") } else { tp!(n, "app.copiando_n") });
+                    self.toast_ok(ctx, if cut { tp!(n, "app.moviendo_n") } else { tp!(n, "app.copiando_n") });
                 }
             }
             Action::CopyPath(paths) => {
                 ctx.copy_text(paths.join("\r\n"));
-                self.toast(ctx, t!("app.ruta_copiada"));
+                self.toast_ok(ctx, t!("app.ruta_copiada"));
             }
             Action::Delete(paths, true) => {
                 // Para siempre: primero se confirma (en el diálogo de Rayo).
@@ -1935,7 +1980,7 @@ impl App {
                 Err(e) if crate::admin::is_access_denied(&e) => {
                     self.admin = Some((t!("app.windows_pide_permiso_administrador_crear").into(), crate::admin::AdminOp::NewFolder { dir: dir.clone() }));
                 }
-                Err(e) => self.toast(ctx, tf!("app.no_pudo_crear_carpeta", error = e)),
+                Err(e) => self.toast_err(ctx, tf!("app.no_pudo_crear_carpeta", error = e)),
             },
             Action::Terminal(d) => shell::open_terminal(&d),
             Action::ShowInExplorer(p) => shell::reveal_in_explorer(&p),
@@ -1975,7 +2020,7 @@ impl App {
             }
             Action::Eject(letter) => match shell::eject(letter) {
                 Ok(()) => self.toast(ctx, tf!("app.puede_retirar_seguridad", letra = letter)),
-                Err(e) => self.toast(ctx, tf!("app.no_pudo_expulsar", letra = letter, error = e)),
+                Err(e) => self.toast_err(ctx, tf!("app.no_pudo_expulsar", letra = letter, error = e)),
             },
             Action::SetView(v) => {
                 self.cfg.view = v;
@@ -2202,7 +2247,7 @@ impl App {
                     self.push_undo(Undo::Copied(made));
                     self.toast(ctx, tp!(n, "app.enlaces_creados", tipos = kinds.join(", ")));
                 } else if let Some(e) = errors.first() {
-                    self.toast(ctx, tf!("app.no_pudo_crear_enlace", error = e));
+                    self.toast_err(ctx, tf!("app.no_pudo_crear_enlace", error = e));
                 }
                 return;
             }
@@ -2267,7 +2312,7 @@ impl App {
                         self.save_cfg();
                         self.toast(ctx, if on { t!("app.rayo_iniciara_windows_oculto_listo") } else { t!("app.rayo_ya_no_inicia_windows") });
                     }
-                    Err(e) => self.toast(ctx, tf!("app.no_pudo_cambiar_inicio_windows", error = e)),
+                    Err(e) => self.toast_err(ctx, tf!("app.no_pudo_cambiar_inicio_windows", error = e)),
                 }
                 return;
             }
@@ -2464,7 +2509,11 @@ impl App {
         let natives = natives.unwrap_or_default();
         let ppp = ctx.pixels_per_point();
         let wa = super::win::work_area_at(m.anchor.0, m.anchor.1);
-        let area = egui::Rect::from_min_max(egui::pos2(wa.left as f32 / ppp, wa.top as f32 / ppp), egui::pos2(wa.right as f32 / ppp, wa.bottom as f32 / ppp));
+        let mut area = egui::Rect::from_min_max(egui::pos2(wa.left as f32 / ppp, wa.top as f32 / ppp), egui::pos2(wa.right as f32 / ppp, wa.bottom as f32 / ppp));
+        if super::capture::inline_menus() {
+            // Capturando, el menú va dentro de la ventana: tiene que entrar en ella.
+            area = ctx.input(|i| i.viewport().inner_rect).unwrap_or(area);
+        }
         let anchor = egui::pos2(m.anchor.0 as f32 / ppp, m.anchor.1 as f32 / ppp);
 
         // Niveles: el menú y los submenús abiertos (cada uno con sus filas).
@@ -2478,7 +2527,7 @@ impl App {
             p0.x = (anchor.x - size0.x).max(area.left());
         }
         if p0.y + size0.y > area.bottom() {
-            p0.y = if anchor.y - size0.y >= area.top() { anchor.y - size0.y } else { (area.bottom() - size0.y).max(area.top()) };
+            p0.y = if anchor.y - size0.y >= area.top() { anchor.y - size0.y } else { (area.bottom() - 4.0 - size0.y).max(area.top()) };
         }
         levels.push((rows0, p0, size0));
         for (depth, &(k, row_top)) in m.subs.clone().iter().enumerate() {
@@ -2521,9 +2570,34 @@ impl App {
                 .with_position(pos)
                 .with_inner_size(size);
             let query = &mut m.query;
+            if super::capture::inline_menus() {
+                // Capturando: el mismo menú, dentro de la ventana principal (la captura no ve otras ventanas).
+                let inner = ctx.input(|i| i.viewport().inner_rect).unwrap_or(egui::Rect::ZERO);
+                let mut out = ctxmenu::LevelOut::default();
+                egui::Area::new(Id::new(("captura-menu", depth))).order(egui::Order::Foreground).fixed_pos(pos - inner.min.to_vec2()).show(ctx, |ui| {
+                    // Con sombra y esquinas redondeadas, como lo deja Windows (ver `win::style_menu_window`).
+                    design::popover_frame(&t).inner_margin(ctxmenu::PAD).show(ui, |ui| {
+                        let body = size - vec2(2.0 * ctxmenu::PAD + 2.0, 2.0 * ctxmenu::PAD + 2.0);
+                        ui.set_min_size(body);
+                        ui.set_max_size(body);
+                        let enter = if depth == 0 { ctxmenu::search_box(ui, &t, query, first) } else { false };
+                        egui::ScrollArea::vertical().id_salt(("captura-menu-scroll", depth)).auto_shrink([false, false]).show(ui, |ui| {
+                            out = ctxmenu::draw_rows(ui, &t, rows, open_sub, enter);
+                        });
+                    });
+                });
+                if let Some((k, rect)) = out.hover_sub {
+                    if m.subs.get(depth).map(|s| s.0) != Some(k) {
+                        m.subs.truncate(depth);
+                        m.subs.push((k, rect.top() - (pos.y - inner.min.y)));
+                    }
+                }
+                any_focus = true;
+                continue;
+            }
             let (out, focused, esc) = ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(&title), builder, |vctx, _class| {
                 let mut out = ctxmenu::LevelOut::default();
-                egui::CentralPanel::default().frame(Frame::new().fill(t.chrome).stroke(egui::Stroke::new(1.0, t.border)).inner_margin(ctxmenu::PAD)).show(vctx, |ui| {
+                egui::CentralPanel::default().frame(ctxmenu::frame(&t)).show(vctx, |ui| {
                     let enter = if depth == 0 { ctxmenu::search_box(ui, &t, query, first) } else { false };
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         out = ctxmenu::draw_rows(ui, &t, rows, open_sub, enter);
@@ -2594,35 +2668,27 @@ impl App {
                 crate::instance::shutdown();
                 std::process::exit(0);
             }
-            Err(e) => self.toast(ctx, tf!("app.no_pudo_instalar", error = e)),
+            Err(e) => self.toast_err(ctx, tf!("app.no_pudo_instalar", error = e)),
         }
     }
 
     /// La primera vez (sin instalar): instalar en el usuario o usarlo así, portátil.
     fn first_run_dialog(&mut self, ctx: &egui::Context) {
-        use egui::RichText;
         let t = self.t;
         let mut choice: Option<bool> = None;
-        egui::Modal::new(Id::new("first-run")).show(ctx, |ui| {
-            ui.set_width(500.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(egui_phosphor::fill::FOLDER).font(theme::icon_font(22.0, true)).color(t.accent));
-                ui.label(RichText::new(t!("app.bienvenido_rayo")).font(theme::semibold(18.0)).color(t.text));
-            });
-            ui.add_space(8.0);
-            ui.label(RichText::new(t!("app.instalas_queda_menu_inicio_aplicaciones")).color(t.dim));
-            ui.add_space(6.0);
-            ui.label(RichText::new(t!("app.sin_instalar_funciona_igual_como")).size(12.5).color(t.faint));
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(RichText::new(t!("app.instalar")).strong()).clicked() {
-                        choice = Some(true);
-                    }
-                    if ui.button(t!("app.usar_sin_instalar")).clicked() {
-                        choice = Some(false);
-                    }
-                });
+        design::dialog(ctx, &t, "first-run", DialogW::S, |ui| {
+            design::dialog_header(ui, &t, egui_phosphor::regular::FOLDER, design::Tone::Accent, t!("app.bienvenido_rayo"), None);
+            ui.add_space(sp::L);
+            design::dialog_body(ui, &t, t!("app.instalas_queda_menu_inicio_aplicaciones"));
+            ui.add_space(sp::S);
+            design::dialog_help(ui, &t, t!("app.sin_instalar_funciona_igual_como"));
+            design::dialog_footer(ui, |_| {}, |ui| {
+                if design::button(ui, &t, design::Kind::Primary, "", t!("app.instalar"), true).clicked() {
+                    choice = Some(true);
+                }
+                if design::button(ui, &t, design::Kind::Secondary, "", t!("app.usar_sin_instalar"), true).clicked() {
+                    choice = Some(false);
+                }
             });
         });
         match choice {
@@ -2641,29 +2707,21 @@ impl App {
 
     /// "¿Borrar para siempre?" Enter borra, Esc cancela.
     fn confirm_delete_dialog(&mut self, ctx: &egui::Context) {
-        use egui::RichText;
         let t = self.t;
         let Some(paths) = self.confirm_delete.clone() else { return };
         let what = if paths.len() == 1 { format!("«{}»", fsx::file_name(&paths[0])) } else { tf!("comun.elementos", n = paths.len()) };
         let (mut close, mut go) = (false, ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)));
-        let modal = egui::Modal::new(Id::new("confirm-delete")).show(ctx, |ui| {
-            ui.set_width(440.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(egui_phosphor::regular::WARNING).font(theme::icon_font(20.0, true)).color(t.danger));
-                ui.label(RichText::new(t!("app.borrar_para_siempre")).font(theme::semibold(17.0)).color(t.text));
-            });
-            ui.add_space(6.0);
-            ui.label(RichText::new(tf!("app.borrar_para_siempre_detalle", que = what)).color(t.dim));
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(RichText::new(format!("{}  {}", egui_phosphor::regular::TRASH, t!("comun.eliminar_definitivamente"))).color(t.danger).strong()).clicked() {
-                        go = true;
-                    }
-                    if ui.button(t!("comun.cancelar")).clicked() {
-                        close = true;
-                    }
-                });
+        let modal = design::dialog(ctx, &t, "confirm-delete", DialogW::S, |ui| {
+            design::dialog_header(ui, &t, egui_phosphor::regular::WARNING, design::Tone::Danger, t!("app.borrar_para_siempre"), None);
+            ui.add_space(sp::L);
+            design::dialog_body(ui, &t, &tf!("app.borrar_para_siempre_detalle", que = what));
+            design::dialog_footer(ui, |_| {}, |ui| {
+                if design::button(ui, &t, design::Kind::Danger, egui_phosphor::regular::TRASH, t!("app.boton_borrar_para_siempre"), true).clicked() {
+                    go = true;
+                }
+                if design::button(ui, &t, design::Kind::Secondary, "", t!("comun.cancelar"), true).clicked() {
+                    close = true;
+                }
             });
         });
         if modal.should_close() {
@@ -2704,59 +2762,64 @@ impl App {
 
     /// Elegir los botones de la barra (comandos del catálogo) y su orden.
     fn toolbar_dialog(&mut self, ctx: &egui::Context) {
-        use egui::RichText;
         let t = self.t;
         let mut close = false;
         let mut changed = false;
         let mut list = self.cfg.toolbar.clone();
-        let modal = egui::Modal::new(Id::new("customize-toolbar")).show(ctx, |ui| {
-            ui.set_width(460.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(egui_phosphor::regular::SLIDERS_HORIZONTAL).font(theme::icon_font(20.0, true)).color(t.accent));
-                ui.label(RichText::new(t!("cmd.customize_toolbar")).font(theme::semibold(17.0)).color(t.text));
-            });
-            ui.label(RichText::new(t!("app.barra_explicacion")).size(12.5).color(t.dim));
-            ui.add_space(8.0);
-            // Primero los elegidos (en su orden, con flechas), después el resto.
-            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                let chosen = list.clone();
-                for (k, id) in chosen.iter().enumerate() {
-                    let Some(c) = super::commands::ALL.iter().find(|c| c.id == id) else { continue };
-                    ui.horizontal(|ui| {
-                        let mut on = true;
-                        if ui.checkbox(&mut on, format!("{}  {}", c.icon, c.label())).changed() {
+        let shortcuts = self.cfg.shortcuts.clone();
+        let modal = design::dialog(ctx, &t, "customize-toolbar", DialogW::M, |ui| {
+            design::dialog_header(ui, &t, egui_phosphor::regular::SLIDERS_HORIZONTAL, design::Tone::Accent, t!("app.barra_titulo"), None);
+            ui.add_space(sp::L);
+            design::dialog_body(ui, &t, t!("app.barra_explicacion"));
+            ui.add_space(sp::M);
+            // Una tarjeta con dos grupos: los elegidos (en su orden, con flechas) y el resto.
+            design::card_frame(&t).inner_margin(egui::Margin::same(sp::XS as i8)).show(ui, |ui| {
+                egui::ScrollArea::vertical().max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let chosen = list.clone();
+                    if !chosen.is_empty() {
+                        design::menu_title(ui, &t, t!("app.barra_en_la_barra"));
+                    }
+                    for (k, id) in chosen.iter().enumerate() {
+                        let Some(c) = super::commands::ALL.iter().find(|c| c.id == id) else { continue };
+                        let keys = super::commands::shortcut_of(c.id, &shortcuts);
+                        let (toggle, up, down) = toolbar_row(ui, &t, Id::new(("tb-on", c.id)), true, c.icon, c.label(), &keys, Some((k > 0, k + 1 < chosen.len())));
+                        if toggle {
                             list.retain(|x| x != id);
                             changed = true;
+                        } else if up {
+                            list.swap(k, k - 1);
+                            changed = true;
+                        } else if down {
+                            list.swap(k, k + 1);
+                            changed = true;
                         }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add_enabled(k + 1 < chosen.len(), egui::Button::new(egui_phosphor::regular::ARROW_DOWN).small()).clicked() {
-                                list.swap(k, k + 1);
-                                changed = true;
-                            }
-                            if ui.add_enabled(k > 0, egui::Button::new(egui_phosphor::regular::ARROW_UP).small()).clicked() {
-                                list.swap(k, k - 1);
-                                changed = true;
-                            }
-                        });
-                    });
-                }
-                if !chosen.is_empty() {
-                    ui.separator();
-                }
-                for c in super::commands::ALL.iter().filter(|c| !chosen.iter().any(|x| x == c.id) && c.id != "customize_toolbar") {
-                    let mut on = false;
-                    if ui.checkbox(&mut on, format!("{}  {}", c.icon, c.label())).changed() {
-                        list.push(c.id.to_string());
-                        changed = true;
                     }
-                }
+                    if !chosen.is_empty() {
+                        design::menu_sep(ui, &t);
+                    }
+                    design::menu_title(ui, &t, t!("app.barra_disponibles"));
+                    for c in super::commands::ALL.iter().filter(|c| !chosen.iter().any(|x| x == c.id) && c.id != "customize_toolbar") {
+                        let keys = super::commands::shortcut_of(c.id, &shortcuts);
+                        if toolbar_row(ui, &t, Id::new(("tb-off", c.id)), false, c.icon, c.label(), &keys, None).0 {
+                            list.push(c.id.to_string());
+                            changed = true;
+                        }
+                    }
+                });
             });
-            ui.add_space(8.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(t!("comun.listo")).clicked() {
-                    close = true;
-                }
-            });
+            let n = list.len();
+            design::dialog_footer(
+                ui,
+                |ui| {
+                    ui.label(egui::RichText::new(tp!(n, "app.barra_botones", n = n)).font(text::small()).color(t.dim));
+                },
+                |ui| {
+                    if design::button(ui, &t, design::Kind::Primary, "", t!("comun.listo"), true).clicked() {
+                        close = true;
+                    }
+                },
+            );
         });
         if modal.should_close() {
             close = true;
@@ -2790,7 +2853,7 @@ impl App {
                 if let Some(c) = self.cfg.connections.get(i).cloned() {
                     self.conn_form = Some((Some(i), c, String::new(), true, e));
                 } else {
-                    self.toast(ctx, tf!("app.no_pudo", error = e));
+                    self.toast_err(ctx, tf!("app.no_pudo", error = e));
                 }
             }
         }
@@ -2798,92 +2861,82 @@ impl App {
 
     /// El formulario de una conexión.
     fn connection_dialog(&mut self, ctx: &egui::Context) {
-        use egui::RichText;
         use fsx::remote::Kind;
         let t = self.t;
         let Some((idx, mut c, mut pw, mut remember, err)) = self.conn_form.take() else { return };
         let (mut close, mut save, mut go) = (false, false, false);
-        let modal = egui::Modal::new(Id::new("connection")).show(ctx, |ui| {
-            ui.set_width(460.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(egui_phosphor::regular::PLUGS_CONNECTED).font(theme::icon_font(20.0, true)).color(t.accent));
-                ui.label(RichText::new(if idx.is_some() { t!("barra.editar_conexion") } else { t!("barra.nueva_conexion") }).font(theme::semibold(17.0)).color(t.text));
-            });
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                for (k, label) in [(Kind::Smb, "SMB"), (Kind::WebDav, "WebDAV"), (Kind::Sftp, "SFTP")] {
-                    if ui.selectable_label(c.kind == k, label).clicked() {
-                        c.kind = k;
-                    }
-                }
-            });
-            ui.add_space(6.0);
-            let row = |ui: &mut Ui, label: &str, w: &mut dyn FnMut(&mut Ui)| {
-                ui.horizontal(|ui| {
-                    ui.add_sized(vec2(110.0, 22.0), egui::Label::new(RichText::new(label).color(t.dim)));
-                    w(ui);
-                });
+        let modal = design::dialog(ctx, &t, "connection", DialogW::M, |ui| {
+            design::dialog_header(ui, &t, egui_phosphor::regular::PLUGS_CONNECTED, design::Tone::Accent, if idx.is_some() { t!("barra.editar_conexion") } else { t!("conexion.titulo_nueva") }, None);
+            ui.add_space(sp::L);
+            super::widgets::segmented(ui, &t, &mut c.kind, &[(Kind::Smb, "SMB", t!("conexion.ayuda_smb")), (Kind::WebDav, "WebDAV", t!("conexion.ayuda_webdav")), (Kind::Sftp, "SFTP", t!("conexion.ayuda_sftp"))]);
+            ui.add_space(sp::L);
+            // Campos: rótulo encima; servidor con puerto y usuario con contraseña, de a dos.
+            let field = |ui: &mut Ui, id: &str, glyph: &'static str, hint: &str, buf: &mut String| {
+                super::widgets::field(ui, &t, buf, super::widgets::Field::new(("conn", id), glyph, hint));
             };
-            row(ui, t!("conexion.nombre"), &mut |ui| {
-                ui.add(egui::TextEdit::singleline(&mut c.name).hint_text(t!("conexion.nombre_ejemplo")).desired_width(300.0));
-            });
-            row(ui, t!("conexion.servidor"), &mut |ui| {
-                ui.add(egui::TextEdit::singleline(&mut c.host).hint_text("nas.local / nube.ejemplo.com").desired_width(300.0));
-            });
+            let full = ui.available_width();
+            let port_w = 96.0;
+            let half = (full - sp::S) / 2.0;
+            ui.spacing_mut().item_spacing = vec2(sp::S, sp::M);
+            design::labeled(ui, &t, t!("conexion.nombre"), full, |ui| field(ui, "name", egui_phosphor::regular::TAG, t!("conexion.nombre_ejemplo"), &mut c.name));
             let mut port = if c.port == 0 { String::new() } else { c.port.to_string() };
-            row(ui, t!("conexion.puerto"), &mut |ui| {
-                ui.add(egui::TextEdit::singleline(&mut port).hint_text(match c.kind {
-                    Kind::Smb => "445",
-                    Kind::WebDav => "443",
-                    Kind::Sftp => "22",
-                }).desired_width(80.0));
-                if c.kind == Kind::WebDav {
-                    ui.checkbox(&mut c.secure, "HTTPS");
-                }
+            let port_hint = match c.kind {
+                Kind::Smb => "445",
+                Kind::WebDav => "443",
+                Kind::Sftp => "22",
+            };
+            ui.horizontal_top(|ui| {
+                design::labeled(ui, &t, t!("conexion.servidor"), full - port_w - sp::S, |ui| field(ui, "host", egui_phosphor::regular::GLOBE, "nas.local / nube.ejemplo.com", &mut c.host));
+                design::labeled(ui, &t, t!("conexion.puerto"), port_w, |ui| {
+                    let f = super::widgets::Field { no_clear: true, ..super::widgets::Field::new(("conn", "port"), egui_phosphor::regular::HASH, port_hint) };
+                    super::widgets::field(ui, &t, &mut port, f);
+                });
             });
             c.port = port.trim().parse().unwrap_or(0);
-            row(ui, t!("conexion.carpeta"), &mut |ui| {
-                ui.add(egui::TextEdit::singleline(&mut c.path).hint_text(match c.kind {
-                    Kind::Smb => "compartida\\fotos",
-                    Kind::WebDav => "/remote.php/dav/files/usuario",
-                    Kind::Sftp => "/home/usuario",
-                }).desired_width(300.0));
-            });
-            row(ui, t!("conexion.usuario"), &mut |ui| {
-                ui.add(egui::TextEdit::singleline(&mut c.user).desired_width(300.0));
-            });
-            row(ui, t!("conexion.contrasena"), &mut |ui| {
-                ui.add(egui::TextEdit::singleline(&mut pw).password(true).hint_text(t!("conexion.contrasena_vacia")).desired_width(300.0));
+            let path_hint = match c.kind {
+                Kind::Smb => "compartida\\fotos",
+                Kind::WebDav => "/remote.php/dav/files/usuario",
+                Kind::Sftp => "/home/usuario",
+            };
+            design::labeled(ui, &t, t!("conexion.carpeta"), full, |ui| field(ui, "path", egui_phosphor::regular::FOLDER, path_hint, &mut c.path));
+            ui.horizontal_top(|ui| {
+                design::labeled(ui, &t, t!("conexion.usuario"), half, |ui| field(ui, "user", egui_phosphor::regular::USER, "", &mut c.user));
+                design::labeled(ui, &t, t!("conexion.contrasena"), half, |ui| {
+                    let f = super::widgets::Field { password: true, no_clear: true, ..super::widgets::Field::new(("conn", "password"), egui_phosphor::regular::LOCK_SIMPLE, t!("conexion.contrasena_vacia")) };
+                    super::widgets::field(ui, &t, &mut pw, f);
+                });
             });
             ui.horizontal(|ui| {
-                ui.add_space(114.0);
-                ui.checkbox(&mut remember, t!("conexion.recordar"));
+                ui.spacing_mut().item_spacing.x = sp::L;
+                if c.kind == Kind::WebDav {
+                    design::checkbox(ui, &t, &mut c.secure, "HTTPS");
+                }
+                design::checkbox(ui, &t, &mut remember, t!("conexion.recordar"));
             });
+            ui.spacing_mut().item_spacing = vec2(sp::S, sp::XS);
             if c.kind == Kind::Sftp && !fsx::remote::sshfs_installed() {
-                ui.add_space(4.0);
-                ui.label(RichText::new(t!("remoto.falta_sshfs")).size(12.0).color(t.danger));
-                ui.hyperlink_to(RichText::new("SSHFS-Win (github.com/winfsp/sshfs-win)").size(12.0), "https://github.com/winfsp/sshfs-win/releases");
+                design::status_line(ui, &t, design::Tone::Warn, "", t!("remoto.falta_sshfs"));
+                if design::link(ui, &t, "SSHFS-Win (github.com/winfsp/sshfs-win)").clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab("https://github.com/winfsp/sshfs-win/releases"));
+                }
             } else if c.kind == Kind::WebDav {
-                ui.add_space(4.0);
-                ui.label(RichText::new(t!("conexion.webdav_nota")).size(12.0).color(t.faint));
+                design::dialog_help(ui, &t, t!("conexion.webdav_nota"));
             }
             if !err.is_empty() {
-                ui.add_space(4.0);
-                ui.label(RichText::new(format!("{}  {err}", egui_phosphor::regular::WARNING)).color(t.danger));
+                design::status_line(ui, &t, design::Tone::Danger, "", &err);
             }
-            ui.add_space(4.0);
-            ui.label(RichText::new(format!("{}  {}", egui_phosphor::regular::FOLDER_OPEN, c.unc())).size(12.0).color(t.faint));
-            ui.add_space(10.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let ok = !c.host.trim().is_empty();
-                if ui.add_enabled(ok, egui::Button::new(RichText::new(format!("{}  {}", egui_phosphor::regular::PLUGS_CONNECTED, t!("conexion.guardar_conectar"))).strong())).clicked() {
+            // A dónde va a quedar (la ruta UNC).
+            design::meta_row_path(ui, &t, t!("conexion.quedara_en"), &c.unc());
+            let ok = !c.host.trim().is_empty();
+            design::dialog_footer(ui, |_| {}, |ui| {
+                if design::button(ui, &t, design::Kind::Primary, egui_phosphor::regular::PLUGS_CONNECTED, t!("conexion.guardar_conectar"), ok).clicked() {
                     save = true;
                     go = true;
                 }
-                if ui.add_enabled(ok, egui::Button::new(t!("conexion.guardar"))).clicked() {
+                if design::button(ui, &t, design::Kind::Secondary, "", t!("conexion.guardar"), ok).clicked() {
                     save = true;
                 }
-                if ui.button(t!("comun.cancelar")).clicked() {
+                if design::button(ui, &t, design::Kind::Ghost, "", t!("comun.cancelar"), true).clicked() {
                     close = true;
                 }
             });
@@ -3048,32 +3101,29 @@ impl App {
 
     /// "Continuar como administrador": repite solo la operación que Windows negó.
     fn admin_dialog(&mut self, ctx: &egui::Context) {
-        use egui::RichText;
         let t = self.t;
         let Some((why, op)) = self.admin.clone() else { return };
         let mut close = false;
         let mut go = false;
-        let modal = egui::Modal::new(Id::new("admin-op")).show(ctx, |ui| {
-            ui.set_width(480.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(egui_phosphor::regular::SHIELD_CHECK).font(theme::icon_font(20.0, true)).color(t.accent));
-                ui.label(RichText::new(t!("app.hace_falta_permiso_administrador")).font(theme::semibold(17.0)).color(t.text));
+        let modal = design::dialog(ctx, &t, "admin-op", DialogW::S, |ui| {
+            design::dialog_header(ui, &t, egui_phosphor::regular::SHIELD_CHECK, design::Tone::Warn, t!("app.hace_falta_permiso_administrador"), None);
+            ui.add_space(sp::L);
+            design::dialog_body(ui, &t, why.as_str());
+            ui.add_space(sp::S);
+            // La operación, en una tarjeta: es lo que se va a repetir.
+            design::card_frame(&t).inner_margin(egui::Margin::symmetric(sp::M as i8, sp::S as i8)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.add(egui::Label::new(egui::RichText::new(op.describe()).font(text::body()).color(t.text)).wrap());
             });
-            ui.add_space(6.0);
-            ui.label(RichText::new(&why).color(t.dim));
-            ui.label(RichText::new(op.describe()).color(t.text));
-            ui.add_space(4.0);
-            ui.label(RichText::new(t!("app.windows_va_pedir_permiso_hara")).size(12.5).color(t.faint));
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(RichText::new(format!("{}  {}", egui_phosphor::regular::SHIELD_CHECK, t!("app.continuar_como_administrador"))).strong()).clicked() {
-                        go = true;
-                    }
-                    if ui.button(t!("comun.cancelar")).clicked() {
-                        close = true;
-                    }
-                });
+            ui.add_space(sp::S);
+            design::dialog_help(ui, &t, t!("app.windows_va_pedir_permiso_hara"));
+            design::dialog_footer(ui, |_| {}, |ui| {
+                if design::button(ui, &t, design::Kind::Primary, egui_phosphor::regular::SHIELD_CHECK, t!("app.continuar_como_administrador"), true).clicked() {
+                    go = true;
+                }
+                if design::button(ui, &t, design::Kind::Secondary, "", t!("comun.cancelar"), true).clicked() {
+                    close = true;
+                }
             });
         });
         if modal.should_close() {
@@ -3097,7 +3147,6 @@ impl App {
         }
     }
 
-    /// Activar o desactivar Rayo como explorador predeterminado, explicando qué cambia.
     /// Cambia el idioma al momento (None: el de Windows) y lo recuerda.
     fn set_language(&mut self, code: Option<String>) {
         crate::i18n::init(code.as_deref());
@@ -3107,49 +3156,54 @@ impl App {
         self.places = fsx::known_places();
     }
 
+    /// Activar o desactivar Rayo como explorador predeterminado, explicando qué cambia.
     fn default_dialog(&mut self, ctx: &egui::Context) {
-        use egui::RichText;
         let t = self.t;
         let on = self.cfg.default_explorer;
         let mut autostart = self.default_dlg.unwrap_or(true);
         let mut close = false;
         let mut apply = false;
-        let modal = egui::Modal::new(Id::new("default-explorer")).show(ctx, |ui| {
-            ui.set_width(560.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(egui_phosphor::regular::FOLDER_OPEN).font(theme::icon_font(20.0, true)).color(t.accent));
-                ui.label(RichText::new(if on { t!("app.rayo_tu_explorador_predeterminado") } else { t!("app.usar_rayo_como_explorador_predeterminado") }).font(theme::semibold(18.0)).color(t.text));
-            });
-            ui.add_space(8.0);
-            let line = |ui: &mut Ui, s: &str| {
-                ui.label(RichText::new(format!("•  {s}")).color(t.dim));
+        let ask_autostart = !on && !self.cfg.start_with_windows;
+        let modal = design::dialog(ctx, &t, "default-explorer", DialogW::M, |ui| {
+            design::dialog_header(ui, &t, egui_phosphor::regular::FOLDER_OPEN, design::Tone::Accent, if on { t!("app.rayo_tu_explorador_predeterminado") } else { t!("app.usar_rayo_como_explorador_predeterminado") }, None);
+            ui.add_space(sp::L);
+            // Lo que cambia (marca en acento) y lo que no (raya tenue).
+            let line = |ui: &mut Ui, glyph: &str, color: egui::Color32, s: &str| {
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = sp::S;
+                    ui.label(egui::RichText::new(glyph).font(design::icon_font(icon::M)).color(color));
+                    design::dialog_body(ui, &t, s);
+                });
             };
             if on {
-                ui.label(RichText::new(t!("app.volver_explorador_windows_todo_queda")).color(t.dim));
+                design::dialog_body(ui, &t, t!("app.volver_explorador_windows_todo_queda"));
             } else {
-                ui.label(RichText::new(t!("app.abriran_rayo")).color(t.text));
-                line(ui, t!("app.carpetas_unidades_archivos_zip_abras"));
-                line(ui, t!("app.mostrar_carpeta_navegador_abrir_ubicacio"));
-                ui.add_space(6.0);
-                ui.label(RichText::new(t!("app.siguen_explorador_panel_control_papelera")).color(t.dim));
-                ui.add_space(6.0);
-                ui.label(RichText::new(t!("app.solo_cambia_tu_usuario_no")).size(12.5).color(t.faint));
-                ui.add_space(8.0);
-                if !self.cfg.start_with_windows {
-                    ui.checkbox(&mut autostart, t!("app.iniciar_rayo_windows_oculto_mostrar"));
-                }
+                ui.label(egui::RichText::new(t!("app.abriran_rayo")).font(text::body()).color(t.text));
+                ui.add_space(sp::XS);
+                line(ui, egui_phosphor::regular::CHECK, t.accent, t!("app.carpetas_unidades_archivos_zip_abras"));
+                line(ui, egui_phosphor::regular::CHECK, t.accent, t!("app.mostrar_carpeta_navegador_abrir_ubicacio"));
+                line(ui, egui_phosphor::regular::MINUS, t.faint, t!("app.siguen_explorador_panel_control_papelera"));
+                ui.add_space(sp::M);
+                design::dialog_help(ui, &t, t!("app.solo_cambia_tu_usuario_no"));
             }
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(if on { t!("app.volver_explorador_windows") } else { t!("app.activar") }).clicked() {
+            design::dialog_footer(
+                ui,
+                |ui| {
+                    if ask_autostart {
+                        // El porqué (para «Mostrar en carpeta» desde el primer momento), en el tooltip.
+                        let r = design::checkbox(ui, &t, &mut autostart, t!("app.iniciar_rayo_windows"));
+                        design::tip(r, &t, t!("app.iniciar_rayo_windows_oculto_mostrar"));
+                    }
+                },
+                |ui| {
+                    if design::button(ui, &t, design::Kind::Primary, "", if on { t!("app.volver_explorador_windows") } else { t!("app.activar") }, true).clicked() {
                         apply = true;
                     }
-                    if ui.button(t!("comun.cancelar")).clicked() {
+                    if design::button(ui, &t, design::Kind::Secondary, "", t!("comun.cancelar"), true).clicked() {
                         close = true;
                     }
-                });
-            });
+                },
+            );
         });
         if modal.should_close() {
             close = true;
@@ -3177,7 +3231,7 @@ impl App {
                     if !on {
                         let _ = crate::integration::disable(&crate::integration::REAL);
                     }
-                    self.toast(ctx, tf!("app.no_pudo_cambiar", error = e));
+                    self.toast_err(ctx, tf!("app.no_pudo_cambiar", error = e));
                 }
             }
         }
@@ -3262,7 +3316,7 @@ impl App {
                         self.retarget_cols(&cur, &back);
                         self.toast(ctx, tf!("app.deshecho_vuelve_llamarse", nuevo = new, viejo = old));
                     }
-                    Err(e) => self.toast(ctx, tf!("app.no_pudo_deshacer", error = e)),
+                    Err(e) => self.toast_err(ctx, tf!("app.no_pudo_deshacer", error = e)),
                 }
             }
             Undo::Batch { dir, pairs } => {
@@ -3271,7 +3325,7 @@ impl App {
                 self.dirs.reload(&dir);
                 match errors.first() {
                     None => self.toast(ctx, tf!("app.deshecho_nombres_restaurados", n = done.len())),
-                    Some(e) => self.toast(ctx, tf!("app.no_pudieron_restaurar", n = errors.len(), error = e)),
+                    Some(e) => self.toast_err(ctx, tf!("app.no_pudieron_restaurar", n = errors.len(), error = e)),
                 }
             }
             Undo::Recycle(paths, since) => {
@@ -3373,13 +3427,9 @@ impl App {
         let hits: Vec<String> = list.iter().filter(|e| matches(&e.name)).map(|e| e.name.clone()).collect();
         let mut close = false;
         let mut apply = false;
-        let modal = egui::Modal::new(Id::new("select-pattern")).show(ctx, |ui| {
-            ui.set_width(420.0);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(egui_phosphor::regular::ASTERISK).font(theme::icon_font(18.0, false)).color(t.accent));
-                ui.label(egui::RichText::new(t!("app.seleccionar_patron")).font(theme::semibold(16.0)));
-            });
-            ui.add_space(8.0);
+        let modal = design::dialog(ctx, &t, "select-pattern", DialogW::S, |ui| {
+            design::dialog_header(ui, &t, egui_phosphor::regular::ASTERISK, design::Tone::Accent, t!("app.seleccionar_patron"), None);
+            ui.add_space(sp::L);
             let mut f = super::widgets::Field::new("patron", egui_phosphor::regular::ASTERISK, t!("app.jpg_png_texto"));
             f.tone = if !pats.is_empty() && hits.is_empty() { super::widgets::Tone::Bad } else { super::widgets::Tone::Normal };
             let r = super::widgets::field(ui, &t, pat, f).edit;
@@ -3387,27 +3437,30 @@ impl App {
                 r.request_focus();
                 *first = false;
             }
-            ui.add_space(4.0);
-            let (msg, color) = if pats.is_empty() {
-                (t!("app.usa_cualquier_texto_letra_separa").to_string(), t.faint)
+            ui.add_space(sp::XS);
+            if pats.is_empty() {
+                design::dialog_help(ui, &t, t!("app.usa_cualquier_texto_letra_separa"));
             } else if hits.is_empty() {
-                (t!("app.ninguno_coincide").to_string(), t.danger)
+                design::status_line(ui, &t, design::Tone::Danger, "", t!("app.ninguno_coincide"));
             } else {
-                (if hits.len() == 1 { t!("app.1_coincide").to_string() } else { tf!("app.coinciden", n = hits.len()) }, t.dim)
-            };
-            ui.label(egui::RichText::new(msg).size(12.0).color(color));
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                super::widgets::toggle_chip(ui, &t, add, egui_phosphor::regular::PLUS, t!("app.sumar_ya_seleccionado"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if super::widgets::primary_button(ui, &t, "", t!("app.seleccionar"), !hits.is_empty()).clicked() || (!hits.is_empty() && ui.input(|i| i.key_pressed(Key::Enter))) {
+                // Cuántos coinciden (en 440 no entra junto a la casilla del pie).
+                let n = if hits.len() == 1 { t!("app.1_coincide").to_string() } else { tf!("app.coinciden", n = hits.len()) };
+                ui.label(egui::RichText::new(n).font(text::small()).color(t.dim));
+            }
+            design::dialog_footer(
+                ui,
+                |ui| {
+                    design::checkbox(ui, &t, add, t!("app.sumar_ya_seleccionado"));
+                },
+                |ui| {
+                    if design::button(ui, &t, design::Kind::Primary, "", t!("app.seleccionar"), !hits.is_empty()).clicked() || (!hits.is_empty() && ui.input(|i| i.key_pressed(Key::Enter))) {
                         apply = true;
                     }
-                    if super::widgets::secondary_button(ui, &t, "", t!("comun.cancelar")).clicked() {
+                    if design::button(ui, &t, design::Kind::Secondary, "", t!("comun.cancelar"), true).clicked() {
                         close = true;
                     }
-                });
-            });
+                },
+            );
         });
         if apply {
             let mut names = hits;
@@ -3516,10 +3569,10 @@ impl App {
         let avg = hist.iter().map(|h| h.1).sum::<f32>() / fps.max(1) as f32;
         let t = self.t;
         egui::Area::new(Id::new("perf")).order(egui::Order::Tooltip).anchor(egui::Align2::RIGHT_TOP, vec2(-12.0, 92.0)).show(ctx, |ui| {
-            Frame::new().fill(t.chrome).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(8).inner_margin(10).show(ui, |ui| {
-                ui.label(egui::RichText::new(tf!("app.cuadros_s", fps = fps)).font(theme::semibold(14.0)).color(t.accent));
-                ui.label(egui::RichText::new(tf!("app.cpu_cuadro_ms_peor_ms", promedio = format!("{:.2}", avg), peor = format!("{:.2}", worst))).size(12.0).color(t.text));
-                ui.label(egui::RichText::new(tf!("app.presupuesto_144_hz_ms", ms = format!("{:.2}", 1000.0 / 144.0))).size(11.0).color(t.dim));
+            design::popover_frame(&t).inner_margin(egui::Margin::same(sp::M as i8)).show(ui, |ui| {
+                ui.label(egui::RichText::new(tf!("app.cuadros_s", fps = fps)).font(text::mono_l()).color(t.accent));
+                ui.label(egui::RichText::new(tf!("app.cpu_cuadro_ms_peor_ms", promedio = format!("{:.2}", avg), peor = format!("{:.2}", worst))).font(text::mono()).color(t.text));
+                ui.label(egui::RichText::new(tf!("app.presupuesto_144_hz_ms", ms = format!("{:.2}", 1000.0 / 144.0))).font(text::mono_s()).color(t.dim));
             });
         });
         ctx.request_repaint();
@@ -3574,7 +3627,7 @@ impl App {
         let ti = self.pane[p];
 
         let tabs_rect = egui::Rect::from_min_size(rect.min, vec2(rect.width(), chrome::TITLE_H));
-        ui.painter().rect_filled(tabs_rect, 0.0, t.chrome);
+        ui.painter().rect_filled(tabs_rect, egui::CornerRadius::ZERO, t.chrome);
         let mut tui = ui.new_child(egui::UiBuilder::new().max_rect(tabs_rect));
         let show = self.tabs_of(p);
         // El panel de la derecha (sin vista previa) tiene arriba los botones de la ventana.
@@ -3582,12 +3635,12 @@ impl App {
         let reserve = if rightmost && !self.cfg.show_preview { chrome::WINDOW_BUTTONS_W } else { 0.0 };
         let plus_end = chrome::tab_bar(&mut tui, &t, &self.tabs, &self.cfg.tab_groups, &show, ti, reserve, actions);
         // Lo que sobra a la derecha de las pestañas es barra de título (arrastrar, doble clic).
-        let free = egui::Rect::from_min_max(egui::pos2(plus_end + 4.0, tabs_rect.top()), egui::pos2(tabs_rect.right() - reserve, tabs_rect.bottom()));
+        let free = egui::Rect::from_min_max(egui::pos2(plus_end + sp::XS, tabs_rect.top()), egui::pos2(tabs_rect.right() - reserve, tabs_rect.bottom()));
         if free.width() > 4.0 && p < 2 {
             self.caption.push(free);
         }
 
-        let bar_h = if self.tabs[ti].tool.is_some() { 0.0 } else { 46.0 };
+        let bar_h = if self.tabs[ti].tool.is_some() { 0.0 } else { h::TOOLBAR };
         let bar_rect = egui::Rect::from_min_size(egui::pos2(rect.left(), tabs_rect.bottom()), vec2(rect.width(), bar_h));
         let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
         let search_id = Id::new(("search", self.tabs[ti].id));
@@ -3596,16 +3649,17 @@ impl App {
             let enabled: Vec<bool> = self.cfg.toolbar.iter().map(|id| super::commands::ALL.iter().find(|c| c.id == id).is_some_and(|c| super::commands::available(c, &target))).collect();
             chrome::toolbar(&mut bui, &t, &self.cfg, &mut self.tabs[ti], search_id, &enabled, &self.cfg.shortcuts, actions);
         }
-        ui.painter().line_segment([bar_rect.left_bottom(), bar_rect.right_bottom()], egui::Stroke::new(1.0, t.border));
+        ui.painter().line_segment([bar_rect.left_bottom(), bar_rect.right_bottom()], egui::Stroke::new(stroke::HAIR, t.border));
         // Con dos paneles, una línea de acento marca el panel activo.
         if self.cfg.split && focused {
-            ui.painter().line_segment([rect.left_top() + vec2(0.0, 1.0), rect.right_top() + vec2(0.0, 1.0)], egui::Stroke::new(2.0, t.accent));
+            ui.painter().line_segment([rect.left_top() + vec2(0.0, 1.0), rect.right_top() + vec2(0.0, 1.0)], egui::Stroke::new(stroke::MARK, t.accent));
         }
 
         let content = egui::Rect::from_min_max(egui::pos2(rect.left(), bar_rect.bottom() + 1.0), rect.max);
         let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(content).layout(egui::Layout::top_down(egui::Align::Min)));
         cui.set_clip_rect(content);
-        self.pane_content(&mut cui, ti, focused, now, actions);
+        // Con el teclado en la terminal, la selección de la lista pasa a gris (un solo foco).
+        self.pane_content(&mut cui, ti, focused && !self.term_focus, now, actions);
     }
 
     /// Contenido de una pestaña: resultados de búsqueda, columnas, detalles o cuadrícula.
@@ -3632,7 +3686,7 @@ impl App {
             } else {
                 None
             };
-            ui.add_space(8.0);
+            ui.add_space(sp::S);
             let query = tab.search.text.clone();
             let s = &mut tab.search;
             views::search_results(ui, &mut cx, s.results.as_ref(), &mut s.cursor, &mut s.scroll_to_cursor, indexing, &query, (s.sort, s.desc));
@@ -3678,13 +3732,12 @@ impl App {
                     hs = HScroll { n: n_cols, offset: hs.offset, from: hs.offset, to: target, start: now_s };
                 }
                 hs.n = n_cols;
-                const HDUR: f32 = 0.2;
-                let k = ((now_s - hs.start) as f32 / HDUR).clamp(0.0, 1.0);
+                // Ya con la curva aplicada (y pide cuadros mientras dura).
+                let k = super::motion::since(ui.ctx(), hs.start, dur::SLOW);
                 let animating = k < 1.0;
                 let mut area = egui::ScrollArea::horizontal().id_salt(("hcols", tab.id)).auto_shrink([false, false]).stick_to_right(!animating);
                 if animating {
-                    area = area.horizontal_scroll_offset(hs.from + (hs.to - hs.from) * super::motion::ease_out(k));
-                    ui.ctx().request_repaint();
+                    area = area.horizontal_scroll_offset(hs.from + (hs.to - hs.from) * k);
                 }
                 let out = area.show(ui, |ui| {
                     ui.horizontal_top(|ui| {
@@ -3711,15 +3764,16 @@ impl App {
                                 shown = path.clone();
                             }
                             ui.data_mut(|d| d.insert_temp(lid, (shown, start, changed)));
-                            let a = super::motion::since(ui.ctx(), start, 0.16);
-                            let inner = rect.shrink2(vec2(0.0, 4.0)).translate(vec2(8.0 * (1.0 - a), 0.0));
+                            // La receta de entrada de contenido: 12 px y opacidad 0.3 a 1.
+                            let a = super::motion::since(ui.ctx(), start, dur::SLOW);
+                            let inner = rect.shrink2(vec2(0.0, sp::XS)).translate(vec2(sp::M * (1.0 - a), 0.0));
                             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
                             child.set_clip_rect(rect.intersect(ui.clip_rect()));
                             if a < 1.0 {
-                                child.multiply_opacity(0.35 + 0.65 * a);
+                                child.multiply_opacity(0.3 + 0.7 * a);
                             }
                             views::column(&mut child, &mut cx, ci, &mut tab.cols[ci], focused && ci == active, ColumnData { entries: &entries, loading, error: error.as_deref() });
-                            ui.painter().line_segment([rect.right_top(), rect.right_bottom()], egui::Stroke::new(1.0, t.border));
+                            ui.painter().line_segment([rect.right_top(), rect.right_bottom()], egui::Stroke::new(stroke::HAIR, t.border));
                         }
                     });
                 });
@@ -3769,6 +3823,10 @@ impl App {
 
     fn focused_item(&mut self) -> Option<PreviewItem> {
         let tab = &self.tabs[self.cur];
+        // Una herramienta (papelera, duplicados…) no tiene elemento enfocado: nada de lo de otra pestaña.
+        if tab.tool.is_some() {
+            return None;
+        }
         if tab.search.active() {
             let row = tab.search.results.as_ref()?.row(tab.search.cursor)?;
             let path = row.path();
@@ -3831,9 +3889,14 @@ impl App {
         self.text_cache.as_ref().and_then(|(_, t)| t.clone())
     }
 
-    fn status(&mut self) -> (String, String, bool) {
+    /// Barra de estado: (izquierda, git: rama y cambios, derecha, indexando).
+    fn status(&mut self) -> (String, Option<(String, usize)>, String, bool) {
         let tab = &self.tabs[self.cur];
-        let left = if tab.search.active() {
+        let mut git = None;
+        // En una herramienta, nada de la carpeta de otra pestaña: lo suyo (el resumen de duplicados).
+        let left = if let Some(tool) = &tab.tool {
+            tool.status().unwrap_or_default()
+        } else if tab.search.active() {
             String::new()
         } else {
             let col = tab.active_col().clone();
@@ -3860,12 +3923,10 @@ impl App {
                     s.push_str(&format!(" {}", t!("previa.calculando")));
                 }
             }
-            // En un repositorio de git: la rama y cuántos cambios hay.
+            // En un repositorio de git: la rama y cuántos cambios hay (el glifo se pinta aparte:
+            // la fuente mono no lo tiene).
             if let Some(repo) = fsx::git::root_of(&col.path).and_then(|r| fsx::git::repo(&r)) {
-                s.push_str(&format!("  ·  {} {}", egui_phosphor::regular::GIT_BRANCH, repo.branch));
-                if !repo.files.is_empty() {
-                    s.push_str(&format!("  ·  {}", tp!(repo.files.len(), "app.cambios_git")));
-                }
+                git = Some((repo.branch.clone(), repo.files.len()));
             }
             s
         };
@@ -3884,16 +3945,29 @@ impl App {
             parts.join("  ")
         } else {
             let mode = self.mgr.mode();
-            let how = if mode.starts_with("USN") { tf!("app.al_dia_por", modo = crate::index::mode_label(&mode)) } else { t!("app.vigilando_cambios").to_string() };
+            // Solo «USN»: el detalle (servicio / administrador) está en el tooltip de la barra.
+            let how = if mode.starts_with("USN") { tf!("app.al_dia_por", modo = "USN") } else { t!("app.vigilando_cambios").to_string() };
             tf!("app.estado_archivos", n = fsx::thousands(total), como = how)
         };
-        (left, right, busy)
+        (left, git, right, busy)
     }
 }
 
+#[path = "capture_steps.rs"]
+mod capture_steps;
+
 impl eframe::App for App {
+    /// Capturando: la entrada simulada (clics en menús, texto en campos; ver `capture`).
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        super::capture::inject(raw_input);
+    }
+
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        super::capture::tick(&ctx);
+        for step in super::capture::due(&ctx) {
+            self.capture_step(&ctx, &step);
+        }
         self.dirs.frame += 1;
         if matches!(self.dirs.frame, 1 | 2 | 10 | 60 | 300) {
             crate::index::mem_log(&format!("ui: cuadro {}", self.dirs.frame));
@@ -4001,7 +4075,8 @@ impl eframe::App for App {
                 (String::new(), "recientes")
             } else if let Some(c) = fsx::tags::query_color(&tab.search.text) {
                 (String::new(), fsx::tags::COLORS[c].0)
-            } else if tab.tool.is_some() {
+            } else if tab.tool.is_some() || !collection.is_empty() {
+                // Una colección se marca sola (no la carpeta desde donde se abrió).
                 (String::new(), "")
             } else {
                 (tab.path().to_string(), "")
@@ -4030,9 +4105,11 @@ impl eframe::App for App {
                     chrome::SidebarIn { t: &t, cfg: &mut self.cfg, places: &self.places, drives: &drives, current: &current_path, special, group_edit: &mut self.group_edit, collection: &collection, shelf: &self.shelf, clouds: &self.clouds },
                     &mut actions,
                 );
-                // Botones al pie.
+                // Botones al pie: a 10 del borde, así el centro del ícono (x=24) queda alineado
+                // con los íconos de las filas de la barra lateral.
+                // Centrado en el pie que deja libre `chrome::sidebar`.
                 let r = ui.max_rect();
-                let br = egui::Rect::from_min_size(egui::pos2(r.left() + 10.0, r.bottom() - 36.0), vec2(30.0, 28.0));
+                let br = egui::Rect::from_min_size(egui::pos2(r.left() + 10.0, r.bottom() - chrome::SIDEBAR_FOOT / 2.0 - h::CTL / 2.0), vec2(h::CTL, h::CTL));
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(br));
                 let icon = if t.dark { egui_phosphor::regular::SUN } else { egui_phosphor::regular::MOON };
                 if chrome::icon_btn(&mut child, &t, icon, true, false, t!("app.cambiar_tema")).clicked() {
@@ -4041,19 +4118,25 @@ impl eframe::App for App {
             });
 
         // ---- barra de estado
-        let (left, right, busy) = self.status();
+        let (left, git, right, busy) = self.status();
         let mode = self.mgr.mode();
         let jobs_now = self.xfer.snapshot();
-        Panel::bottom("status").exact_size(26.0).show_separator_line(false).frame(Frame::new().fill(t.chrome)).show(ui, |ui| {
+        Panel::bottom("status").exact_size(h::HEAD).show_separator_line(false).frame(Frame::new().fill(t.chrome)).show(ui, |ui| {
+            // Hairline arriba: separa la barra del contenido.
+            let r = ui.max_rect();
+            ui.painter().hline(r.x_range(), r.top() + stroke::HAIR / 2.0, egui::Stroke::new(stroke::HAIR, t.border));
             // Copias en curso: barra de progreso compacta (clic para ver la lista).
             if !jobs_now.is_empty() {
                 let r = ui.max_rect();
-                let area = egui::Rect::from_min_size(egui::pos2(r.center().x - 170.0, r.top() + 4.0), vec2(340.0, r.height() - 8.0));
+                let area = egui::Rect::from_min_size(egui::pos2(r.center().x - 170.0, r.top() + sp::XXS), vec2(340.0, r.height() - 2.0 * sp::XXS));
                 if chrome::transfer_chip(ui, &t, area, &jobs_now) {
                     self.show_transfers ^= true;
                 }
             }
             chrome::status_bar(ui, &t, &left, &right, busy, &mode, &mut actions);
+            if let Some((branch, changes)) = &git {
+                git_status(ui, &t, &left, branch, *changes);
+            }
         });
         let service_msg = self.service_result.lock().take();
         if let Some(msg) = service_msg {
@@ -4071,7 +4154,7 @@ impl eframe::App for App {
             let multi = {
                 let tab = &self.tabs[self.cur];
                 let col = tab.active_col();
-                if !tab.search.active() && col.multi.len() > 1 {
+                if !tab.search.active() && tab.tool.is_none() && col.multi.len() > 1 {
                     let path = col.path.clone();
                     let names = col.multi.clone();
                     let list = self.view_of(&path);
@@ -4089,7 +4172,7 @@ impl eframe::App for App {
                 .show(ui, |ui| {
                     let r = ui.max_rect();
                     let band = egui::Rect::from_min_size(r.min, vec2(r.width(), chrome::TITLE_H));
-                    ui.painter().line_segment([band.left_bottom(), r.left_bottom()], egui::Stroke::new(1.0, t.border));
+                    ui.painter().line_segment([band.left_bottom(), r.left_bottom()], egui::Stroke::new(stroke::HAIR, t.border));
                     // Arriba, la franja de título (con los botones de la ventana a la derecha).
                     let free = egui::Rect::from_min_max(band.min, egui::pos2(band.right() - chrome::WINDOW_BUTTONS_W, band.bottom()));
                     if free.width() > 4.0 {
@@ -4124,15 +4207,20 @@ impl eframe::App for App {
                 if er.dragged() {
                     self.term_h = (self.term_h - er.drag_delta().y).clamp(120.0, 900.0);
                 }
-                ui.painter().line_segment([area.left_top(), area.right_top()], egui::Stroke::new(1.0, if self.term_focus { t.accent } else { t.border }));
-                let bar = egui::Rect::from_min_size(area.min + vec2(0.0, 1.0), vec2(area.width(), 26.0));
-                ui.painter().rect_filled(bar, 0.0, t.chrome);
-                ui.painter().text(egui::pos2(bar.left() + 10.0, bar.center().y), egui::Align2::LEFT_CENTER, format!("{}  {}", egui_phosphor::regular::TERMINAL_WINDOW, t!("app.terminal")), egui::FontId::proportional(12.0), t.dim);
-                let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(egui::pos2(bar.right() - 70.0, bar.top()), bar.max)).layout(egui::Layout::right_to_left(egui::Align::Center)));
-                if chrome::icon_btn(&mut bui, &t, egui_phosphor::regular::X, true, false, t!("app.cerrar_terminal")).clicked() {
+                ui.painter().line_segment([area.left_top(), area.right_top()], egui::Stroke::new(stroke::HAIR, if self.term_focus { t.accent } else { t.border }));
+                // Barra de la terminal: micro-etiqueta a la izquierda, botones mini a la derecha.
+                let bar = egui::Rect::from_min_size(area.min + vec2(0.0, 1.0), vec2(area.width(), h::HEAD));
+                ui.painter().rect_filled(bar, egui::CornerRadius::ZERO, t.chrome);
+                let p = ui.painter();
+                p.text(egui::pos2(bar.left() + sp::M + icon::M / 2.0, bar.center().y), egui::Align2::CENTER_CENTER, egui_phosphor::regular::TERMINAL_WINDOW, design::icon_font(icon::M), t.dim);
+                design::micro(p, egui::pos2(bar.left() + sp::M + icon::M + sp::S, bar.center().y), egui::Align2::LEFT_CENTER, t!("app.terminal"), t.faint);
+                let buttons = egui::Rect::from_min_max(egui::pos2(bar.right() - 2.0 * h::CHIP - 2.0 * sp::XS, bar.top()), egui::pos2(bar.right() - sp::XS, bar.bottom()));
+                let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(buttons).layout(egui::Layout::right_to_left(egui::Align::Center)));
+                bui.spacing_mut().item_spacing.x = sp::XS;
+                if design::tip_keys(design::icon_button(&mut bui, &t, egui_phosphor::regular::X, design::IconBtn::mini()), &t, t!("app.cerrar_terminal"), "Ctrl `").clicked() {
                     actions.push(Action::ToggleTerminal);
                 }
-                if chrome::icon_btn(&mut bui, &t, egui_phosphor::regular::FOLDER_OPEN, true, false, t!("app.terminal_ir_carpeta")).clicked() {
+                if design::tip(design::icon_button(&mut bui, &t, egui_phosphor::regular::FOLDER_OPEN, design::IconBtn::mini()), &t, t!("app.terminal_ir_carpeta")).clicked() {
                     let dir = self.tabs[self.cur].active_col().path.clone();
                     if let Some(term) = self.terminal.as_mut() {
                         term.cd(&dir);
@@ -4169,10 +4257,10 @@ impl eframe::App for App {
                 self.render_pane(&mut pui, p, now, &mut actions);
             }
             if panes > 1 {
-                ui.painter().line_segment([egui::pos2(mx, full.top()), egui::pos2(mx, full.bottom())], egui::Stroke::new(1.0, t.border));
+                ui.painter().line_segment([egui::pos2(mx, full.top()), egui::pos2(mx, full.bottom())], egui::Stroke::new(stroke::HAIR, t.border));
             }
             if panes == 4 {
-                ui.painter().line_segment([egui::pos2(full.left(), my), egui::pos2(full.right(), my)], egui::Stroke::new(1.0, t.border));
+                ui.painter().line_segment([egui::pos2(full.left(), my), egui::pos2(full.right(), my)], egui::Stroke::new(stroke::HAIR, t.border));
             }
         });
 
@@ -4182,10 +4270,17 @@ impl eframe::App for App {
                 let n = drag.0.len();
                 let label = if n == 1 { fsx::file_name(&drag.0[0]) } else { tf!("comun.elementos", n = n) };
                 let (shift, ctrl) = ctx.input(|i| (i.modifiers.shift, i.modifiers.ctrl));
-                let hint = if ctrl { t!("app.copiar") } else if shift { t!("app.mover") } else { "" };
-                egui::Area::new(Id::new("drag-label")).order(egui::Order::Tooltip).fixed_pos(pos + vec2(14.0, 10.0)).interactable(false).show(&ctx, |ui| {
-                    Frame::new().fill(t.chrome).stroke(egui::Stroke::new(1.0, t.accent)).corner_radius(6).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
-                        ui.label(egui::RichText::new(format!("{}  {label}{hint}", egui_phosphor::regular::FILES)).size(12.5).color(t.text));
+                let mode = if ctrl { t!("app.modo_copiar") } else if shift { t!("app.modo_mover") } else { "" };
+                egui::Area::new(Id::new("drag-label")).order(egui::Order::Tooltip).fixed_pos(pos + vec2(sp::L, sp::M)).interactable(false).show(&ctx, |ui| {
+                    design::tooltip_frame(&t).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = sp::S;
+                            ui.label(egui::RichText::new(egui_phosphor::regular::FILES).font(design::icon_font(icon::M)).color(t.dim));
+                            ui.label(egui::RichText::new(label).font(text::small()).color(t.text));
+                            if !mode.is_empty() {
+                                design::chip(ui, &t, design::Chip::new(mode, design::Tone::Neutral));
+                            }
+                        });
                     });
                 });
             }
@@ -4262,8 +4357,8 @@ impl eframe::App for App {
                     c.cursor = None;
                 }
                 match errors.len() {
-                    0 => self.toast(&ctx, t!("app.renombrado_listo")),
-                    n => self.toast(&ctx, tf!("app.no_pudieron_renombrar", n = n, error = errors[0])),
+                    0 => self.toast_ok(&ctx, t!("app.renombrado_listo")),
+                    n => self.toast_err(&ctx, tf!("app.no_pudieron_renombrar", n = n, error = errors[0])),
                 }
             }
         }
@@ -4419,16 +4514,44 @@ impl eframe::App for App {
         }
 
         // ---- aviso flotante
-        if let Some((msg, at)) = self.toast.clone() {
+        // Al abrirse un diálogo modal, el aviso pendiente se descarta (quedaría encima del velo).
+        let modal = ctx.memory(|m| m.top_modal_layer()).is_some();
+        if modal && !self.modal_seen {
+            self.toast = None;
+        }
+        self.modal_seen = modal;
+        // Abajo al centro, 16 sobre la barra de estado. Entra con opacidad y 8 px hacia arriba;
+        // sale con opacidad. Ambos en BASE.
+        if let Some(m) = &self.toast {
+            let (at, life) = (m.at, m.life());
             let el = ctx.input(|i| i.time) - at;
-            if el > 2.5 {
+            if el > life + dur::BASE as f64 {
                 self.toast = None;
             } else {
-                egui::Area::new(Id::new("toast")).order(egui::Order::Tooltip).anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -44.0)).show(&ctx, |ui| {
-                    Frame::new().fill(t.chrome).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(8).inner_margin(egui::Margin::symmetric(14, 8)).show(ui, |ui| {
-                        ui.label(egui::RichText::new(msg).color(t.text));
-                    });
-                });
+                let enter = super::motion::since(&ctx, at, dur::BASE);
+                let alpha = if el > life {
+                    1.0 - super::motion::since(&ctx, at + life, dur::BASE)
+                } else {
+                    // Despertar justo cuando tiene que empezar a irse.
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(life - el));
+                    enter
+                };
+                let y = -(h::HEAD + sp::L) + sp::S * (1.0 - enter);
+                let spec = design::Toast { text: &m.text, tone: m.tone, keys: m.keys, action: m.action.as_ref().map_or("", |a| a.0.as_str()) };
+                let hit = egui::Area::new(Id::new("toast"))
+                    .order(egui::Order::Tooltip)
+                    .fade_in(false)
+                    .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, y))
+                    .show(&ctx, |ui| {
+                        ui.multiply_opacity(alpha);
+                        design::toast(ui, &t, spec)
+                    })
+                    .inner;
+                if hit {
+                    if let Some((_, a)) = self.toast.take().and_then(|m| m.action) {
+                        actions.push(a);
+                    }
+                }
             }
         }
 
@@ -4504,6 +4627,67 @@ struct HScroll {
     from: f32,
     to: f32,
     start: f64,
+}
+
+/// Una fila de «Personalizar barra» (alto `h::ROW`): casilla en la columna del ícono, ícono del
+/// comando en `dim`, nombre y atajo en mono. En las elegidas, con el puntero encima, flechas mini
+/// en lugar del atajo. Devuelve (tocar la casilla, subir, bajar).
+#[allow(clippy::too_many_arguments)]
+fn toolbar_row(ui: &mut Ui, t: &Theme, id: Id, on: bool, glyph: &str, label: &str, keys: &str, arrows: Option<(bool, bool)>) -> (bool, bool, bool) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h::ROW), Sense::hover());
+    let r = ui.interact(rect, id, Sense::click());
+    let pill = rect.shrink2(vec2(0.0, 1.0));
+    let hovered = ui.rect_contains_pointer(pill);
+    let p = ui.painter().clone();
+    let hov = design::hover_amount(ui.ctx(), id, hovered);
+    design::state_fill(&p, t, pill, design::radius::M, hov, r.is_pointer_button_down_on(), design::Sel::None);
+    let cy = pill.center().y;
+    let mut x = pill.left() + sp::S;
+    design::check_icon(&p, t, egui::Rect::from_center_size(egui::pos2(x + icon::M / 2.0, cy), vec2(icon::M, icon::M)), on);
+    x += icon::M + sp::S;
+    p.text(egui::pos2(x + icon::M / 2.0, cy), egui::Align2::CENTER_CENTER, glyph, design::icon_font(icon::M), t.dim);
+    x += icon::M + sp::S;
+    let mut right = pill.right() - sp::S;
+    let (mut up, mut down) = (false, false);
+    match arrows {
+        Some((can_up, can_down)) if hovered => {
+            // De derecha a izquierda: bajar, subir.
+            let at = |k: f32| egui::Rect::from_center_size(egui::pos2(pill.right() - sp::XS - h::CHIP / 2.0 - k * (h::CHIP + sp::XS), cy), vec2(h::CHIP, h::CHIP));
+            let o = |enabled| design::IconBtn { enabled, ..design::IconBtn::mini() };
+            down = design::icon_button_at(ui, t, at(0.0), id.with("down"), egui_phosphor::regular::ARROW_DOWN, o(can_down)).clicked();
+            up = design::icon_button_at(ui, t, at(1.0), id.with("up"), egui_phosphor::regular::ARROW_UP, o(can_up)).clicked();
+            right = at(1.0).left() - sp::S;
+        }
+        _ if !keys.is_empty() => right = design::keys_text(&p, t, egui::pos2(right, cy), keys).left() - sp::S,
+        _ => {}
+    }
+    let mut job = egui::text::LayoutJob::single_section(label.to_string(), egui::TextFormat::simple(text::body(), t.text));
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(0.0));
+    let g = p.layout_job(job);
+    p.galley(egui::pos2(x, cy - g.size().y / 2.0), g, t.text);
+    (r.clicked(), up, down)
+}
+
+/// La rama de git en la barra de estado, después del texto de la izquierda: `· [ícono] main · 3 cambios`.
+/// El glifo va con la fuente de íconos (la mono no lo tiene) y el texto en mono chica, `dim`.
+fn git_status(ui: &mut Ui, t: &Theme, left: &str, branch: &str, changes: usize) {
+    let r = ui.max_rect();
+    let p = ui.painter();
+    let cy = r.center().y;
+    let sep = "  ·  ";
+    let mut x = r.left() + sp::M;
+    if !left.is_empty() {
+        x += design::text_width(p, left, text::mono_s());
+        x = design::mono_label(p, egui::pos2(x, cy), egui::Align2::LEFT_CENTER, sep, t.dim).right();
+    }
+    p.text(egui::pos2(x + icon::S / 2.0, cy), egui::Align2::CENTER_CENTER, egui_phosphor::regular::GIT_BRANCH, design::icon_font(icon::S), t.dim);
+    x += icon::S + sp::XS;
+    let mut s = branch.to_string();
+    if changes > 0 {
+        s.push_str(sep);
+        s.push_str(&tp!(changes, "app.cambios_git"));
+    }
+    design::mono_label(p, egui::pos2(x, cy), egui::Align2::LEFT_CENTER, &s, t.dim);
 }
 
 type LockReport = Arc<Mutex<Option<(Vec<String>, bool)>>>;

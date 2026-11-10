@@ -4,22 +4,15 @@ use super::theme::Theme;
 use egui::Color32;
 use egui_phosphor::regular as ic;
 
-const fn rgb(c: u32) -> Color32 {
-    Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
-}
-
+/// Glifo y color del tipo. El color es para el glifo grande (mosaico, vista previa); en las filas
+/// de 16 este glifo es el respaldo del ícono de Windows (contorno, en `dim`); solo la carpeta
+/// conserva su color (ver `views::file_icon`).
 pub fn for_entry(t: &Theme, is_dir: bool, ext: &str) -> (&'static str, Color32) {
     if is_dir {
         return (ic::FOLDER, t.folder);
     }
-    let purple = rgb(0xB57CFF);
-    let pink = rgb(0xF472B6);
-    let red = rgb(0xF0605D);
-    let orange = rgb(0xF59E42);
-    let amber = rgb(0xE9B949);
-    let green = rgb(0x3FC07A);
-    let teal = rgb(0x2EC4B6);
-    let blue = rgb(0x5B9BFF);
+    // Colores de contenido del tema (`t.kinds`), en su orden.
+    let [purple, pink, red, orange, amber, green, teal, blue] = t.kinds;
     let gray = t.dim;
     match ext {
         "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "heic" | "heif" | "avif" | "ico" | "jfif" | "raw" | "cr2" | "nef" | "arw" | "dng" => (ic::IMAGE, purple),

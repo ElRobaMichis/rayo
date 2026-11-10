@@ -31,7 +31,7 @@ pub fn init(loader: Arc<ThumbLoader>) {
     CACHE.with(|c| c.borrow_mut().loader = Some(loader));
 }
 
-/// Tipos cuyo ícono cambia de un archivo a otro.
+/// Tipos cuyo ícono cambia de un archivo a otro (`ext` en minúsculas).
 fn own_icon(ext: &str) -> bool {
     matches!(ext, "exe" | "lnk" | "url" | "ico" | "cur" | "ani" | "scr" | "cpl" | "msc" | "appref-ms" | "website")
 }
@@ -49,7 +49,7 @@ pub fn get(path: &str, ext: &str, size: u32) -> Option<(TextureHandle, f32)> {
         let mut c = c.borrow_mut();
         if let Some((t, at)) = c.ready.get(&key) {
             let t = t.clone()?;
-            let a = c.ctx.as_ref().map_or(1.0, |ctx| super::motion::since(ctx, *at, 0.18));
+            let a = c.ctx.as_ref().map_or(1.0, |ctx| super::motion::since(ctx, *at, super::design::dur::SLOW));
             return Some((t, a));
         }
         if let Some((tries, at)) = c.failed.get(&key) {
@@ -102,8 +102,8 @@ pub fn deliver(ctx: &egui::Context, key: &ThumbKey, img: Option<Rgba>) {
 }
 
 /// Píxeles a pedir para dibujar un ícono de `points` puntos: exactamente los de la pantalla
-/// (16 a escala 100 %, 20 a 125 %…), así Windows entrega el ícono hecho para ese tamaño y no
-/// hace falta agrandarlo ni achicarlo.
+/// (16 a escala 100 %, 20 a 125 %…), así llega el dibujo hecho para ese tamaño si el ícono lo
+/// trae, sin agrandarlo ni achicarlo.
 pub fn px_for(ctx: &egui::Context, points: f32) -> u32 {
     ((points * ctx.pixels_per_point()).round() as u32).clamp(8, 256)
 }

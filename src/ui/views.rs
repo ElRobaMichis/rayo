@@ -1,6 +1,7 @@
 //! Vistas de contenido: columnas (estilo Finder), detalles y resultados de búsqueda.
 
 use super::actions::Action;
+use super::design::{self, Chip, Sel, Tone, dur, h, icon, radius, sp, stroke, text};
 use super::icons;
 use super::config::ColumnWidths;
 use super::state::{Col, Results};
@@ -12,7 +13,24 @@ use egui::{Align2, Color32, FontId, Id, Painter, Pos2, Rect, Sense, Ui, pos2, ve
 use egui_phosphor::regular as ic;
 use std::sync::Arc;
 
-pub const ROW_H: f32 = 26.0;
+pub const ROW_H: f32 = h::ROW;
+/// Margen del pill de una fila a cada lado (4.1).
+const ROW_INSET: f32 = sp::XS;
+/// Borde izquierdo del ícono de una fila y comienzo del texto.
+const ICON_X: f32 = ROW_INSET + sp::S;
+const TEXT_X: f32 = ICON_X + icon::M + sp::S;
+/// Aire a la izquierda (y a la derecha, si se alinea ahí) de los valores de una columna.
+const CELL_X: f32 = sp::M;
+
+/// Opacidad de contenido: atenuado (oculto o cortado, 50 %) o fundido de algo que llega.
+fn alpha(c: Color32, a: f32) -> Color32 {
+    c.gamma_multiply(a)
+}
+
+/// Opacidad del contenido atenuado (oculto o cortado): en claro, 0,6 (al 50 % el gris queda en 3,4:1).
+fn faded(t: &Theme) -> f32 {
+    if t.dark { 0.5 } else { 0.6 }
+}
 
 /// Contexto compartido al dibujar.
 pub struct Cx<'a> {
@@ -28,8 +46,7 @@ pub struct Cx<'a> {
     /// Hay dos paneles (para "enviar al otro panel").
     pub split: bool,
     /// Dónde está ahora el resaltado de la selección, que se desliza de fila en fila (si hay uno
-    /// solo seleccionado). Las filas no dibujan el suyo y sus letras cambian de color según cuánto
-    /// las cubre.
+    /// solo seleccionado). Las filas no dibujan el suyo (ni hover donde las cubre).
     pub pill: Option<Rect>,
     /// Lista con carpetas desplegadas: las filas van con sangría y muestran solo su nombre.
     pub tree: Option<&'a std::collections::BTreeSet<String>>,
@@ -94,7 +111,9 @@ fn accept_drop(cx: &mut Cx, resp: &egui::Response, dest: &str) {
 /// Marca visual de "se puede soltar aquí".
 fn drop_highlight(ui: &Ui, t: &Theme, resp: &egui::Response, rect: Rect) {
     if drag_hovering(resp) {
-        ui.painter().rect_stroke(rect.shrink(2.0), 6.0, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
+        let r = rect.shrink(sp::XXS);
+        ui.painter().rect_filled(r, radius::M, t.accent_soft);
+        design::focus_ring(ui.painter(), t, r, radius::M);
         // Una carpeta bajo el puntero tiene prioridad sobre el fondo.
         let pass = ui.ctx().cumulative_pass_nr();
         ui.ctx().data_mut(|d| d.insert_temp(Id::new("row-drop-hover"), pass));
@@ -114,31 +133,33 @@ fn background_drop(ui: &Ui, cx: &mut Cx, bg: &egui::Response, rect: Rect, dir: &
 
 /// Indicador del filtro escrito sobre la carpeta (Esc lo borra).
 pub fn filter_chip(ui: &mut Ui, t: &Theme, filter: &str) {
-    ui.add_space(4.0);
+    ui.add_space(sp::XS);
     ui.horizontal(|ui| {
-        ui.add_space(10.0);
-        egui::Frame::new().fill(t.accent.gamma_multiply(0.15)).corner_radius(6).inner_margin(egui::Margin::symmetric(8, 3)).show(ui, |ui| {
-            ui.label(egui::RichText::new(format!("{}  {}", ic::FUNNEL, tf!("lista.filtrando", filtro = filter))).size(12.0).color(t.accent));
-        });
-        ui.label(egui::RichText::new(t!("lista.esc_quitar")).size(11.0).color(t.faint));
+        // Alineado con la columna de íconos de las filas.
+        ui.add_space(ICON_X);
+        let txt = tf!("lista.filtrando", filtro = filter);
+        design::chip(ui, t, Chip { icon: ic::FUNNEL, ..Chip::new(&txt, Tone::Accent) });
+        ui.label(egui::RichText::new(t!("lista.esc_quitar")).font(text::small()).color(t.faint));
     });
-    ui.add_space(2.0);
+    ui.add_space(sp::XXS);
 }
 
 /// Indicador de la vista plana (clic en la X para salir).
 pub fn flat_chip(ui: &mut Ui, t: &Theme, n: usize, loading: bool, actions: &mut Vec<Action>) {
-    ui.add_space(4.0);
+    ui.add_space(sp::XS);
     ui.horizontal(|ui| {
-        ui.add_space(10.0);
-        egui::Frame::new().fill(t.accent.gamma_multiply(0.15)).corner_radius(6).inner_margin(egui::Margin::symmetric(8, 3)).show(ui, |ui| {
-            let txt = if loading { t!("lista.vista_plana_juntando_archivos").to_string() } else { format!("{}  {}", ic::STACK, tp!(n, "lista.vista_plana_archivos_todas_subcarpetas", n = fsx::thousands(n))) };
-            ui.label(egui::RichText::new(txt).size(12.0).color(t.accent));
-            if ui.add(egui::Button::new(egui::RichText::new(ic::X).size(11.0).color(t.accent)).frame(false)).on_hover_text(t!("lista.salir_vista_plana_esc")).clicked() {
-                actions.push(Action::ToggleFlat);
-            }
-        });
+        ui.add_space(ICON_X);
+        let txt = if loading { t!("lista.vista_plana_juntando_archivos").to_string() } else { tp!(n, "lista.vista_plana_archivos_todas_subcarpetas", n = fsx::thousands(n)) };
+        let icon = if loading { "" } else { ic::STACK };
+        let out = design::chip(ui, t, Chip { icon, closable: true, ..Chip::new(&txt, Tone::Accent) });
+        // El atajo va como tecla en línea (el texto todavía lo trae entre paréntesis).
+        let tip = t!("lista.salir_vista_plana_esc");
+        design::tip_keys(out.response, t, tip.trim_end_matches("(Esc)").trim_end(), "Esc");
+        if out.closed {
+            actions.push(Action::ToggleFlat);
+        }
     });
-    ui.add_space(2.0);
+    ui.add_space(sp::XXS);
 }
 
 pub struct Rename {
@@ -155,10 +176,26 @@ pub fn elided(p: &Painter, text: &str, font: FontId, color: Color32, max_w: f32)
     p.layout_job(job)
 }
 
+/// Nombre de la vista plana («Hakone\foto-1.txt»): la subcarpeta en `faint` y el nombre en
+/// `color`. Si no entra, la subcarpeta se acorta por el medio (el nombre manda).
+fn flat_name(p: &Painter, t: &Theme, name: &str, color: Color32, a: f32, max_w: f32) -> Arc<egui::Galley> {
+    let Some(i) = name.rfind('\\') else { return elided(p, name, text::body(), color, max_w) };
+    theme::want_cjk(name);
+    let (dir, file) = (&name[..=i], &name[i + 1..]);
+    let room = max_w - design::text_width(p, file, text::body());
+    let dir = if room >= design::text_width(p, "…\\", text::body()) { design::elide_middle(p, dir, text::body(), room) } else { String::new() };
+    let mut job = LayoutJob::default();
+    job.append(&dir, 0.0, TextFormat::simple(text::body(), alpha(t.faint, a)));
+    job.append(file, 0.0, TextFormat::simple(text::body(), color));
+    job.wrap = TextWrapping::truncate_at_width(max_w.max(10.0));
+    p.layout_job(job)
+}
+
 /// Texto con la parte que coincide resaltada.
-fn highlighted(p: &Painter, text: &str, needle: &str, t: &Theme, color: Color32, max_w: f32) -> Arc<egui::Galley> {
+/// `on_sel`: la fila está seleccionada (en claro, la coincidencia va en `accent_hover`, T4).
+fn highlighted(p: &Painter, text: &str, needle: &str, t: &Theme, color: Color32, max_w: f32, on_sel: bool) -> Arc<egui::Galley> {
     theme::want_cjk(text);
-    let font = FontId::proportional(13.5);
+    let font = text::body();
     let mut job = LayoutJob::default();
     // La coincidencia se busca en la clave (sin acentos) y se traduce a bytes del original.
     let (key, map) = crate::index::store::search_key_with_map(text);
@@ -166,8 +203,8 @@ fn highlighted(p: &Painter, text: &str, needle: &str, t: &Theme, color: Color32,
     match pos {
         Some((s, e)) if s < e => {
             job.append(&text[..s], 0.0, TextFormat::simple(font.clone(), color));
-            let mut hl = TextFormat::simple(theme::semibold(13.5), t.accent);
-            hl.background = t.accent.gamma_multiply(0.18);
+            let mut hl = TextFormat::simple(text::strong(), if on_sel && !t.dark { t.accent_hover } else { t.accent });
+            hl.background = t.accent_soft;
             job.append(&text[s..e], 0.0, hl);
             job.append(&text[e..], 0.0, TextFormat::simple(font, color));
         }
@@ -177,21 +214,29 @@ fn highlighted(p: &Painter, text: &str, needle: &str, t: &Theme, color: Color32,
     p.layout_job(job)
 }
 
+/// El pill de una fila: 1 px de aire arriba y abajo, `ROW_INSET` a los lados.
+fn row_pill(rect: Rect) -> Rect {
+    rect.shrink2(vec2(ROW_INSET, 1.0))
+}
+
+/// Selección de una fila: tinte de acento con foco, capa gris sin él.
+fn sel_of(selected: bool, active: bool) -> Sel {
+    match (selected, active) {
+        (false, _) => Sel::None,
+        (true, true) => Sel::Focused,
+        (true, false) => Sel::Unfocused,
+    }
+}
+
 /// Fondo de una fila: la selección, o el hover (`hover` de 0 a 1: aparece y se apaga con un fundido).
 pub fn row_bg(p: &Painter, rect: Rect, t: &Theme, selected: bool, active: bool, hover: f32) {
-    let r = rect.shrink2(vec2(4.0, 1.0));
-    if selected {
-        p.rect_filled(r, 5.0, if active { t.sel } else { t.sel_inactive });
-    } else if hover > 0.01 {
-        p.rect_filled(r, 5.0, t.hover.gamma_multiply(hover));
-    }
+    design::state_fill(p, t, row_pill(rect), radius::M, hover, false, sel_of(selected, active));
 }
 
 /// Cuánto se ve el hover de este elemento (entra rápido, se apaga un poco más lento: al pasar el
 /// mouse por una lista deja una estela corta).
-pub fn hover_amount(resp: &egui::Response, show: bool) -> f32 {
-    let on = show && resp.hovered();
-    super::motion::fade(&resp.ctx, resp.id.with("hover"), on, if on { 0.07 } else { 0.16 })
+fn hover_amount(resp: &egui::Response, show: bool) -> f32 {
+    design::hover_amount(&resp.ctx, resp.id, show && resp.hovered())
 }
 
 /// Cuánto cubre el resaltado deslizante a una fila (0 a 1).
@@ -201,32 +246,11 @@ fn pill_cover(pill: Rect, r: Rect) -> f32 {
     fx.clamp(0.0, 1.0) * fy.clamp(0.0, 1.0)
 }
 
-/// Colores del texto de una fila (nombre, datos): con el resaltado deslizante, pasan de normales a
-/// los de seleccionado a medida que este llega.
-fn row_fg(t: &Theme, pill: Option<Rect>, r: Rect, selected: bool, active: bool) -> (Color32, Color32, bool) {
-    match pill {
-        Some(p) if active => {
-            let k = pill_cover(p, r);
-            let (a, b) = fg(t, false, false);
-            let (c, d) = fg(t, true, true);
-            (a.lerp_to_gamma(c, k), b.lerp_to_gamma(d, k), k > 0.5)
-        }
-        Some(_) => {
-            let (a, b) = fg(t, false, false);
-            (a, b, false)
-        }
-        None => {
-            let (a, b) = fg(t, selected, active);
-            (a, b, selected && active)
-        }
-    }
-}
-
 /// El resaltado que se desliza a la fila `i` (en coordenadas de la lista, que ya incluyen el desplazamiento).
 fn pill_rect(ui: &Ui, id: Id, target: Rect) -> Rect {
     let ctx = ui.ctx();
-    let x = super::motion::glide(ctx, id.with("px"), target.left() - ui.max_rect().left(), 0.11);
-    let y = super::motion::glide(ctx, id.with("py"), target.top() - ui.max_rect().top(), 0.11);
+    let x = super::motion::glide(ctx, id.with("px"), target.left() - ui.max_rect().left(), dur::BASE);
+    let y = super::motion::glide(ctx, id.with("py"), target.top() - ui.max_rect().top(), dur::BASE);
     Rect::from_min_size(ui.max_rect().min + vec2(x, y), target.size())
 }
 
@@ -234,14 +258,10 @@ fn pill_rect(ui: &Ui, id: Id, target: Rect) -> Rect {
 pub fn cloud_glyph(t: &Theme, c: fsx::Cloud) -> Option<(&'static str, Color32, &'static str)> {
     match c {
         fsx::Cloud::None => None,
-        fsx::Cloud::OnlineOnly => Some((ic::CLOUD, t.folder, t!("lista.solo_nube_descarga_abrirlo"))),
+        fsx::Cloud::OnlineOnly => Some((ic::CLOUD, t.dim, t!("lista.solo_nube_descarga_abrirlo"))),
         fsx::Cloud::Local => Some((ic::CLOUD_CHECK, t.dim, t!("lista.disponible_este_equipo_sincronizado"))),
-        fsx::Cloud::Pinned => Some((egui_phosphor::fill::CHECK_CIRCLE, Color32::from_rgb(0x3F, 0xB9, 0x50), t!("lista.siempre_este_equipo"))),
+        fsx::Cloud::Pinned => Some((egui_phosphor::fill::CHECK_CIRCLE, t.ok, t!("lista.siempre_este_equipo"))),
     }
-}
-
-fn fg(t: &Theme, selected: bool, active: bool) -> (Color32, Color32) {
-    if selected && active { (t.accent_text, t.accent_text.gamma_multiply(0.8)) } else { (t.text, t.dim) }
 }
 
 /// Lista virtualizada: solo se dibujan las filas visibles.
@@ -260,7 +280,7 @@ fn virtual_list(ui: &mut Ui, id: Id, n: usize, scroll_to: Option<usize>, glide: 
         let pill = glide.map(|(i, color)| {
             let target = Rect::from_min_size(pos2(left, top + i as f32 * ROW_H), vec2(width, ROW_H));
             let r = pill_rect(ui, id, target);
-            ui.painter().rect_filled(r.shrink2(vec2(4.0, 1.0)), 5.0, color);
+            ui.painter().rect_filled(row_pill(r), radius::M, color);
             r
         });
         let first = (viewport.min.y / ROW_H).floor().max(0.0) as usize;
@@ -320,8 +340,8 @@ fn marquee(ui: &Ui, cx: &mut Cx, ci: usize, start: Option<Pos2>, base: Vec<Strin
     let vp = scroll.inner_rect;
     let screen = rect.translate(origin.to_vec2());
     let p = ui.painter_at(vp);
-    p.rect_filled(screen, 3.0, cx.t.accent.gamma_multiply(0.14));
-    p.rect_stroke(screen, 3.0, egui::Stroke::new(1.0, cx.t.accent.gamma_multiply(0.85)), egui::StrokeKind::Inside);
+    p.rect_filled(screen, radius::S, cx.t.accent_soft);
+    p.rect_stroke(screen, radius::S, egui::Stroke::new(stroke::HAIR, cx.t.accent), egui::StrokeKind::Inside);
     // Cerca de los bordes (o fuera), la lista se desplaza sola.
     let edge = 28.0;
     let dy = if pos.y < vp.top() + edge {
@@ -374,11 +394,67 @@ fn loading_text(dir: &str) -> &'static str {
     if fsx::is_remote(dir) { t!("lista.esperando_servidor") } else { t!("lista.cargando") }
 }
 
-fn empty_message(ui: &mut Ui, t: &Theme, text: &str) {
-    ui.add_space(18.0);
-    ui.vertical_centered(|ui| {
-        ui.label(egui::RichText::new(text).color(t.faint).size(12.5));
-    });
+/// Vacío o cargando, en lo que queda del área. En una zona grande, el estado vacío con trama e
+/// ícono; en una columna, solo la micro-etiqueta (`icon` vacío: cargando, sin ícono).
+fn empty_message(ui: &mut Ui, t: &Theme, icon: &str, msg: &str) {
+    let area = ui.available_rect_before_wrap();
+    let p = ui.painter_at(area);
+    if icon.is_empty() {
+        design::micro(&p, area.center(), Align2::CENTER_CENTER, msg, t.faint);
+    } else {
+        design::empty_state(&p, t, area, icon, msg, "");
+    }
+}
+
+/// Espera con trabajo detrás (el índice se está construyendo): el medidor que recorre, centrado.
+fn busy_message(ui: &mut Ui, t: &Theme, msg: &str) {
+    let area = ui.available_rect_before_wrap();
+    let r = Rect::from_center_size(area.center(), vec2(area.width(), h::HEAD));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::top_down(egui::Align::Center)));
+    design::busy(&mut child, t, msg);
+}
+
+/// Parte un texto en líneas de hasta `max_w` (por palabras).
+fn wrap_lines(p: &Painter, text: &str, font: FontId, max_w: f32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for w in text.split_whitespace() {
+        let next = if cur.is_empty() { w.to_string() } else { format!("{cur} {w}") };
+        if cur.is_empty() || design::text_width(p, &next, font.clone()) <= max_w {
+            cur = next;
+        } else {
+            lines.push(std::mem::replace(&mut cur, w.to_string()));
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
+/// Una carpeta que no se pudo leer: «No se puede abrir» con el ícono en `warn` y el error como
+/// pista (en varias líneas si es largo). En una columna angosta, la micro-etiqueta en `warn` y,
+/// debajo, el error.
+fn error_message(ui: &mut Ui, t: &Theme, err: &str) {
+    let area = ui.available_rect_before_wrap();
+    let p = ui.painter_at(area);
+    let title = t!("lista.no_puede_abrir_titulo");
+    let max_w = area.width() - 2.0 * sp::L;
+    // Lo mismo que mide `empty_state_lines` para decidir si va el estado completo.
+    if area.width() >= 320.0 && area.height() >= 240.0 {
+        let lines = wrap_lines(&p, err, text::small(), max_w.min(480.0));
+        let hints: Vec<&str> = lines.iter().take(4).map(String::as_str).collect();
+        design::empty_state_lines(&p, t, area, ic::WARNING, Tone::Warn, title, &hints);
+        return;
+    }
+    let mut job = LayoutJob::single_section(err.to_owned(), TextFormat::simple(text::small(), t.faint));
+    job.wrap.max_width = max_w;
+    job.halign = egui::Align::Center;
+    let g = p.layout_job(job);
+    let title_h = p.layout_job(design::micro_job(title, t.warn)).size().y;
+    let top = area.center().y - (title_h + sp::S + g.size().y) / 2.0;
+    let tr = design::micro(&p, pos2(area.center().x, top), Align2::CENTER_TOP, title, t.warn);
+    p.galley(pos2(area.center().x, tr.bottom() + sp::S), g, t.faint);
 }
 
 /// Si un nombre nuevo cambia la extensión: (la de antes, la nueva), como se muestran (".pdf",
@@ -396,18 +472,38 @@ pub fn ext_change(old: &str, new: &str) -> Option<(String, String)> {
     Some((show(a), show(b)))
 }
 
-/// Fila de renombrado en línea.
-fn rename_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, x: f32) {
+/// Ancho mínimo del campo de renombrar cuando tiene que dejar lugar al aviso de extensión.
+const RENAME_MIN_W: f32 = 140.0;
+
+/// Fila de renombrado en línea. `limit`: hasta dónde puede llegar (el fin de la columna del nombre
+/// en detalles; en columnas y cuadrícula, el borde de la fila). Ni el campo ni el aviso lo pasan.
+fn rename_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, x: f32, limit: f32) {
     let Some(rn) = cx.rename.as_mut() else { return };
+    let t = *cx.t;
+    // Cambiar la extensión puede dejar el archivo sin poder abrirse: se avisa al lado con un chip,
+    // sin el cuadro de diálogo de Windows (y se deshace con Ctrl+Z).
+    let ext = ext_change(&rn.old, &rn.buf).filter(|_| !std::path::Path::new(&fsx::long_path(&fsx::join(&rn.dir, &rn.old))).is_dir());
+    let chip_txt = ext.as_ref().map(|(a, b)| format!("{a} → {b}")).unwrap_or_default();
+    let full = Chip { icon: ic::WARNING, compact: true, on_sel: true, ..Chip::new(&chip_txt, Tone::Warn) };
+    let bare = Chip { text: "", ..full };
     // Tan ancho como el nombre (con aire para escribir), no toda la fila.
-    let text_w = ui.painter().layout_no_wrap(rn.buf.clone(), egui::FontId::proportional(13.5), cx.t.text).size().x;
-    let right = (x + (text_w + 60.0).max(220.0)).min(rect.right() - 8.0);
-    let edit_rect = Rect::from_min_max(pos2(x, rect.top() + 2.0), pos2(right, rect.bottom() - 2.0));
-    ui.painter().rect_filled(edit_rect, 5.0, cx.t.bg);
-    ui.painter().rect_stroke(edit_rect, 5.0, egui::Stroke::new(1.5, cx.t.accent), egui::StrokeKind::Inside);
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(edit_rect.shrink2(vec2(6.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let text_w = design::text_width(ui.painter(), &rn.buf, text::body());
+    let natural = (x + (text_w + 60.0).max(220.0)).min(limit);
+    // El chip entra completo, o el campo se achica para dejarle lugar, o queda solo el ícono.
+    let chip = ext.as_ref().and_then(|_| {
+        [full, bare].into_iter().find_map(|c| {
+            let cw = design::chip_width(ui.painter(), &c);
+            let right = natural.min(limit - sp::S - cw);
+            (right - x >= RENAME_MIN_W.min(natural - x)).then_some((c, right))
+        })
+    });
+    let right = chip.map_or(natural, |(_, r)| r);
+    let edit_rect = Rect::from_min_max(pos2(x, rect.top() + sp::XXS), pos2(right, rect.bottom() - sp::XXS));
+    ui.painter().rect_filled(edit_rect, radius::M, t.sidebar);
+    design::focus_ring(ui.painter(), &t, edit_rect, radius::M);
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(edit_rect.shrink2(vec2(sp::XS, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
     let id = Id::new("rename-edit");
-    let out = egui::TextEdit::singleline(&mut rn.buf).id(id).frame(egui::Frame::NONE).desired_width(edit_rect.width() - 12.0).vertical_align(egui::Align::Center).show(&mut child);
+    let out = egui::TextEdit::singleline(&mut rn.buf).id(id).frame(egui::Frame::NONE).font(text::body()).desired_width(edit_rect.width() - 2.0 * sp::XS).vertical_align(egui::Align::Center).show(&mut child);
     if rn.first_frame {
         out.response.request_focus();
         let stem = rn.buf.rfind('.').filter(|&i| i > 0).unwrap_or(rn.buf.len());
@@ -417,20 +513,11 @@ fn rename_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, x: f32) {
         state.store(ui.ctx(), id);
         rn.first_frame = false;
     }
-    // Cambiar la extensión puede dejar el archivo sin poder abrirse: se avisa al lado, sin el
-    // cuadro de diálogo de Windows (y se deshace con Ctrl+Z).
-    if let Some((a, b)) = ext_change(&rn.old, &rn.buf) {
-        if !std::path::Path::new(&fsx::long_path(&fsx::join(&rn.dir, &rn.old))).is_dir() {
-            let warn = Color32::from_rgb(0xF5, 0x9E, 0x42);
-            let long = tf!("lista.cambia_extension", antes = a, despues = b);
-            let room = rect.right() - edit_rect.right() - 16.0;
-            let font = FontId::proportional(12.0);
-            let g = ui.painter().layout_no_wrap(format!("{}  {long}", ic::WARNING), font.clone(), warn);
-            let g = if g.size().x <= room { g } else { ui.painter().layout_no_wrap(format!("{}  {a} → {b}", ic::WARNING), font, warn) };
-            if g.size().x <= room {
-                ui.painter().galley(pos2(edit_rect.right() + 10.0, rect.center().y - g.size().y / 2.0), g, warn);
-            }
-        }
+    if let (Some((c, _)), Some((a, b))) = (chip, &ext) {
+        let cr = design::chip_paint(ui.painter(), &t, pos2(edit_rect.right() + sp::S, rect.center().y), &c, false);
+        // La frase completa, en el tooltip del chip.
+        let hover = ui.interact(cr, id.with("ext-chip"), Sense::hover());
+        design::tip(hover, &t, &tf!("lista.cambia_extension", antes = a, despues = b));
     }
     let (enter, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
     if esc {
@@ -440,8 +527,6 @@ fn rename_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, x: f32) {
     }
 }
 
-/// Dibuja una fila de archivo genérica (ícono + nombre + texto a la derecha).
-#[allow(clippy::too_many_arguments)]
 /// El nombre de una etiqueta de color, en el idioma de la interfaz.
 pub fn tag_label(i: usize) -> &'static str {
     match i {
@@ -455,40 +540,50 @@ pub fn tag_label(i: usize) -> &'static str {
     }
 }
 
-pub fn tag_color(i: usize) -> Color32 {
-    let c = fsx::tags::COLORS[i.min(6)].1;
-    Color32::from_rgb(c[0], c[1], c[2])
+/// Punto de etiqueta (8 px, `design::tag_dot`); se pisan 1 px.
+const TAG_DOT: f32 = 8.0;
+const TAG_STEP: f32 = TAG_DOT - 1.0;
+
+/// Cuánto ocupan los puntos de etiqueta de `mask` (con el aire que los separa del nombre).
+fn tag_dots_width(mask: u8) -> f32 {
+    if mask == 0 { 0.0 } else { sp::S + TAG_STEP * mask.count_ones() as f32 + 1.0 + sp::XS }
 }
 
-/// Los puntos de color de las etiquetas de un archivo, desde `x` (centrados en `cy`). Devuelve
-/// cuánto ocupan.
-fn tag_dots(p: &Painter, t: &Theme, x: f32, cy: f32, mask: u8) -> f32 {
+/// Los puntos de color de las etiquetas de un archivo, desde `x` (centrados en `cy`).
+fn tag_dots(p: &Painter, t: &Theme, x: f32, cy: f32, mask: u8) {
     let mut w = 0.0;
     for i in (0..7).filter(|i| mask & (1 << i) != 0) {
-        let c = pos2(x + w + 4.5, cy);
-        // Con un borde del color de fondo, para que se distingan si se tocan.
-        p.circle(c, 4.5, tag_color(i), egui::Stroke::new(1.0, t.bg));
-        w += 7.0;
+        design::tag_dot(p, t, pos2(x + w + TAG_DOT / 2.0, cy), t.tags[i]);
+        w += TAG_STEP;
     }
-    if w > 0.0 { w + 2.0 } else { 0.0 }
 }
 
-/// El ícono de un archivo: el de Windows si ya llegó (el de cada programa, o el de su tipo);
-/// mientras tanto, y para las carpetas de las listas, el de Rayo. `glyph`: tamaño del de Rayo.
+/// El ícono de un archivo: el de Windows si ya llegó (el de cada programa, o el de su tipo: dice
+/// con qué se abre), en filas y en mosaico, a color y sin tratar. Mientras llega, o si Windows no
+/// da ninguno, el glifo de Rayo: contorno en `dim` en las filas de 16, relleno y en el color del
+/// tipo en el mosaico. La carpeta: siempre el glifo relleno en `folder`. No volver a limitar las
+/// filas al glifo (decisión del dueño, ver diseno-rayo.md §3.3). `glyph`: tamaño del de Rayo.
+/// `a`: opacidad (atenuado o fundido).
 #[allow(clippy::too_many_arguments)]
-fn file_icon(p: &Painter, t: &Theme, center: Pos2, points: f32, glyph: f32, path: &str, is_dir: bool, ext: &str, color: Option<Color32>, alpha: f32) {
+pub fn file_icon(p: &Painter, t: &Theme, center: Pos2, points: f32, glyph: f32, path: &str, is_dir: bool, ext: &str, a: f32) {
     // Una descarga en curso: la flecha de descarga (no el ícono de un archivo a medias).
     if !is_dir && fsx::downloading(&fsx::file_name(path)).is_some() {
-        p.text(center, Align2::CENTER_CENTER, ic::DOWNLOAD_SIMPLE, theme::icon_font(glyph, true), color.unwrap_or(t.accent).gamma_multiply(alpha));
+        p.text(center, Align2::CENTER_CENTER, ic::DOWNLOAD_SIMPLE, design::icon_fill(glyph), alpha(t.accent, a));
         return;
     }
+    let large = points > icon::M;
+    // El glifo de Rayo: en color y relleno en el mosaico; en las filas, contorno y gris.
+    let rayo = |k: f32| {
+        let (g, c) = icons::for_entry(t, is_dir, ext);
+        let (font, c) = if large || is_dir { (design::icon_fill(glyph), c) } else { (design::icon_font(glyph), t.dim) };
+        p.text(center, Align2::CENTER_CENTER, g, font, alpha(c, a * k));
+    };
     if !is_dir {
         let px = super::shellicons::px_for(p.ctx(), points);
         if let Some((tex, shown)) = super::shellicons::get(path, ext, px) {
             // Recién llegado: el de Rayo se desvanece mientras aparece el de Windows.
             if shown < 1.0 {
-                let (g, c) = icons::for_entry(t, is_dir, ext);
-                p.text(center, Align2::CENTER_CENTER, g, theme::icon_font(glyph, true), color.unwrap_or(c).gamma_multiply(alpha * (1.0 - shown)));
+                rayo(1.0 - shown);
             }
             // Alineado a los píxeles de la pantalla y del tamaño exacto: nítido, como en el Explorador.
             let ppp = p.ctx().pixels_per_point();
@@ -496,12 +591,11 @@ fn file_icon(p: &Painter, t: &Theme, center: Pos2, points: f32, glyph: f32, path
             let min = center - vec2(side, side) / 2.0;
             let min = pos2((min.x * ppp).round() / ppp, (min.y * ppp).round() / ppp);
             let r = Rect::from_min_size(min, vec2(side, side));
-            p.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE.gamma_multiply(alpha * shown));
+            p.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), alpha(Color32::WHITE, a * shown));
             return;
         }
     }
-    let (g, c) = icons::for_entry(t, is_dir, ext);
-    p.text(center, Align2::CENTER_CENTER, g, theme::icon_font(glyph, true), color.unwrap_or(c).gamma_multiply(alpha));
+    rayo(1.0);
 }
 
 /// Si el mouse se detiene un momento sobre una carpeta (o el cursor queda en ella), se lee antes de
@@ -525,7 +619,7 @@ fn prefetch(cx: &mut Cx, resp: &egui::Response, path: &str, cursor: bool) {
         ctx.request_repaint_after(std::time::Duration::from_millis(90));
         return;
     }
-    if !sent && now - since >= 0.08 {
+    if !sent && now - since >= super::motion::DWELL_PREFETCH {
         cx.actions.push(Action::Prefetch(path.to_string()));
         ctx.data_mut(|d| d.insert_temp(key, (who, since, true)));
     } else if !sent {
@@ -533,6 +627,8 @@ fn prefetch(cx: &mut Cx, resp: &egui::Response, path: &str, cursor: bool) {
     }
 }
 
+/// Dibuja una fila de archivo genérica (ícono + nombre + texto a la derecha).
+#[allow(clippy::too_many_arguments)]
 fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, selected: bool, active: bool, right: Option<&str>, chevron: bool, name_limit: Option<f32>) -> egui::Response {
     let id = Id::new(("row", cx.tab_id, dir, &e.name));
     let resp = ui.interact(rect, id, Sense::click_and_drag());
@@ -540,95 +636,102 @@ fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, sele
         prefetch(cx, &resp, &fsx::join(dir, &e.name), selected && active);
     }
     let p = ui.painter_at(rect);
+    let t = *cx.t;
     let pill = cx.pill;
     // Con el resaltado deslizante, la fila no dibuja su selección (ya está debajo).
     let hover = hover_amount(&resp, !selected || pill.is_some_and(|pl| pill_cover(pl, rect) < 0.5));
-    row_bg(&p, rect, cx.t, selected && pill.is_none(), active, hover);
+    row_bg(&p, rect, &t, selected && pill.is_none(), active, hover);
     if e.is_dir {
-        drop_highlight(ui, cx.t, &resp, rect);
+        drop_highlight(ui, &t, &resp, rect);
     }
-    let (text_c, dim_c, on_sel) = row_fg(cx.t, pill, rect, selected, active);
-    let icolor = on_sel.then_some(cx.t.accent_text);
+    // Con la selección suave, el texto y el ícono no cambian de color sobre la fila seleccionada.
     let path = fsx::join(dir, &e.name);
     let faded = e.hidden || cx.cut.contains(&path);
-    let alpha = if faded { 0.5 } else { 1.0 };
+    let a = if faded { self::faded(&t) } else { 1.0 };
     let indent = if cx.tree.is_some() { TREE_CHEVRON + tree_depth(&e.name) as f32 * TREE_STEP } else { 0.0 };
-    file_icon(&p, cx.t, pos2(rect.left() + 22.0 + indent, rect.center().y), 16.0, 16.0, &path, e.is_dir, &e.ext, icolor, alpha);
-    let name_x = rect.left() + 36.0 + indent;
+    file_icon(&p, &t, pos2(rect.left() + ICON_X + icon::M / 2.0 + indent, rect.center().y), icon::M, icon::M, &path, e.is_dir, &e.ext, a);
+    let name_x = rect.left() + TEXT_X + indent;
     // En la lista desplegada se ve solo el nombre (la carpeta ya la da la sangría).
     let shown_name: &str = if cx.tree.is_some() { e.name.rsplit('\\').next().unwrap_or(&e.name) } else { &e.name };
-    let mut right_w = 12.0;
+    let mut right_w = ROW_INSET + sp::S;
     if chevron {
-        p.text(pos2(rect.right() - 12.0, rect.center().y), Align2::RIGHT_CENTER, ic::CARET_RIGHT, theme::icon_font(11.0, false), dim_c);
-        right_w += 14.0;
+        p.text(pos2(rect.right() - right_w, rect.center().y), Align2::RIGHT_CENTER, ic::CARET_RIGHT, design::icon_font(icon::S), t.faint);
+        right_w += icon::S + sp::XXS;
     }
     if let Some(rt) = right {
-        let g = p.layout_no_wrap(rt.to_string(), FontId::proportional(11.5), dim_c);
+        let c = size_color(&t, e.is_dir);
+        let g = p.layout_no_wrap(rt.to_string(), text::mono(), c);
         let w = g.size().x;
-        p.galley(pos2(rect.right() - right_w - w, rect.center().y - g.size().y / 2.0), g, dim_c);
-        right_w += w + 8.0;
+        p.galley(pos2(rect.right() - right_w - w, rect.center().y - g.size().y / 2.0), g, c);
+        right_w += w + sp::S;
     }
+    // El renombrado llega hasta el fin de la columna del nombre (en columnas, hasta el borde).
+    let rename_limit = name_limit.unwrap_or(rect.right() - sp::S);
     // Estado en la nube: al final del nombre (en detalles, al final de su columna).
     let mut name_limit = name_limit;
-    if let Some((g, c, tip)) = cloud_glyph(cx.t, e.cloud) {
-        let c = if on_sel { cx.t.accent_text } else { c };
+    if let Some((g, c, tip)) = cloud_glyph(&t, e.cloud) {
+        let slot = icon::S + sp::S;
         let x = match name_limit {
             Some(l) => {
-                name_limit = Some(l - 20.0);
-                l - 4.0
+                name_limit = Some(l - slot);
+                l - sp::XS
             }
             None => {
                 let x = rect.right() - right_w;
-                right_w += 20.0;
+                right_w += slot;
                 x
             }
         };
-        let ir = Rect::from_center_size(pos2(x - 8.0, rect.center().y), vec2(16.0, 16.0));
-        p.text(ir.center(), Align2::CENTER_CENTER, g, theme::icon_font(13.0, false), c);
+        let ir = Rect::from_center_size(pos2(x - icon::M / 2.0, rect.center().y), vec2(icon::M, icon::M));
+        p.text(ir.center(), Align2::CENTER_CENTER, g, design::icon_font(icon::S), c);
         if resp.hovered() && ui.rect_contains_pointer(ir) {
-            resp.clone().on_hover_text(tip);
+            design::tip(resp.clone(), &t, tip);
         }
     }
     let renaming = cx.rename.as_ref().is_some_and(|r| r.dir == dir && r.old == e.name);
     if renaming {
-        rename_row(ui, cx, rect, name_x - 4.0);
+        rename_row(ui, cx, rect, name_x - sp::XS, rename_limit);
     } else {
+        let name_c = alpha(t.text, a);
         let limit = name_limit.unwrap_or(f32::INFINITY).min(rect.right() - right_w);
         match fsx::downloading(&e.name).filter(|_| !e.is_dir) {
             // Descarga en curso: el nombre que tendrá y "Descargando…".
             Some(base) => {
-                let tag = p.layout_no_wrap(t!("lista.descargando").to_string(), FontId::proportional(12.0), if on_sel { text_c } else { cx.t.accent });
-                let g = elided(&p, base, FontId::proportional(13.5), text_c.gamma_multiply(alpha), (limit - name_x - tag.size().x - 10.0).max(20.0));
+                // Sobre la selección, en claro, el acento baja a `accent_hover` (contraste, T4).
+                let tag_c = if selected && !t.dark { t.accent_hover } else { t.accent };
+                let tag = p.layout_no_wrap(t!("lista.descargando").to_string(), text::small(), tag_c);
+                let g = elided(&p, base, text::body(), name_c, (limit - name_x - tag.size().x - sp::S).max(20.0));
                 let gw = g.size().x;
-                p.galley(pos2(name_x, rect.center().y - g.size().y / 2.0), g, text_c);
-                p.galley(pos2(name_x + gw + 10.0, rect.center().y - tag.size().y / 2.0), tag, text_c);
+                p.galley(pos2(name_x, rect.center().y - g.size().y / 2.0), g, name_c);
+                p.galley(pos2(name_x + gw + sp::S, rect.center().y - tag.size().y / 2.0), tag, tag_c);
             }
             None => {
                 let mask = fsx::tags::get(&path);
-                let dots = if mask == 0 { 0.0 } else { 7.0 * mask.count_ones() as f32 + 10.0 };
+                let dots = tag_dots_width(mask);
                 // Estado en git (si la carpeta es parte de un repositorio): una letra o, en
                 // carpetas con cambios adentro, un punto.
                 let git = fsx::git::state_of(&path, e.is_dir);
                 let git_w = if git.is_some() { 18.0 } else { 0.0 };
-                let g = elided(&p, shown_name, FontId::proportional(13.5), text_c.gamma_multiply(alpha), limit - name_x - dots - git_w);
+                let max_w = limit - name_x - dots - git_w;
+                // Vista plana: el nombre trae la subcarpeta adelante.
+                let g = if cx.tree.is_none() && e.name.contains('\\') { flat_name(&p, &t, &e.name, name_c, a, max_w) } else { elided(&p, shown_name, text::body(), name_c, max_w) };
                 let gw = g.size().x;
-                p.galley(pos2(name_x, rect.center().y - g.size().y / 2.0), g, text_c);
+                p.galley(pos2(name_x, rect.center().y - g.size().y / 2.0), g, name_c);
                 if mask != 0 {
-                    tag_dots(&p, cx.t, name_x + gw + 6.0, rect.center().y, mask);
+                    tag_dots(&p, &t, name_x + gw + sp::S, rect.center().y, mask);
                 }
                 if let Some((st, inside)) = git {
                     use fsx::git::State;
                     let c = match st {
-                        State::Modified | State::Renamed => Color32::from_rgb(0xE5, 0xA8, 0x4B),
-                        State::Added | State::Untracked => Color32::from_rgb(0x4F, 0xB4, 0x77),
-                        State::Deleted | State::Conflict => cx.t.danger,
+                        State::Modified | State::Renamed => t.warn,
+                        State::Added | State::Untracked => t.ok,
+                        State::Deleted | State::Conflict => t.danger,
                     };
-                    let c = if on_sel { cx.t.accent_text } else { c };
-                    let x = name_x + gw + dots + 8.0;
+                    let x = name_x + gw + dots + sp::S;
                     if inside {
-                        p.circle_filled(pos2(x + 3.0, rect.center().y), 3.0, c.gamma_multiply(0.8));
+                        p.circle_filled(pos2(x + GIT_DOT / 2.0, rect.center().y), GIT_DOT / 2.0, c);
                     } else {
-                        p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, st.letter(), theme::semibold(11.0), c);
+                        p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, st.letter(), text::mono_s(), c);
                     }
                 }
             }
@@ -636,6 +739,9 @@ fn file_row(ui: &mut Ui, cx: &mut Cx, rect: Rect, e: &FileEntry, dir: &str, sele
     }
     resp
 }
+
+/// Punto de git en carpetas con cambios adentro.
+const GIT_DOT: f32 = 6.0;
 
 /// La fila del cursor a la que hay que llevar la vista. Si todavía no está en la lista (un archivo
 /// recién creado, p. ej. al "mostrar en carpeta" una descarga), se sigue esperando mientras se lista.
@@ -737,7 +843,7 @@ fn slow_rename(cx: &mut Cx, resp: &egui::Response, dir: &str, e: &FileEntry, sel
     let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) else { return };
     let mut area = name_area;
     if measure {
-        let w = ctx.fonts_mut(|f| f.layout_no_wrap(e.name.clone(), FontId::proportional(13.5), Color32::WHITE).size().x);
+        let w = ctx.fonts_mut(|f| f.layout_no_wrap(e.name.clone(), text::body(), Color32::WHITE).size().x);
         area.max.x = area.max.x.min(area.min.x + w + 6.0);
     }
     if area.contains(pos) {
@@ -796,6 +902,12 @@ fn background_menu_request(cx: &mut Cx, bg: &egui::Response, dir: &str) {
     }
 }
 
+/// Color del tamaño en una fila: el de una carpeta es aproximado (se suma por detrás), así que va
+/// más apagado que el de un archivo.
+fn size_color(t: &Theme, is_dir: bool) -> Color32 {
+    if is_dir { t.faint } else { t.dim }
+}
+
 fn size_text(e: &FileEntry) -> Option<String> {
     match (e.is_dir, e.dir_size) {
         (true, Some(s)) => Some(fsx::human_size(s)),
@@ -815,6 +927,9 @@ pub struct ColumnData<'a> {
 /// Sangría de una fila de la lista desplegada (por su profundidad), y el lugar del triángulo.
 const TREE_STEP: f32 = 16.0;
 const TREE_CHEVRON: f32 = 16.0;
+/// Sin nada desplegado: centro del triángulo que aparece sobre la carpeta bajo el puntero, en los
+/// 12 px a la izquierda del ícono (no corre los íconos).
+const TREE_CARET_X: f32 = 6.0;
 
 fn tree_depth(name: &str) -> usize {
     name.matches('\\').count()
@@ -832,14 +947,14 @@ pub fn column(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, active: bool, 
     }
     background_menu_request(cx, &bg, &dir);
     if let Some(err) = data.error {
-        empty_message(ui, cx.t, &tf!("lista.no_puede_abrir", error = err));
+        error_message(ui, cx.t, err);
         return;
     }
     if data.entries.is_empty() {
         if data.loading {
-            empty_message(ui, cx.t, loading_text(&dir));
+            empty_message(ui, cx.t, "", loading_text(&dir));
         } else {
-            empty_message(ui, cx.t, t!("lista.carpeta_vacia"));
+            empty_message(ui, cx.t, ic::FOLDER_OPEN, t!("lista.carpeta_vacia"));
         }
         return;
     }
@@ -853,7 +968,7 @@ pub fn column(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, active: bool, 
         let st = size_text(e);
         let right = st.as_deref();
         let resp = file_row(ui, cx, r, e, &dir, selected, active, right, e.is_dir, None);
-        let name_area = Rect::from_min_max(pos2(r.left() + 36.0, r.top()), pos2(r.right() - 12.0, r.bottom()));
+        let name_area = Rect::from_min_max(pos2(r.left() + TEXT_X, r.top()), pos2(r.right() - 12.0, r.bottom()));
         handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), None, name_area, true);
     });
     cx.pill = None;
@@ -897,10 +1012,11 @@ pub fn extra_label(id: &str) -> &'static str {
 /// Clic derecho en un encabezado: casillas para mostrar u ocultar las columnas extra.
 fn column_menu(resp: &egui::Response, cx: &mut Cx) {
     let on_now: Vec<&str> = extra_columns().iter().map(|(id, _)| *id).collect();
-    resp.context_menu(|ui| {
+    let t = *cx.t;
+    design::context_menu(resp, &t, |ui| {
         for (id, _) in EXTRA_COLUMNS {
-            let mut on = on_now.contains(id);
-            if ui.checkbox(&mut on, extra_label(id)).clicked() {
+            let on = on_now.contains(id);
+            if design::menu_item_ex(ui, &t, design::MenuItem { label: extra_label(id), checked: Some(on), ..Default::default() }).clicked() {
                 cx.actions.push(Action::ToggleColumn(id.to_string()));
             }
         }
@@ -908,7 +1024,7 @@ fn column_menu(resp: &egui::Response, cx: &mut Cx) {
 }
 
 /// El valor de una columna extra para un archivo.
-fn extra_cell(p: &Painter, t: &Theme, id: &str, e: &FileEntry, path: &str, x: f32, w: f32, cy: f32, color: Color32) {
+fn extra_cell(p: &Painter, t: &Theme, id: &str, e: &FileEntry, path: &str, x: f32, w: f32, cy: f32) {
     let text = match id {
         "created" => (e.ctime != 0).then(|| fsx::fmt_date(e.ctime)),
         "ext" => (!e.is_dir && !e.ext.is_empty()).then(|| e.ext.to_uppercase()),
@@ -922,15 +1038,17 @@ fn extra_cell(p: &Painter, t: &Theme, id: &str, e: &FileEntry, path: &str, x: f3
         "tags" => {
             let mask = fsx::tags::get(path);
             if mask != 0 {
-                tag_dots(p, t, x + 10.0, cy, mask);
+                tag_dots(p, t, x + CELL_X, cy, mask);
             }
             None
         }
         _ => None,
     };
     if let Some(s) = text {
-        let g = elided(p, &s, FontId::proportional(12.0), color, w - 16.0);
-        p.galley(pos2(x + 10.0, cy - g.size().y / 2.0), g, color);
+        // La extensión es un tipo (`small`); fecha, medidas y duración son datos (mono).
+        let font = if id == "ext" { text::small() } else { text::mono() };
+        let g = elided(p, &s, font, t.dim, w - CELL_X - sp::XS);
+        p.galley(pos2(x + CELL_X, cy - g.size().y / 2.0), g, t.dim);
     }
 }
 
@@ -938,19 +1056,28 @@ fn columns() -> ColumnWidths {
     *COLUMNS.lock()
 }
 
+/// Alto de la barra de "qué ocupa espacio", bajo el tamaño.
+const SPACE_BAR_H: f32 = 3.0;
+
 /// Por debajo de este ancho de "Modificado" no entra la píldora de antigüedad junto a la fecha.
 const DATE_WITH_AGE: f32 = 176.0;
 
-/// Borde arrastrable entre dos columnas (en el encabezado): una línea tenue que se resalta.
+/// Borde arrastrable entre dos columnas (en el encabezado): una línea fina que, al arrastrarla,
+/// se marca en acento.
 fn column_handle(ui: &Ui, t: &Theme, id: Id, x: f32, rows: egui::Rangef) -> egui::Response {
     let r = Rect::from_x_y_ranges(x - 4.0..=x + 4.0, rows);
-    let resp = ui.interact(r, id, Sense::click_and_drag()).on_hover_text(t!("lista.ajustar_columna"));
-    let active = resp.hovered() || resp.dragged();
-    if active {
+    let resp = design::tip(ui.interact(r, id, Sense::click_and_drag()), t, t!("lista.ajustar_columna"));
+    if resp.hovered() || resp.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
     }
-    let (c, inset) = if active { (t.accent, 4.0) } else { (t.border, 7.0) };
-    ui.painter().line_segment([pos2(x, r.top() + inset), pos2(x, r.bottom() - inset)], egui::Stroke::new(if active { 2.0 } else { 1.0 }, c));
+    let (st, inset) = if resp.dragged() {
+        (egui::Stroke::new(stroke::MARK, t.accent), sp::XS)
+    } else if resp.hovered() {
+        (egui::Stroke::new(stroke::HAIR, t.border_strong), sp::XS)
+    } else {
+        (egui::Stroke::new(stroke::HAIR, t.border), (r.height() - sp::M) / 2.0)
+    };
+    ui.painter().line_segment([pos2(x, r.top() + inset), pos2(x, r.bottom() - inset)], st);
     resp
 }
 
@@ -975,40 +1102,69 @@ fn drive_handle(cx: &mut Cx, h: &egui::Response, apply: impl Fn(&mut ColumnWidth
     }
 }
 
-fn age_pill(p: &Painter, t: &Theme, x_right: f32, cy: f32, mtime: u32, now: u32) {
+/// Color de una micro-etiqueta de encabezado: la columna ordenada en `text`; con hover, `dim`.
+fn header_color(t: &Theme, active: bool, hovered: bool) -> Color32 {
+    if active {
+        t.text
+    } else if hovered {
+        t.dim
+    } else {
+        t.faint
+    }
+}
+
+/// Flecha del orden, en acento, junto a la etiqueta `lr` (a su izquierda si la columna va a la derecha).
+fn sort_caret(p: &Painter, t: &Theme, lr: Rect, right: bool, desc: bool) {
+    let arrow = if desc { ic::CARET_DOWN } else { ic::CARET_UP };
+    let ax = if right { lr.left() - sp::XS - icon::S / 2.0 } else { lr.right() + sp::XS + icon::S / 2.0 };
+    p.text(pos2(ax, lr.center().y), Align2::CENTER_CENTER, arrow, design::icon_font(icon::S), t.accent);
+}
+
+/// Antigüedad junto a la fecha: el calor se lee por brillo, no por tono. Lo tocado en las últimas
+/// 24 h es «ahora» (chip de acento); hasta 30 días, `dim`; más viejo, `faint`. `on_sel`: la fila
+/// está seleccionada con foco (en claro, el chip baja a `accent_hover`).
+fn age_pill(p: &Painter, t: &Theme, x_right: f32, cy: f32, mtime: u32, now: u32, on_sel: bool) {
+    const DAY: u32 = 86_400;
     if mtime == 0 {
         return;
     }
     let age = now.saturating_sub(mtime);
     let txt = fsx::fmt_age(mtime, now);
-    let c = t.age_color(age);
-    let g = p.layout_no_wrap(txt, FontId::proportional(11.0), Color32::BLACK);
-    let w = (g.size().x + 12.0).max(40.0);
-    let r = Rect::from_min_size(pos2(x_right - w, cy - 9.0), vec2(w, 18.0));
-    let old = age >= 31_536_000;
-    p.rect_filled(r, 9.0, if old { c } else { c.gamma_multiply(0.22) });
-    let tc = if old { t.dim } else { c };
-    p.text(r.center(), Align2::CENTER_CENTER, fsx::fmt_age(mtime, now), FontId::proportional(11.0), tc);
+    if age < DAY {
+        // Compacto y con el borde 2 px adentro: en una fila de 26 no toca a las de al lado, y su
+        // texto termina donde terminaría el de las otras fechas (`x_right - 8`).
+        let c = Chip { mono: true, compact: true, on_sel, ..Chip::new(&txt, Tone::Accent) };
+        let w = design::chip_width(p, &c);
+        design::chip_paint(p, t, pos2(x_right - 2.0 - w, cy), &c, false);
+    } else {
+        let c = if age <= 30 * DAY { t.dim } else { t.faint };
+        p.text(pos2(x_right - sp::S, cy), Align2::RIGHT_CENTER, txt, text::mono_s(), c);
+    }
 }
 
 pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, data: ColumnData, sort: (SortKey, bool)) {
     let t = *cx.t;
-    // Encabezado
-    let (hrect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
+    // Encabezado: micro-etiquetas; la columna ordenada en `text` con su flecha en acento.
+    let (hrect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h::HEAD), Sense::hover());
     let p = ui.painter_at(hrect);
-    p.line_segment([hrect.left_bottom(), hrect.right_bottom()], egui::Stroke::new(1.0, t.border));
+    // Por dentro del rectángulo: en `bottom()` la recortaría `painter_at`.
+    p.hline(hrect.x_range(), hrect.bottom() - 0.5, egui::Stroke::new(stroke::HAIR, t.border));
     let cols_x = details_columns(hrect);
+    // Con la lista desplegada, el nombre de las filas se corre la columna del triángulo.
+    let name_x = TEXT_X + if cx.tree.is_some() { TREE_CHEVRON } else { 0.0 };
     let header = |key: SortKey, label: &str, x0: f32, x1: f32, right: bool, cx: &mut Cx| {
         let r = Rect::from_x_y_ranges(x0..=x1, hrect.y_range());
         let resp = ui.interact(r, Id::new(("hdr", cx.tab_id, label)), Sense::click());
         let active = sort.0 == key;
-        let c = if active || resp.hovered() { t.text } else { t.dim };
-        let (pos, align) = if right { (pos2(x1 - 14.0, r.center().y), Align2::RIGHT_CENTER) } else { (pos2(x0 + 10.0, r.center().y), Align2::LEFT_CENTER) };
-        let lr = p.text(pos, align, label, theme::semibold(12.0), c);
+        // Cada encabezado se alinea con sus valores (el nombre, con el texto de las filas).
+        let (pos, align) = if right {
+            (pos2(x1 - CELL_X, r.center().y), Align2::RIGHT_CENTER)
+        } else {
+            (pos2(x0 + if key == SortKey::Name { name_x } else { CELL_X }, r.center().y), Align2::LEFT_CENTER)
+        };
+        let lr = design::micro(&p, pos, align, label, header_color(&t, active, resp.hovered()));
         if active {
-            let arrow = if sort.1 { ic::CARET_DOWN } else { ic::CARET_UP };
-            let ax = if right { lr.left() - 9.0 } else { lr.right() + 9.0 };
-            p.text(pos2(ax, r.center().y), Align2::CENTER_CENTER, arrow, theme::icon_font(10.0, false), t.accent);
+            sort_caret(&p, &t, lr, right, sort.1);
         }
         if resp.clicked() {
             cx.actions.push(Action::SetSort(key));
@@ -1021,7 +1177,7 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
     header(SortKey::Name, t!("lista.nombre"), cols_x.0, name_end, false, cx);
     let mut ex = name_end;
     for (id, w) in &extras {
-        p.text(pos2(ex + 10.0, hrect.center().y), Align2::LEFT_CENTER, extra_label(id), theme::semibold(12.0), t.dim);
+        design::micro(&p, pos2(ex + CELL_X, hrect.center().y), Align2::LEFT_CENTER, extra_label(id), t.faint);
         ex += w;
     }
     // Los encabezados de las columnas extra también abren el menú.
@@ -1059,11 +1215,15 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
     }
     background_menu_request(cx, &bg, &dir);
     if let Some(err) = data.error {
-        empty_message(ui, &t, &tf!("lista.no_puede_abrir", error = err));
+        error_message(ui, &t, err);
         return;
     }
     if data.entries.is_empty() {
-        empty_message(ui, &t, if data.loading { loading_text(&dir) } else { t!("lista.carpeta_vacia") });
+        if data.loading {
+            empty_message(ui, &t, "", loading_text(&dir));
+        } else {
+            empty_message(ui, &t, ic::FOLDER_OPEN, t!("lista.carpeta_vacia"));
+        }
         return;
     }
     let scroll_to = scroll_target(col, data.entries, data.loading);
@@ -1077,41 +1237,53 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
         let selected = col.is_selected(&e.name);
         let (_, x1, x2, x3, x4) = details_columns(r);
         let name_end = x1 - extras.iter().map(|(_, w)| w).sum::<f32>();
-        let resp = file_row(ui, cx, r, e, &dir, selected, focused, None, false, Some(name_end - 8.0));
+        let resp = file_row(ui, cx, r, e, &dir, selected, focused, None, false, Some(name_end - sp::S));
         let p = ui.painter_at(r);
-        let (_, dim_c, on_sel) = row_fg(&t, pill, r, selected, focused);
         // Triángulo para desplegar la carpeta aquí mismo (encima de la fila: recibe el clic).
         if let Some(open) = cx.tree.filter(|_| e.is_dir) {
             let depth = tree_depth(&e.name) as f32;
-            let cr = Rect::from_center_size(pos2(r.left() + 13.0 + depth * TREE_STEP, r.center().y), vec2(16.0, 16.0));
+            let cr = Rect::from_center_size(pos2(r.left() + 13.0 + depth * TREE_STEP, r.center().y), vec2(icon::M, icon::M));
             let cresp = ui.interact(cr, resp.id.with("expand"), Sense::click());
             let is_open = open.contains(&e.lower);
             let glyph = if is_open { ic::CARET_DOWN } else { ic::CARET_RIGHT };
-            let c = if on_sel { t.accent_text } else if cresp.hovered() { t.text } else { t.faint };
-            p.text(cr.center(), Align2::CENTER_CENTER, glyph, theme::icon_font(11.0, true), c);
+            let c = if cresp.hovered() { t.text } else { t.faint };
+            p.text(cr.center(), Align2::CENTER_CENTER, glyph, design::icon_font(icon::S), c);
+            if cresp.clicked() {
+                cx.actions.push(Action::ToggleExpand(e.name.clone()));
+            }
+        } else if e.is_dir && cx.tree.is_none() && !e.name.contains('\\') {
+            // Sin nada desplegado (y fuera de la vista plana): el triángulo aparece sobre la carpeta
+            // bajo el puntero, para que desplegar se descubra con el mouse.
+            let cr = Rect::from_center_size(pos2(r.left() + TREE_CARET_X, r.center().y), vec2(icon::S, icon::M));
+            let cresp = ui.interact(cr, resp.id.with("expand"), Sense::click());
+            if ui.rect_contains_pointer(r) && !drag_hovering(&resp) {
+                let c = if cresp.hovered() { t.text } else { t.faint };
+                p.text(cr.center(), Align2::CENTER_CENTER, ic::CARET_RIGHT, design::icon_font(icon::S), c);
+            }
             if cresp.clicked() {
                 cx.actions.push(Action::ToggleExpand(e.name.clone()));
             }
         }
         if cx.space_bars && total > 0 {
             if let Some(sz) = e.display_size() {
+                // Un solo color: `dim` tenue; en acento lo que pasa del 25 % de la carpeta.
                 let frac = (sz as f64 / total as f64) as f32;
-                let bar = Rect::from_min_size(pos2(x3 + 10.0, r.bottom() - 6.0), vec2((x4 - x3 - 24.0) * frac, 3.0));
-                let c = if frac > 0.25 { t.danger } else if frac > 0.1 { Color32::from_rgb(0xF5, 0x9E, 0x42) } else { t.accent };
-                p.rect_filled(bar, 1.5, c.gamma_multiply(if selected && focused { 0.9 } else { 0.7 }));
+                let bar = Rect::from_min_size(pos2(x3 + CELL_X, r.bottom() - 2.0 * SPACE_BAR_H), vec2((x4 - x3 - 2.0 * CELL_X) * frac, SPACE_BAR_H));
+                let c = if frac > 0.25 { t.accent } else { alpha(t.dim, 0.45) };
+                p.rect_filled(bar, radius::S, c);
             }
         }
         let mut ex = name_end;
         let full = fsx::join(&dir, &e.name);
         for (id, w) in &extras {
-            extra_cell(&p, &t, id, e, &full, ex, *w, r.center().y, dim_c);
+            extra_cell(&p, &t, id, e, &full, ex, *w, r.center().y);
             ex += w;
         }
         if x2 > x1 {
-            p.text(pos2(x1 + 10.0, r.center().y), Align2::LEFT_CENTER, fsx::fmt_date(e.mtime), FontId::proportional(12.0), dim_c);
+            p.text(pos2(x1 + CELL_X, r.center().y), Align2::LEFT_CENTER, fsx::fmt_date(e.mtime), text::mono(), t.dim);
         }
         if x2 - x1 >= DATE_WITH_AGE {
-            age_pill(&p, &t, x2 - 8.0, r.center().y, e.mtime, cx.now);
+            age_pill(&p, &t, x2 - sp::S, r.center().y, e.mtime, cx.now, selected);
         }
         let kind = if e.is_dir {
             t!("comun.carpeta").to_string()
@@ -1123,14 +1295,13 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
             e.ext.to_uppercase()
         };
         if x3 > x2 {
-            p.text(pos2(x2 + 10.0, r.center().y), Align2::LEFT_CENTER, kind, FontId::proportional(12.0), dim_c);
+            p.text(pos2(x2 + CELL_X, r.center().y), Align2::LEFT_CENTER, kind, text::small(), t.dim);
         }
         if let Some(s) = size_text(e) {
-            let txt = if e.is_dir { format!("~{s}") } else { s };
-            p.text(pos2(r.right() - 14.0, r.center().y), Align2::RIGHT_CENTER, txt, FontId::proportional(12.0), dim_c);
+            p.text(pos2(r.right() - CELL_X, r.center().y), Align2::RIGHT_CENTER, s, text::mono(), size_color(&t, e.is_dir));
         }
         // Arrastrar desde fuera del nombre (fecha, tipo, tamaño) dibuja un rectángulo, como en el Explorador.
-        let name_area = Rect::from_min_max(pos2(r.left() + 36.0, r.top()), pos2(name_end, r.bottom()));
+        let name_area = Rect::from_min_max(pos2(r.left() + TEXT_X, r.top()), pos2(name_end, r.bottom()));
         if handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), Some(x1), name_area, true) {
             start = resp.ctx.input(|i| i.pointer.press_origin());
         }
@@ -1173,7 +1344,7 @@ fn extra_columns_fit(r: Rect) -> Vec<(&'static str, f32)> {
 
 /// Posiciones x de las columnas de resultados: (nombre, carpeta, borde derecho del tamaño, fecha).
 fn search_columns(r: Rect) -> (f32, f32, f32, f32) {
-    let nx = r.left() + 36.0;
+    let nx = r.left() + TEXT_X;
     let date_x = r.right() - 150.0;
     let size_r = date_x - 14.0;
     let auto = ((size_r - 90.0 - nx) * 0.42).max(140.0);
@@ -1186,39 +1357,106 @@ fn search_columns(r: Rect) -> (f32, f32, f32, f32) {
 pub fn search_results(ui: &mut Ui, cx: &mut Cx, res: Option<&Results>, cursor: &mut usize, scroll: &mut bool, indexing: Option<String>, query: &str, sort: (ResultSort, bool)) {
     let t = *cx.t;
     let Some(res) = res else {
-        empty_message(ui, &t, indexing.as_deref().unwrap_or(t!("lista.buscando")));
+        match indexing.as_deref() {
+            Some(ix) => busy_message(ui, &t, ix),
+            None => empty_message(ui, &t, "", t!("lista.buscando")),
+        }
         return;
     };
+    // Una colección, una etiqueta o las recientes no son una búsqueda: se nombra lo que se muestra.
+    if let Some(lc) = list_context(query) {
+        ui.horizontal(|ui| {
+            ui.add_space(ICON_X);
+            match &lc {
+                ListContext::Collection(name) => {
+                    design::micro_label(ui, t!("menu.coleccion"), t.faint);
+                    ui.label(egui::RichText::new(name).font(text::strong()).color(t.text));
+                }
+                ListContext::Tag(i) => {
+                    design::micro_label(ui, t!("menu.etiqueta"), t.faint);
+                    let (r, _) = ui.allocate_exact_size(vec2(TAG_DOT, TAG_DOT), Sense::hover());
+                    design::tag_dot(ui.painter(), &t, r.center(), t.tags[*i]);
+                    ui.label(egui::RichText::new(tag_label(*i)).font(text::strong()).color(t.text));
+                }
+                ListContext::Recent => {
+                    ui.label(egui::RichText::new(t!("barra.recientes")).font(text::strong()).color(t.text));
+                }
+            }
+            ui.label(egui::RichText::new(fsx::thousands(res.total)).font(text::mono_s()).color(t.faint));
+            if res.total > res.len() && design::link(ui, &t, t!("lista.ver_todos")).clicked() {
+                cx.actions.push(Action::LoadAllResults);
+            }
+        });
+    } else {
+        search_header(ui, cx, res, indexing.as_deref(), sort);
+    }
+    search_body(ui, cx, res, cursor, scroll, query, sort);
+}
+
+/// Lo que muestra una pestaña de búsqueda especial.
+enum ListContext {
+    Collection(String),
+    Tag(usize),
+    Recent,
+}
+
+fn list_context(query: &str) -> Option<ListContext> {
+    if let Some(name) = fsx::collections::query_name(query) {
+        Some(ListContext::Collection(name))
+    } else if let Some(i) = fsx::tags::query_color(query) {
+        Some(ListContext::Tag(i.min(6)))
+    } else if query.trim_start().to_lowercase().starts_with("recientes:") {
+        Some(ListContext::Recent)
+    } else {
+        None
+    }
+}
+
+/// Cabecera de una búsqueda: cuántos resultados, en cuánto tiempo (con el rayo) y el chip de relevancia.
+fn search_header(ui: &mut Ui, cx: &mut Cx, res: &Results, indexing: Option<&str>, sort: (ResultSort, bool)) {
+    let t = *cx.t;
     ui.horizontal(|ui| {
-        ui.add_space(12.0);
+        // Alineado con la columna de íconos de las filas.
+        ui.add_space(ICON_X);
         let shown = res.len();
         let txt = if res.total > shown {
             tf!("lista.resultados_mejores", n = fsx::thousands(res.total), mostrados = fsx::thousands(shown))
         } else {
             tp!(res.total, "lista.resultados", n = fsx::thousands(res.total))
         };
-        ui.label(egui::RichText::new(txt).font(theme::semibold(12.5)).color(t.text));
-        ui.label(egui::RichText::new(tf!("lista.milisegundos", ms = format!("{:.2}", res.ms))).size(12.0).color(t.accent));
-        if res.total > shown && ui.link(egui::RichText::new(t!("lista.ver_todos")).size(12.0)).clicked() {
+        ui.label(egui::RichText::new(txt).font(text::strong()).color(t.text));
+        // El tiempo con el rayo: lo instantáneo es «ahora».
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = sp::XXS;
+            ui.label(egui::RichText::new(egui_phosphor::fill::LIGHTNING).font(design::icon_fill(icon::S)).color(t.accent));
+            let ms = tf!("lista.milisegundos", ms = format!("{:.2}", res.ms));
+            ui.label(egui::RichText::new(ms.trim_start_matches(['·', ' '])).font(text::mono_s()).color(t.accent));
+        });
+        if res.total > shown && design::link(ui, &t, t!("lista.ver_todos")).clicked() {
             cx.actions.push(Action::LoadAllResults);
         }
-        if let Some(ix) = &indexing {
-            ui.label(egui::RichText::new(format!("· {ix}")).size(12.0).color(t.faint));
+        if let Some(ix) = indexing {
+            ui.label(egui::RichText::new(format!("· {ix}")).font(text::small()).color(t.faint));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(12.0);
+            ui.add_space(sp::M - ui.spacing().item_spacing.x);
             let on = sort.0 == ResultSort::Relevance;
-            let label = egui::RichText::new(format!("{}  {}", ic::SPARKLE, t!("lista.relevancia"))).size(12.0).color(if on { t.accent } else { t.dim });
-            if ui.add(egui::Button::new(label).frame(on)).on_hover_text(t!("lista.ordenar_relevancia")).clicked() {
+            let c = Chip { icon: ic::SPARKLE, interactive: true, ..Chip::new(t!("lista.relevancia"), if on { Tone::Accent } else { Tone::Neutral }) };
+            if design::tip(design::chip(ui, &t, c).response, &t, t!("lista.ordenar_relevancia")).clicked() {
                 cx.actions.push(Action::SetResultSort(ResultSort::Relevance));
             }
         });
     });
+}
+
+/// Encabezados de columna y filas de los resultados.
+fn search_body(ui: &mut Ui, cx: &mut Cx, res: &Results, cursor: &mut usize, scroll: &mut bool, query: &str, sort: (ResultSort, bool)) {
+    let t = *cx.t;
     // Encabezados para ordenar por columna (como en Everything).
-    let (hrect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+    let (hrect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h::HEAD), Sense::hover());
     {
         let p = ui.painter_at(hrect);
-        p.line_segment([hrect.left_bottom(), hrect.right_bottom()], egui::Stroke::new(1.0, t.border));
+        p.hline(hrect.x_range(), hrect.bottom() - 0.5, egui::Stroke::new(stroke::HAIR, t.border));
         let (nx, dir_x, size_r, date_x) = search_columns(hrect);
         let cols = [
             (ResultSort::Name, t!("lista.nombre"), nx, false),
@@ -1228,16 +1466,13 @@ pub fn search_results(ui: &mut Ui, cx: &mut Cx, res: Option<&Results>, cursor: &
         ];
         for (key, label, x, right) in cols {
             let active = sort.0 == key;
-            let g = p.layout_no_wrap(label.to_string(), theme::semibold(12.0), t.dim);
-            let w = g.size().x + 16.0;
+            let w = p.layout_job(design::micro_job(label, t.faint)).size().x + sp::L;
             let r = if right { Rect::from_x_y_ranges(x - w..=x + 4.0, hrect.y_range()) } else { Rect::from_x_y_ranges(x - 4.0..=x + w, hrect.y_range()) };
             let resp = ui.interact(r, Id::new(("shdr", cx.tab_id, label)), Sense::click());
-            let c = if active || resp.hovered() { t.text } else { t.dim };
-            let lr = p.text(pos2(x, hrect.center().y), if right { Align2::RIGHT_CENTER } else { Align2::LEFT_CENTER }, label, theme::semibold(12.0), c);
+            let align = if right { Align2::RIGHT_CENTER } else { Align2::LEFT_CENTER };
+            let lr = design::micro(&p, pos2(x, hrect.center().y), align, label, header_color(&t, active, resp.hovered()));
             if active {
-                let arrow = if sort.1 { ic::CARET_DOWN } else { ic::CARET_UP };
-                let ax = if right { lr.left() - 9.0 } else { lr.right() + 9.0 };
-                p.text(pos2(ax, hrect.center().y), Align2::CENTER_CENTER, arrow, theme::icon_font(10.0, false), t.accent);
+                sort_caret(&p, &t, lr, right, sort.1);
             }
             if resp.clicked() {
                 cx.actions.push(Action::SetResultSort(key));
@@ -1249,7 +1484,7 @@ pub fn search_results(ui: &mut Ui, cx: &mut Cx, res: Option<&Results>, cursor: &
         drive_handle(cx, &h, move |c, dx| c.search_name = (if c.search_name > 0.0 { c.search_name } else { name_w }) + dx, |c| c.search_name = 0.0);
     }
     if res.is_empty() {
-        empty_message(ui, &t, t!("lista.sin_resultados"));
+        empty_message(ui, &t, ic::MAGNIFYING_GLASS, t!("lista.sin_resultados"));
         return;
     }
     let needle = query
@@ -1276,21 +1511,21 @@ pub fn search_results(ui: &mut Ui, cx: &mut Cx, res: Option<&Results>, cursor: &
         let p = ui.painter_at(r);
         let hover = hover_amount(&resp, pill.is_none_or(|pl| pill_cover(pl, r) < 0.5));
         row_bg(&p, r, &t, selected && pill.is_none(), true, hover);
-        let (text_c, dim_c, on_sel) = row_fg(&t, pill, r, selected, true);
-        file_icon(&p, &t, pos2(r.left() + 22.0, r.center().y), 16.0, 16.0, &row.path(), row.is_dir, &row.ext, on_sel.then_some(t.accent_text), 1.0);
+        // Con la selección suave, el ícono y el resaltado de la coincidencia no cambian sobre la fila seleccionada.
+        file_icon(&p, &t, pos2(r.left() + ICON_X + icon::M / 2.0, r.center().y), icon::M, icon::M, &row.path(), row.is_dir, &row.ext, 1.0);
         let (nx, dir_x, size_r, date_x) = search_columns(r);
         let name_w = dir_x - nx - 12.0;
-        let g = if on_sel {
-            elided(&p, &row.name, FontId::proportional(13.5), text_c, name_w)
-        } else {
-            highlighted(&p, &row.name, &needle, &t, text_c, name_w)
-        };
-        p.galley(pos2(nx, r.center().y - g.size().y / 2.0), g, text_c);
-        let dg = elided(&p, &row.dir, FontId::proportional(12.0), dim_c, size_r - 90.0 - dir_x);
-        p.galley(pos2(dir_x, r.center().y - dg.size().y / 2.0), dg, dim_c);
-        p.text(pos2(date_x, r.center().y), Align2::LEFT_CENTER, fsx::fmt_date(row.mtime), FontId::proportional(12.0), dim_c);
-        let size = if row.is_dir { format!("~{}", fsx::human_size(row.size)) } else { fsx::human_size(row.size) };
-        p.text(pos2(size_r, r.center().y), Align2::RIGHT_CENTER, size, FontId::proportional(12.0), dim_c);
+        let g = highlighted(&p, &row.name, &needle, &t, t.text, name_w, selected);
+        p.galley(pos2(nx, r.center().y - g.size().y / 2.0), g, t.text);
+        // La carpeta, acortada por el medio: lo que distingue dos rutas largas es el final.
+        let dir_w = size_r - 90.0 - dir_x;
+        let shown_dir = design::elide_middle(&p, &row.dir, text::mono(), dir_w);
+        let dr = p.text(pos2(dir_x, r.center().y), Align2::LEFT_CENTER, &shown_dir, text::mono(), t.dim);
+        if shown_dir != row.dir && resp.hovered() && ui.rect_contains_pointer(dr) {
+            design::tip(resp.clone(), &t, &row.dir);
+        }
+        p.text(pos2(date_x, r.center().y), Align2::LEFT_CENTER, fsx::fmt_date(row.mtime), text::mono(), t.dim);
+        p.text(pos2(size_r, r.center().y), Align2::RIGHT_CENTER, fsx::human_size(row.size), text::mono(), size_color(&t, row.is_dir));
         if resp.clicked() || resp.secondary_clicked() {
             *cursor = i;
         }
@@ -1311,6 +1546,28 @@ pub fn search_results(ui: &mut Ui, cx: &mut Cx, res: Option<&Results>, cursor: &
 
 const TILE_W: f32 = 128.0;
 const TILE_H: f32 = 148.0;
+/// Margen de la cuadrícula alrededor de las celdas.
+const GRID_PAD: f32 = 6.0;
+/// Aire entre el borde de la celda y el mosaico (lo que se ve y recibe el clic).
+const TILE_INSET: f32 = 3.0;
+/// Íconos de contenido del mosaico (no son íconos de interfaz): ícono de Windows en píxeles
+/// lógicos y glifo de Rayo; carpeta y emblema de las carpetas conocidas.
+const TILE_ICON: f32 = 64.0;
+const TILE_GLYPH: f32 = 58.0;
+const TILE_FOLDER: f32 = 84.0;
+const TILE_EMBLEM: f32 = 22.0;
+/// Alto de la zona de la miniatura.
+const THUMB_H: f32 = 92.0;
+
+/// El mosaico de la celda (`col`, `row`), con la cuadrícula empezando en `origin`.
+fn tile_rect(origin: Pos2, col: usize, row: usize) -> Rect {
+    Rect::from_min_size(pos2(origin.x + GRID_PAD + col as f32 * TILE_W, origin.y + GRID_PAD + row as f32 * TILE_H), vec2(TILE_W, TILE_H)).shrink(TILE_INSET)
+}
+
+/// Una imagen con las esquinas redondeadas (miniaturas: radio S).
+fn rounded_image(p: &Painter, tex: egui::TextureId, rect: Rect, uv: Rect, tint: Color32) {
+    p.add(egui::epaint::RectShape::filled(rect, radius::S, tint).with_texture(tex, uv));
+}
 
 /// ¿Vale la pena pedir la miniatura real (foto, video, PDF, ícono del programa)?
 /// Archivos que se muestran con su contenido (fotos, videos, documentos). Lo demás (programas,
@@ -1336,16 +1593,16 @@ fn folder_emblem(path: &str) -> Option<&'static str> {
 
 /// Una carpeta en la cuadrícula: el ícono de Rayo y, si tiene fotos o videos, la primera asomándose.
 #[allow(clippy::too_many_arguments)]
-fn grid_folder(ui: &Ui, p: &Painter, t: &Theme, area: Rect, path: &str, tex: &mut super::preview::Textures, alpha: f32) {
+fn grid_folder(ui: &Ui, p: &Painter, t: &Theme, area: Rect, path: &str, tex: &mut super::preview::Textures, a: f32) {
     let center = area.center();
-    p.text(center, Align2::CENTER_CENTER, ic::FOLDER, theme::icon_font(84.0, true), t.folder.gamma_multiply(alpha));
+    p.text(center, Align2::CENTER_CENTER, ic::FOLDER, design::icon_fill(TILE_FOLDER), alpha(t.folder, a));
     // Frente de la carpeta (el glifo deja la pestaña arriba): ahí va la foto o el emblema.
     let front = Rect::from_center_size(center + vec2(0.0, 6.0), vec2(58.0, 40.0));
     let ppp = ui.ctx().pixels_per_point();
     let px = ((front.width().max(front.height()) * ppp).ceil() as u32 / 32 + 1) * 32;
     let peek = tex.get(&format!("{}{path}", fsx::thumbs::PEEK_PREFIX), px).and_then(|te| te.tex.clone().map(|tx| (tx, te.at)));
     if let Some((tx, at)) = peek {
-        let shown = super::motion::since(ui.ctx(), at, 0.22) * alpha;
+        let shown = super::motion::since(ui.ctx(), at, dur::SLOW) * a;
         // Recortada para llenar la tarjeta, con un borde claro, como una foto metida en la carpeta.
         let size = tx.size_vec2();
         let (fw, fh) = (front.width() / size.x, front.height() / size.y);
@@ -1356,13 +1613,13 @@ fn grid_folder(ui: &Ui, p: &Painter, t: &Theme, area: Rect, path: &str, tex: &mu
             let k = fw / fh;
             Rect::from_min_max(pos2((1.0 - k) / 2.0, 0.0), pos2((1.0 + k) / 2.0, 1.0))
         };
-        let card = front.expand(2.0);
-        p.rect_filled(card, 4.0, Color32::WHITE.gamma_multiply(0.92 * shown));
-        p.image(tx.id(), front, uv, Color32::WHITE.gamma_multiply(shown));
+        let card = front.expand(sp::XXS);
+        p.rect_filled(card, radius::S, alpha(Color32::WHITE, 0.92 * shown));
+        p.image(tx.id(), front, uv, alpha(Color32::WHITE, shown));
         return;
     }
     if let Some(g) = folder_emblem(path) {
-        p.text(front.center(), Align2::CENTER_CENTER, g, theme::icon_font(22.0, true), Color32::WHITE.gamma_multiply(0.9 * alpha));
+        p.text(front.center(), Align2::CENTER_CENTER, g, design::icon_fill(TILE_EMBLEM), alpha(Color32::WHITE, 0.9 * a));
     }
 }
 
@@ -1385,15 +1642,19 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
     }
     background_menu_request(cx, &bg, &dir);
     if let Some(err) = data.error {
-        empty_message(ui, &t, &tf!("lista.no_puede_abrir", error = err));
+        error_message(ui, &t, err);
         return;
     }
     if data.entries.is_empty() {
-        empty_message(ui, &t, if data.loading { loading_text(&dir) } else { t!("lista.carpeta_vacia") });
+        if data.loading {
+            empty_message(ui, &t, "", loading_text(&dir));
+        } else {
+            empty_message(ui, &t, ic::FOLDER_OPEN, t!("lista.carpeta_vacia"));
+        }
         return;
     }
     let n = data.entries.len();
-    let cols = ((rest.width() - 12.0) / TILE_W).floor().max(1.0) as usize;
+    let cols = ((rest.width() - 2.0 * GRID_PAD) / TILE_W).floor().max(1.0) as usize;
     ui.ctx().data_mut(|d| d.insert_temp(Id::new(("grid-cols", cx.tab_id)), cols));
     let rows = n.div_ceil(cols);
     let scroll_to = scroll_target(col, data.entries, data.loading);
@@ -1401,18 +1662,17 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
     let ppp = ui.ctx().pixels_per_point();
     let base = selection.clone();
     let out = egui::ScrollArea::vertical().id_salt(("grid", cx.tab_id, &dir)).auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
-        ui.set_height(rows as f32 * TILE_H + 12.0);
-        let top = ui.max_rect().top() + 6.0;
-        let left = ui.max_rect().left() + 6.0;
+        ui.set_height(rows as f32 * TILE_H + 2.0 * GRID_PAD);
+        let origin = ui.max_rect().min;
         if let Some(i) = scroll_to {
-            let r = Rect::from_min_size(pos2(left, top + (i / cols) as f32 * TILE_H), vec2(TILE_W, TILE_H));
+            let r = tile_rect(origin, 0, i / cols).expand(TILE_INSET);
             ui.scroll_to_rect(r, None);
         }
         // El resaltado se desliza de mosaico en mosaico (también en diagonal, al cambiar de fila).
         let pill = glide_row(&t, col, data.entries, focused).map(|(i, color)| {
-            let target = Rect::from_min_size(pos2(left + (i % cols) as f32 * TILE_W, top + (i / cols) as f32 * TILE_H), vec2(TILE_W, TILE_H)).shrink(3.0);
+            let target = tile_rect(origin, i % cols, i / cols);
             let r = pill_rect(ui, Id::new(("grid-pill", cx.tab_id, &dir)), target);
-            ui.painter().rect_filled(r, 8.0, if focused { color.gamma_multiply(0.55) } else { color });
+            ui.painter().rect_filled(r, radius::L, color);
             r
         });
         let first = (viewport.min.y / TILE_H).floor().max(0.0) as usize;
@@ -1424,7 +1684,7 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                     break;
                 }
                 let e = &data.entries[i];
-                let r = Rect::from_min_size(pos2(left + c as f32 * TILE_W, top + row as f32 * TILE_H), vec2(TILE_W, TILE_H)).shrink(3.0);
+                let r = tile_rect(origin, c, row);
                 let path = fsx::join(&dir, &e.name);
                 let resp = ui.interact(r, Id::new(("tile", cx.tab_id, &path)), Sense::click_and_drag());
                 let selected = col.is_selected(&e.name);
@@ -1433,20 +1693,16 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                 }
                 let p = ui.painter_at(r);
                 let hover = hover_amount(&resp, !selected || pill.is_some_and(|pl| pill_cover(pl, r) < 0.5));
-                if selected && pill.is_none() {
-                    p.rect_filled(r, 8.0, if focused { t.sel.gamma_multiply(0.55) } else { t.sel_inactive });
-                } else if hover > 0.01 {
-                    p.rect_filled(r, 8.0, t.hover.gamma_multiply(hover));
-                }
+                design::state_fill(&p, &t, r, radius::L, hover, false, sel_of(selected && pill.is_none(), focused));
                 if e.is_dir {
                     drop_highlight(ui, &t, &resp, r);
                 }
                 // Miniatura (o ícono grande).
-                let thumb = Rect::from_min_size(r.min + vec2(8.0, 8.0), vec2(r.width() - 16.0, 92.0));
+                let thumb = Rect::from_min_size(r.min + vec2(sp::S, sp::S), vec2(r.width() - 2.0 * sp::S, THUMB_H));
+                let a = if e.hidden || cx.cut.contains(&path) { faded(&t) } else { 1.0 };
                 let mut drew = false;
                 if e.is_dir {
-                    let alpha = if e.hidden || cx.cut.contains(&path) { 0.5 } else { 1.0 };
-                    grid_folder(ui, &p, &t, thumb, &path, tex, alpha);
+                    grid_folder(ui, &p, &t, thumb, &path, tex, a);
                     drew = true;
                 } else if wants_thumbnail(e) {
                     if let Some(te) = tex.get(&path, (thumb.width().max(thumb.height()) * ppp).ceil() as u32 / 32 * 32 + 32) {
@@ -1454,58 +1710,63 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                             let size = tx.size_vec2();
                             // Nunca más grande que sus píxeles: agrandada se vería borrosa.
                             let s = (thumb.width() / size.x).min(thumb.height() / size.y).min(1.0 / ppp);
-                            let img = Rect::from_center_size(thumb.center(), size * s);
+                            // Si en vez de una miniatura llegó un ícono (un PDF que no se pudo dibujar, un
+                            // video sin vista: cuadrado, sin medidas ni páginas), va del tamaño de los demás.
+                            let is_icon = !fsx::thumbs::is_image_ext(&e.ext) && te.orig.is_none() && te.pages.is_none() && size.x == size.y;
+                            let img = if is_icon { Rect::from_center_size(thumb.center(), vec2(TILE_ICON, TILE_ICON)) } else { Rect::from_center_size(thumb.center(), size * s) };
                             // Recién llegada: aparece con un fundido sobre el ícono, que se desvanece.
-                            let shown = super::motion::since(ui.ctx(), te.at, 0.22);
+                            let shown = super::motion::since(ui.ctx(), te.at, dur::SLOW);
                             if shown < 1.0 {
-                                file_icon(&p, &t, thumb.center(), 64.0, 58.0, &path, e.is_dir, &e.ext, None, 1.0 - shown);
+                                file_icon(&p, &t, thumb.center(), TILE_ICON, TILE_GLYPH, &path, e.is_dir, &e.ext, a * (1.0 - shown));
                             }
-                            p.image(tx.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE.gamma_multiply(shown));
+                            rounded_image(&p, tx.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), alpha(Color32::WHITE, a * shown));
                             drew = true;
                         }
                     }
                 }
                 if !drew {
-                    file_icon(&p, &t, thumb.center(), 64.0, 58.0, &path, e.is_dir, &e.ext, None, 1.0);
+                    file_icon(&p, &t, thumb.center(), TILE_ICON, TILE_GLYPH, &path, e.is_dir, &e.ext, a);
                 }
                 let mask = fsx::tags::get(&path);
                 if mask != 0 {
                     tag_dots(&p, &t, thumb.left() + 2.0, thumb.top() + 7.0, mask);
                 }
                 if let Some((g, c, _)) = cloud_glyph(&t, e.cloud) {
-                    let b = Rect::from_center_size(pos2(thumb.right() - 6.0, thumb.top() + 8.0), vec2(20.0, 20.0));
-                    p.circle_filled(b.center(), 10.0, t.chrome);
-                    p.text(b.center(), Align2::CENTER_CENTER, g, theme::icon_font(13.0, false), c);
+                    // Insignia: disco de 20 en la superficie que flota, con ícono de 12.
+                    let b = pos2(thumb.right() - 6.0, thumb.top() + sp::S);
+                    p.circle_filled(b, h::CHIP / 2.0, t.raised);
+                    p.text(b, Align2::CENTER_CENTER, g, design::icon_font(icon::S), c);
                 }
                 // Nombre en hasta dos líneas.
                 let renaming = cx.rename.as_ref().is_some_and(|rn| rn.dir == dir && rn.old == e.name);
-                let name_rect = Rect::from_min_max(pos2(r.left() + 4.0, thumb.bottom() + 4.0), pos2(r.right() - 4.0, r.bottom() - 2.0));
+                let name_rect = Rect::from_min_max(pos2(r.left() + sp::XS, thumb.bottom() + sp::XS), pos2(r.right() - sp::XS, r.bottom() - sp::XXS));
                 if renaming {
-                    rename_row(ui, cx, Rect::from_min_size(name_rect.min, vec2(name_rect.width(), 24.0)), name_rect.left());
+                    rename_row(ui, cx, Rect::from_min_size(name_rect.min, vec2(name_rect.width(), h::HEAD)), name_rect.left(), name_rect.right());
                 } else {
                     theme::want_cjk(&e.name);
-                    let mut job = LayoutJob::single_section(e.name.clone(), TextFormat::simple(FontId::proportional(12.5), t.text));
+                    let name_c = alpha(t.text, a);
+                    let mut job = LayoutJob::single_section(e.name.clone(), TextFormat::simple(text::small(), name_c));
                     job.wrap = TextWrapping { max_width: name_rect.width(), max_rows: 2, break_anywhere: false, overflow_character: Some('…') };
                     job.halign = egui::Align::Center;
                     let g = p.layout_job(job);
-                    p.galley(pos2(name_rect.center().x, name_rect.top()), g, t.text);
+                    p.galley(pos2(name_rect.center().x, name_rect.top()), g, name_c);
                 }
                 handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), None, name_rect, false);
             }
         }
     });
-    // Mosaicos que toca el rectángulo (en coordenadas del contenido: margen de 6 y celdas de TILE_W × TILE_H).
+    // Mosaicos que toca el rectángulo (en coordenadas del contenido: margen GRID_PAD y celdas de TILE_W × TILE_H).
     let entries = data.entries;
     marquee(ui, cx, ci, start, base, &out, |r| {
         let mut v = Vec::new();
-        let rows_hit = ((r.min.y - 6.0) / TILE_H).floor().max(0.0) as usize..=(((r.max.y - 6.0) / TILE_H).floor().max(0.0) as usize).min(rows.saturating_sub(1));
+        let rows_hit = ((r.min.y - GRID_PAD) / TILE_H).floor().max(0.0) as usize..=(((r.max.y - GRID_PAD) / TILE_H).floor().max(0.0) as usize).min(rows.saturating_sub(1));
         for row in rows_hit {
             for c in 0..cols {
                 let i = row * cols + c;
                 if i >= n {
                     break;
                 }
-                let tile = Rect::from_min_size(pos2(6.0 + c as f32 * TILE_W, 6.0 + row as f32 * TILE_H), vec2(TILE_W, TILE_H)).shrink(3.0);
+                let tile = tile_rect(Pos2::ZERO, c, row);
                 if tile.intersects(r) {
                     v.push(entries[i].name.clone());
                 }

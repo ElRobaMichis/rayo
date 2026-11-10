@@ -2,72 +2,142 @@
 
 use super::actions::Action;
 use super::config::{Config, ViewMode};
+use super::design::{self, Chip, DialogW, IconBtn, Kind, MenuItem, Row, Sel, Tone, Trailing, h, icon, radius, sp, stroke, text};
 use super::state::Tab;
 use super::theme::{self, Theme};
 use super::views::elided;
 use crate::fsx::{self, Drive, DriveKind, Place, transfer};
-use egui::{Align2, Color32, FontId, Id, Rect, Response, Sense, Ui, pos2, vec2};
+use egui::{Align2, Color32, Id, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use egui_phosphor::regular as ic;
 
+/// Margen del pill de una fila de la barra lateral (ícono en x=16, texto en x=40).
+const NAV_INSET: f32 = sp::S;
+/// Botones mini de un encabezado de sección: a 12 del borde, 2 entre sí.
+const HEAD_BTN_EDGE: f32 = sp::M;
+/// Medidor de una unidad: centro a 29 px del borde de arriba de la fila.
+const DRIVE_METER_Y: f32 = 29.0;
+
+/// Botón de ícono de 28×28 (barra de herramientas, pie de la barra lateral, terminal).
 pub fn icon_btn(ui: &mut Ui, t: &Theme, icon: &str, enabled: bool, on: bool, tip: &str) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 28.0), if enabled { Sense::click() } else { Sense::hover() });
-    let p = ui.painter();
-    if on {
-        p.rect_filled(rect, 6.0, t.sel_inactive);
-    } else if enabled && resp.hovered() {
-        p.rect_filled(rect, 6.0, t.hover);
-    }
-    let c = if !enabled {
-        t.faint
-    } else if on {
-        t.accent
-    } else {
-        t.text
-    };
-    p.text(rect.center(), Align2::CENTER_CENTER, icon, theme::icon_font(16.0, false), c);
-    if tip.is_empty() { resp } else { resp.on_hover_text(tip) }
+    let resp = design::icon_button(ui, t, icon, IconBtn { mini: false, on, enabled });
+    design::tip(resp, t, tip)
 }
 
-fn section_header(ui: &mut Ui, t: &Theme, label: &str, collapsed: bool) -> (Response, Rect) {
-    ui.add_space(10.0);
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
-    let p = ui.painter();
-    let c = if resp.hovered() { t.text } else { t.faint };
-    p.text(pos2(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, label.to_uppercase(), theme::semibold(11.0), c);
-    if resp.hovered() || collapsed {
-        p.text(
-            pos2(rect.right() - 54.0, rect.center().y),
-            Align2::LEFT_CENTER,
-            if collapsed { ic::CARET_RIGHT } else { ic::CARET_DOWN },
-            theme::icon_font(10.0, false),
-            t.faint,
-        );
+/// Botón mini de 20×20 que existe siempre (así no cambia lo que hay bajo el ratón) pero solo se
+/// dibuja si `visible`.
+fn mini_btn(ui: &mut Ui, t: &Theme, rect: Rect, id: Id, glyph: &str, visible: bool) -> Response {
+    if visible { design::icon_button_at(ui, t, rect, id, glyph, IconBtn::mini()) } else { ui.interact(rect, id, Sense::click()) }
+}
+
+/// Atajo de un comando como tecla en línea de un tooltip: «Ctrl+Mayús+L» → «Ctrl Mayús L».
+fn kbd_keys(keys: &str) -> String {
+    match keys.strip_suffix("++") {
+        Some(head) => format!("{} +", head.replace('+', " ")),
+        None => keys.replace('+', " "),
     }
+}
+
+/// Atajo (en teclas en línea) de un comando, con los propios del usuario.
+fn cmd_keys(id: &str, shortcuts: &[(String, String)]) -> String {
+    kbd_keys(&super::commands::shortcut_of(id, shortcuts))
+}
+
+/// Pie de la barra lateral (botón de tema): la lista termina encima, no pasa por debajo.
+pub const SIDEBAR_FOOT: f32 = h::CTL + 2.0 * sp::S;
+
+/// Encabezado de sección: micro-etiqueta en x=16 y caret pegado (con hover o si está plegada).
+/// `first`: el primero lleva menos aire arriba.
+fn section_header(ui: &mut Ui, t: &Theme, label: &str, collapsed: bool, first: bool) -> (Response, Rect) {
+    let (resp, rect, _) = section_header_ex(ui, t, label, collapsed, first, true);
     (resp, rect)
 }
 
-fn side_item(ui: &mut Ui, t: &Theme, icon: &str, icon_color: Color32, fill: bool, label: &str, selected: bool) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+/// Igual; `foldable`: lleva caret (el estante no se pliega). Devuelve además el rectángulo de la
+/// etiqueta.
+fn section_header_ex(ui: &mut Ui, t: &Theme, label: &str, collapsed: bool, first: bool, foldable: bool) -> (Response, Rect, Rect) {
+    ui.add_space(if first { 0.0 } else { sp::M });
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h::HEAD), Sense::click());
     let p = ui.painter();
-    let r = rect.shrink2(vec2(6.0, 1.0));
-    if selected {
-        p.rect_filled(r, 6.0, t.sel_inactive);
-    } else if resp.hovered() {
-        p.rect_filled(r, 6.0, t.hover);
+    let hovered = ui.rect_contains_pointer(rect);
+    let lr = design::micro(p, pos2(rect.left() + sp::L, rect.center().y), Align2::LEFT_CENTER, label, if hovered && foldable { t.dim } else { t.faint });
+    if foldable && (hovered || collapsed) {
+        let caret = if collapsed { ic::CARET_RIGHT } else { ic::CARET_DOWN };
+        p.text(pos2(lr.right() + sp::XS, rect.center().y), Align2::LEFT_CENTER, caret, design::icon_font(icon::S), t.faint);
     }
-    p.text(pos2(rect.left() + 16.0, rect.center().y), Align2::LEFT_CENTER, icon, theme::icon_font(16.0, fill), icon_color);
-    let g = elided(p, label, FontId::proportional(13.5), t.text, rect.width() - 52.0);
-    p.galley(pos2(rect.left() + 40.0, rect.center().y - g.size().y / 2.0), g, t.text);
-    resp
+    (resp, rect, lr)
+}
+
+/// Pista bajo una sección («Usa + para…», «y N más»): `small` `faint`, alineada con el texto de
+/// las filas (x = 40).
+fn side_hint(ui: &mut Ui, t: &Theme, text: &str) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h::HEAD), Sense::hover());
+    let x = rect.left() + NAV_INSET + sp::S + icon::M + sp::S;
+    let g = elided(ui.painter(), text, text::small(), t.faint, rect.right() - NAV_INSET - x);
+    ui.painter().galley(pos2(x, rect.center().y - g.size().y / 2.0), g, t.faint);
+}
+
+/// Rectángulo del botón mini `k` (0 = el de más a la derecha) de un encabezado de sección.
+fn head_btn_rect(hrect: Rect, k: usize) -> Rect {
+    let cx = hrect.right() - HEAD_BTN_EDGE - h::CHIP / 2.0 - k as f32 * (h::CHIP + sp::XXS);
+    Rect::from_center_size(pos2(cx, hrect.center().y), vec2(h::CHIP, h::CHIP))
+}
+
+/// Ítem de la barra lateral: fila de navegación; activo = capa gris (el ícono en acento lo pone
+/// quien llama). `count`: conteo a la derecha.
+#[allow(clippy::too_many_arguments)]
+fn side_item(ui: &mut Ui, t: &Theme, icon: &str, icon_color: Color32, fill: bool, label: &str, selected: bool, count: Option<&str>) -> Response {
+    side_row(ui, t, Row { icon_color: Some(icon_color), icon_filled: fill, ..side_spec(icon, label, selected, count) })
+}
+
+/// La fila de la barra lateral sin ícono definido (punto de color, ícono de archivo).
+fn side_spec<'a>(icon: &'a str, label: &'a str, selected: bool, count: Option<&'a str>) -> Row<'a> {
+    Row {
+        trailing: count.map_or(Trailing::None, Trailing::Count),
+        sel: if selected { Sel::Unfocused } else { Sel::None },
+        inset: NAV_INSET,
+        height: h::NAV,
+        ..Row::new(icon, label)
+    }
+}
+
+fn side_row(ui: &mut Ui, t: &Theme, spec: Row) -> Response {
+    let (rect, a) = ui.allocate_exact_size(vec2(ui.available_width(), h::NAV), Sense::hover());
+    theme::want_cjk(spec.label);
+    design::row_at(ui, t, rect, a.id, spec)
+}
+
+/// Ícono de un archivo del estante: el de Windows si ya llegó (como en la lista); si no, el glifo
+/// de Rayo en contorno `dim`. La carpeta, rellena en `folder`.
+fn shelf_icon(ui: &Ui, t: &Theme, center: egui::Pos2, path: &str) {
+    let p = ui.painter();
+    let is_dir = fsx::is_dir_like(path);
+    let ext = fsx::ext_of(path);
+    let (g, c) = crate::ui::icons::for_entry(t, is_dir, &ext);
+    if is_dir {
+        p.text(center, Align2::CENTER_CENTER, g, design::icon_fill(icon::M), c);
+        return;
+    }
+    let px = super::shellicons::px_for(ui.ctx(), icon::M);
+    // Recién llegado, el de Windows aparece mientras el glifo se desvanece.
+    let mut glyph_a = 1.0;
+    if let Some((tex, shown)) = super::shellicons::get(path, &ext, px) {
+        let side = px as f32 / ui.ctx().pixels_per_point();
+        let r = Rect::from_center_size(center, vec2(side, side));
+        p.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE.gamma_multiply(shown));
+        glyph_a = 1.0 - shown;
+    }
+    if glyph_a > 0.0 {
+        p.text(center, Align2::CENTER_CENTER, g, design::icon_font(icon::M), t.dim.gamma_multiply(glyph_a));
+    }
 }
 
 /// Resalta una fila de la barra lateral mientras se arrastran archivos encima. Devuelve lo que se
 /// soltó en ella (de Rayo o de otra app), si se soltó algo.
 fn sidebar_drop(ui: &Ui, t: &Theme, resp: &Response) -> Option<Vec<String>> {
     if crate::ui::views::drag_hovering(resp) {
-        let r = resp.rect.shrink2(vec2(6.0, 1.0));
-        ui.painter().rect_filled(r, 6.0, t.accent.gamma_multiply(0.18));
-        ui.painter().rect_stroke(r, 6.0, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
+        let r = resp.rect.shrink2(vec2(NAV_INSET, 1.0));
+        ui.painter().rect_filled(r, radius::M, t.accent_soft);
+        design::focus_ring(ui.painter(), t, r, radius::M);
     }
     crate::ui::views::take_drop(resp)
 }
@@ -84,48 +154,52 @@ fn drop_into(ui: &Ui, t: &Theme, resp: &Response, dest: &str, actions: &mut Vec<
 }
 
 /// Menú de clic derecho de un lugar, una unidad o un favorito.
-fn location_menu(ui: &mut Ui, path: &str, split: bool, groups: &[String], actions: &mut Vec<Action>) {
-    let item = |ui: &mut Ui, icon: &str, text: &str| ui.add(egui::Button::new(format!("{icon}  {text}")).min_size(vec2(220.0, 0.0))).clicked();
-    if item(ui, ic::FOLDER_OPEN, t!("comun.abrir")) {
+fn location_menu(ui: &mut Ui, t: &Theme, path: &str, split: bool, groups: &[String], actions: &mut Vec<Action>) {
+    if design::menu_item(ui, t, ic::FOLDER_OPEN, t!("comun.abrir"), "").clicked() {
         actions.push(Action::Navigate(path.to_string()));
     }
-    if item(ui, ic::TABS, t!("barra.abrir_pestana_nueva")) {
+    if design::menu_item(ui, t, ic::TABS, t!("barra.abrir_pestana_nueva"), "").clicked() {
         actions.push(Action::NewTab(Some(path.to_string())));
     }
-    if split && item(ui, ic::SQUARE_SPLIT_HORIZONTAL, t!("barra.abrir_otro_panel")) {
+    if split && design::menu_item(ui, t, ic::SQUARE_SPLIT_HORIZONTAL, t!("barra.abrir_otro_panel"), "").clicked() {
         actions.push(Action::OpenOther(path.to_string()));
     }
     if !groups.is_empty() {
-        ui.menu_button(format!("{}  {}", ic::STAR, t!("comun.agregar_favoritos")), |ui| {
+        let r = design::menu_item_ex(ui, t, MenuItem { icon: ic::STAR, label: t!("comun.agregar_favoritos"), submenu: true, ..Default::default() });
+        egui::containers::menu::SubMenu::new().show(ui, &r, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.set_max_width(design::MENU_W);
             for (gi, g) in groups.iter().enumerate() {
-                if ui.button(g).clicked() {
+                if design::menu_item(ui, t, ic::FOLDER, g, "").clicked() {
                     actions.push(Action::AddFavorite(gi, path.to_string()));
                 }
             }
         });
     }
-    ui.separator();
-    if item(ui, ic::TERMINAL, t!("barra.abrir_terminal_aqui")) {
+    design::menu_sep(ui, t);
+    if design::menu_item(ui, t, ic::TERMINAL, t!("barra.abrir_terminal_aqui"), "").clicked() {
         actions.push(Action::Terminal(path.to_string()));
     }
-    if item(ui, ic::FOLDER_OPEN, t!("barra.mostrar_explorador")) {
+    if design::menu_item(ui, t, ic::FOLDER_OPEN, t!("barra.mostrar_explorador"), "").clicked() {
         actions.push(Action::ExplorerAt(path.to_string()));
     }
-    if item(ui, ic::INFO, t!("barra.propiedades")) {
+    if design::menu_item(ui, t, ic::INFO, t!("barra.propiedades"), "").clicked() {
         actions.push(Action::Properties(path.to_string()));
     }
 }
 
+/// Unidad: línea 1 como un ítem, con el espacio libre a la derecha (con hover, el botón de
+/// expulsar); línea 2, el medidor de puntos. El detalle va al tooltip.
 fn drive_row(ui: &mut Ui, t: &Theme, d: &Drive, selected: bool, split: bool, groups: &[String], actions: &mut Vec<Action>) {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h::DRIVE), Sense::click());
+    let resp = if d.total > 0 { design::tip(resp, t, &tf!("barra.libres", libre = fsx::human_size(d.free), total = fsx::human_size(d.total))) } else { resp };
     drop_into(ui, t, &resp, &d.root(), actions);
     let p = ui.painter().clone();
-    let r = rect.shrink2(vec2(6.0, 1.0));
-    if selected {
-        p.rect_filled(r, 6.0, t.sel_inactive);
-    } else if resp.hovered() {
-        p.rect_filled(r, 6.0, t.hover);
-    }
+    let pill = rect.shrink2(vec2(NAV_INSET, 1.0));
+    // Por posición (no `hovered`): el botón de expulsar queda encima de la fila.
+    let hovering = ui.rect_contains_pointer(rect);
+    let hov = design::hover_amount(ui.ctx(), resp.id, hovering);
+    design::state_fill(&p, t, pill, radius::M, hov, resp.is_pointer_button_down_on(), if selected { Sel::Unfocused } else { Sel::None });
     let icon = match d.kind {
         DriveKind::Removable => ic::USB,
         DriveKind::Network => ic::GLOBE,
@@ -133,7 +207,11 @@ fn drive_row(ui: &mut Ui, t: &Theme, d: &Drive, selected: bool, split: bool, gro
         _ if d.ejectable => ic::USB,
         _ => ic::HARD_DRIVE,
     };
-    p.text(pos2(rect.left() + 16.0, rect.top() + 15.0), Align2::LEFT_CENTER, icon, theme::icon_font(17.0, false), t.dim);
+    let y1 = rect.top() + h::NAV / 2.0;
+    let x_icon = pill.left() + sp::S;
+    let x_text = x_icon + icon::M + sp::S;
+    let right = pill.right() - sp::S;
+    p.text(pos2(x_icon + icon::M / 2.0, y1), Align2::CENTER_CENTER, icon, design::icon_font(icon::M), if selected { t.accent } else { t.dim });
     let title = if d.label.is_empty() {
         match d.kind {
             DriveKind::Fixed => tf!("barra.disco_local", letra = d.letter),
@@ -144,22 +222,25 @@ fn drive_row(ui: &mut Ui, t: &Theme, d: &Drive, selected: bool, split: bool, gro
     } else {
         format!("{} ({}:)", d.label, d.letter)
     };
-    let eject_w = if d.ejectable { 28.0 } else { 0.0 };
-    let g = elided(&p, &title, FontId::proportional(13.0), t.text, rect.width() - 52.0 - eject_w);
-    p.galley(pos2(rect.left() + 40.0, rect.top() + 6.0), g, t.text);
+    // A la derecha: el espacio libre, o con hover el botón de expulsar.
+    let mut used = 0.0;
+    if d.ejectable && hovering {
+        let er = head_btn_rect(Rect::from_x_y_ranges(rect.x_range(), rect.top()..=rect.top() + h::NAV), 0);
+        let eresp = design::icon_button_at(ui, t, er, Id::new(("eject", d.letter)), ic::EJECT, IconBtn::mini());
+        let eresp = design::tip(eresp, t, t!("barra.expulsar_forma_segura"));
+        if eresp.clicked() {
+            actions.push(Action::Eject(d.letter));
+        }
+        used = right - er.left();
+    } else if d.total > 0 {
+        used = p.text(pos2(right, y1), Align2::RIGHT_CENTER, fsx::human_size(d.free), text::mono_s(), t.dim).width();
+    }
+    let g = elided(&p, &title, text::body(), t.text, right - x_text - if used > 0.0 { used + sp::S } else { 0.0 });
+    p.galley(pos2(x_text, y1 - g.size().y / 2.0), g, t.text);
     if d.total > 0 {
-        let bar = Rect::from_min_size(pos2(rect.left() + 40.0, rect.top() + 26.0), vec2(rect.width() - 56.0 - eject_w, 4.0));
-        p.rect_filled(bar, 2.0, t.border);
         let frac = d.used_frac().clamp(0.0, 1.0);
-        let fill = if frac > 0.9 { t.danger } else { t.accent };
-        p.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * frac, 4.0)), 2.0, fill);
-        p.text(
-            pos2(rect.left() + 40.0, rect.top() + 38.0),
-            Align2::LEFT_CENTER,
-            tf!("barra.libres", libre = fsx::human_size(d.free), total = fsx::human_size(d.total)),
-            FontId::proportional(10.5),
-            t.faint,
-        );
+        let meter = Rect::from_min_max(pos2(x_text, rect.top() + DRIVE_METER_Y - 1.5), pos2(right, rect.top() + DRIVE_METER_Y + 1.5));
+        design::dot_meter(&p, t, meter, frac, if frac > 0.9 { t.danger } else { t.accent });
     }
     if resp.clicked() {
         actions.push(Action::Navigate(d.root()));
@@ -167,22 +248,11 @@ fn drive_row(ui: &mut Ui, t: &Theme, d: &Drive, selected: bool, split: bool, gro
     if resp.middle_clicked() {
         actions.push(Action::NewTab(Some(d.root())));
     }
-    if d.ejectable {
-        let er = Rect::from_center_size(pos2(rect.right() - 22.0, rect.top() + 16.0), vec2(24.0, 22.0));
-        let eresp = ui.interact(er, Id::new(("eject", d.letter)), Sense::click()).on_hover_text(t!("barra.expulsar_forma_segura"));
-        if eresp.hovered() {
-            p.rect_filled(er, 5.0, t.border);
-        }
-        p.text(er.center(), Align2::CENTER_CENTER, ic::EJECT, theme::icon_font(14.0, false), if eresp.hovered() { t.text } else { t.dim });
-        if eresp.clicked() {
-            actions.push(Action::Eject(d.letter));
-        }
-    }
-    resp.context_menu(|ui| {
-        location_menu(ui, &d.root(), split, groups, actions);
+    design::context_menu(&resp, t, |ui| {
+        location_menu(ui, t, &d.root(), split, groups, actions);
         if d.ejectable {
-            ui.separator();
-            if ui.button(format!("{}  {}", ic::EJECT, t!("barra.expulsar"))).clicked() {
+            design::menu_sep(ui, t);
+            if design::menu_item(ui, t, ic::EJECT, t!("barra.expulsar"), "").clicked() {
                 actions.push(Action::Eject(d.letter));
             }
         }
@@ -209,13 +279,19 @@ pub struct SidebarIn<'a> {
 
 pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
     let t = s.t;
-    ui.add_space(4.0);
-    egui::ScrollArea::vertical().id_salt("sidebar").auto_shrink([false, false]).show(ui, |ui| {
+    // Hairline a la derecha: el borde se arrastra para cambiar el ancho.
+    let full = ui.max_rect();
+    ui.painter().vline(full.right() - stroke::HAIR / 2.0, full.y_range(), Stroke::new(stroke::HAIR, t.border));
+    // «LUGARES» queda centrado con la barra de herramientas (alto 44) que está al lado.
+    ui.add_space((h::TOOLBAR - h::HEAD) / 2.0);
+    // Abajo queda el pie del botón de tema (lo pinta `app`): la lista se desplaza por encima.
+    let list_h = (ui.available_height() - SIDEBAR_FOOT).max(h::NAV);
+    egui::ScrollArea::vertical().id_salt("sidebar").auto_shrink([false, false]).max_height(list_h).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         let cur_lower = s.current.to_lowercase();
 
-        let (h, _) = section_header(ui, t, t!("barra.lugares"), s.cfg.places_collapsed);
-        if h.clicked() {
+        let (hd, _) = section_header(ui, t, t!("barra.lugares"), s.cfg.places_collapsed, true);
+        if hd.clicked() {
             s.cfg.places_collapsed ^= true;
         }
         let groups: Vec<String> = s.cfg.groups.iter().map(|g| g.name.clone()).collect();
@@ -223,7 +299,7 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
         if !s.cfg.places_collapsed {
             for p in s.places {
                 let sel = p.path.to_lowercase() == cur_lower;
-                let r = side_item(ui, t, p.icon, if sel { t.accent } else { t.dim }, false, p.name, sel);
+                let r = side_item(ui, t, p.icon, if sel { t.accent } else { t.dim }, false, p.name, sel, None);
                 drop_into(ui, t, &r, &p.path, actions);
                 if r.clicked() {
                     actions.push(Action::Navigate(p.path.clone()));
@@ -231,16 +307,16 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
                 if r.middle_clicked() {
                     actions.push(Action::NewTab(Some(p.path.clone())));
                 }
-                r.context_menu(|ui| location_menu(ui, &p.path, split, &groups, actions));
+                design::context_menu(&r, t, |ui| location_menu(ui, t, &p.path, split, &groups, actions));
             }
             // Lugares especiales: lo reciente de todo el equipo y la papelera.
             let sel = s.special == "recientes";
-            let r = side_item(ui, t, ic::CLOCK_COUNTER_CLOCKWISE, if sel { t.accent } else { t.dim }, false, t!("barra.recientes"), sel);
+            let r = side_item(ui, t, ic::CLOCK_COUNTER_CLOCKWISE, if sel { t.accent } else { t.dim }, false, t!("barra.recientes"), sel, None);
             if r.clicked() || r.middle_clicked() {
                 actions.push(Action::OpenRecent);
             }
             let sel = s.special == "papelera";
-            let r = side_item(ui, t, ic::TRASH_SIMPLE, if sel { t.accent } else { t.dim }, false, t!("comun.papelera"), sel);
+            let r = side_item(ui, t, ic::TRASH_SIMPLE, if sel { t.accent } else { t.dim }, false, t!("comun.papelera"), sel, None);
             if let Some(files) = sidebar_drop(ui, t, &r) {
                 // Soltar en la papelera: mandar ahí (como la tecla Supr).
                 actions.push(Action::Delete(files, false));
@@ -250,8 +326,8 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
             }
         }
 
-        let (h, _) = section_header(ui, t, t!("barra.unidades"), s.cfg.drives_collapsed);
-        if h.clicked() {
+        let (hd, _) = section_header(ui, t, t!("barra.unidades"), s.cfg.drives_collapsed, false);
+        if hd.clicked() {
             s.cfg.drives_collapsed ^= true;
         }
         if !s.cfg.drives_collapsed {
@@ -264,14 +340,16 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
         // Etiquetas de color (solo las que se usan): todo lo de un color, esté donde esté.
         let counts = fsx::tags::counts();
         if counts.iter().any(|&n| n > 0) {
-            let (h, _) = section_header(ui, t, t!("barra.etiquetas"), s.cfg.tags_collapsed);
-            if h.clicked() {
+            let (hd, _) = section_header(ui, t, t!("barra.etiquetas"), s.cfg.tags_collapsed, false);
+            if hd.clicked() {
                 s.cfg.tags_collapsed ^= true;
             }
             if !s.cfg.tags_collapsed {
                 for (i, &n) in counts.iter().enumerate().filter(|(_, n)| **n > 0) {
                     let sel = s.special == fsx::tags::COLORS[i].0;
-                    let r = side_item(ui, t, egui_phosphor::fill::CIRCLE, crate::ui::views::tag_color(i), true, crate::ui::views::tag_label(i), sel).on_hover_text(tp!(n, "comun.elementos_n", n = fsx::thousands(n)));
+                    let count = fsx::thousands(n);
+                    let spec = Row { dot: Some(t.tags[i.min(6)]), ..side_spec("", crate::ui::views::tag_label(i), sel, Some(&count)) };
+                    let r = design::tip(side_row(ui, t, spec), t, &tp!(n, "comun.elementos_n", n = fsx::thousands(n)));
                     if r.clicked() || r.middle_clicked() {
                         actions.push(Action::OpenTag(i));
                     }
@@ -281,14 +359,14 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
 
         // Nube: OneDrive, Dropbox, iCloud, Google Drive… (lo que haya en este equipo).
         if !s.clouds.is_empty() {
-            let (h, _) = section_header(ui, t, t!("barra.nube"), s.cfg.cloud_collapsed);
-            if h.clicked() {
+            let (hd, _) = section_header(ui, t, t!("barra.nube"), s.cfg.cloud_collapsed, false);
+            if hd.clicked() {
                 s.cfg.cloud_collapsed ^= true;
             }
             if !s.cfg.cloud_collapsed {
                 for (name, path) in s.clouds {
                     let sel = path.to_lowercase() == cur_lower;
-                    let r = side_item(ui, t, ic::CLOUD, if sel { t.accent } else { t.dim }, false, name, sel).on_hover_text(path);
+                    let r = design::tip(side_item(ui, t, ic::CLOUD, if sel { t.accent } else { t.dim }, false, name, sel, None), t, path);
                     drop_into(ui, t, &r, path, actions);
                     if r.clicked() {
                         actions.push(Action::Navigate(path.clone()));
@@ -302,18 +380,12 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
 
         // Conexiones: SMB, WebDAV y SFTP guardados; "+" agrega una.
         {
-            let (h, hrect) = section_header(ui, t, t!("barra.conexiones"), s.cfg.connections_collapsed);
-            if h.clicked() {
+            let (hd, hrect) = section_header(ui, t, t!("barra.conexiones"), s.cfg.connections_collapsed, false);
+            if hd.clicked() {
                 s.cfg.connections_collapsed ^= true;
             }
-            let add_r = Rect::from_center_size(pos2(hrect.right() - 14.0, hrect.center().y), vec2(20.0, 20.0));
-            let add = ui.interact(add_r, Id::new("conn-add"), Sense::click()).on_hover_text(t!("barra.nueva_conexion"));
-            if add.hovered() {
-                ui.painter().rect_filled(add_r, 4.0, t.hover);
-            }
-            if h.hovered() || add.hovered() || s.cfg.connections.is_empty() {
-                ui.painter().text(add_r.center(), Align2::CENTER_CENTER, ic::PLUS, theme::icon_font(12.0, false), t.dim);
-            }
+            let visible = ui.rect_contains_pointer(hrect) || s.cfg.connections.is_empty();
+            let add = design::tip(mini_btn(ui, t, head_btn_rect(hrect, 0), Id::new("conn-add"), ic::PLUS, visible), t, t!("barra.nueva_conexion"));
             if add.clicked() {
                 actions.push(Action::EditConnection(None));
             }
@@ -329,22 +401,19 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
                     // Con "\\nas\fotos" y "\\nas\fotos2", estar en la segunda no marca la primera.
                     let root = c.root().to_lowercase();
                     let sel = cur_lower.strip_prefix(&root).is_some_and(|r| r.is_empty() || r.starts_with('\\') || root.ends_with('\\'));
-                    let r = side_item(ui, t, icon, if sel { t.accent } else { t.dim }, false, &label, sel).on_hover_text(c.unc());
+                    let r = design::tip(side_item(ui, t, icon, if sel { t.accent } else { t.dim }, false, &label, sel, None), t, &c.unc());
                     if r.clicked() {
                         actions.push(Action::Connect(i));
                     }
-                    r.context_menu(|ui| {
-                        if ui.button(format!("{}  {}", ic::PENCIL_SIMPLE, t!("barra.editar_conexion"))).clicked() {
+                    design::context_menu(&r, t, |ui| {
+                        if design::menu_item(ui, t, ic::PENCIL_SIMPLE, t!("barra.editar_conexion"), "").clicked() {
                             actions.push(Action::EditConnection(Some(i)));
-                            ui.close();
                         }
-                        if ui.button(format!("{}  {}", ic::KEY, t!("barra.olvidar_contrasena"))).clicked() {
+                        if design::menu_item(ui, t, ic::KEY, t!("barra.olvidar_contrasena"), "").clicked() {
                             actions.push(Action::ForgetPassword(i));
-                            ui.close();
                         }
-                        if ui.button(format!("{}  {}", ic::TRASH, t!("barra.borrar_conexion"))).clicked() {
+                        if design::menu_item_ex(ui, t, MenuItem { icon: ic::TRASH, label: t!("barra.borrar_conexion"), danger: true, ..Default::default() }).clicked() {
                             actions.push(Action::DeleteConnection(i));
-                            ui.close();
                         }
                     });
                 }
@@ -354,23 +423,25 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
         // Colecciones: carpetas virtuales (soltar archivos en una los agrega).
         let colls = fsx::collections::list();
         if !colls.is_empty() {
-            let (h, _) = section_header(ui, t, t!("barra.colecciones"), s.cfg.collections_collapsed);
-            if h.clicked() {
+            let (hd, _) = section_header(ui, t, t!("barra.colecciones"), s.cfg.collections_collapsed, false);
+            if hd.clicked() {
                 s.cfg.collections_collapsed ^= true;
             }
             if !s.cfg.collections_collapsed {
                 for (name, n) in &colls {
-                    let r = side_item(ui, t, ic::BOOKMARKS_SIMPLE, t.dim, false, name, s.collection == name).on_hover_text(tp!(*n, "comun.elementos_n", n = fsx::thousands(*n)));
+                    let count = fsx::thousands(*n);
+                    let sel = s.collection == name;
+                    let r = side_item(ui, t, ic::BOOKMARKS_SIMPLE, if sel { t.accent } else { t.dim }, false, name, sel, Some(&count));
+                    let r = design::tip(r, t, &tp!(*n, "comun.elementos_n", n = fsx::thousands(*n)));
                     if let Some(files) = sidebar_drop(ui, t, &r) {
                         actions.push(Action::AddToCollection(name.clone(), files));
                     }
                     if r.clicked() || r.middle_clicked() {
                         actions.push(Action::OpenCollection(name.clone()));
                     }
-                    r.context_menu(|ui| {
-                        if ui.button(format!("{}  {}", ic::TRASH, t!("barra.borrar_coleccion"))).clicked() {
+                    design::context_menu(&r, t, |ui| {
+                        if design::menu_item_ex(ui, t, MenuItem { icon: ic::TRASH, label: t!("barra.borrar_coleccion"), danger: true, ..Default::default() }).clicked() {
                             actions.push(Action::DeleteCollection(name.clone()));
-                            ui.close();
                         }
                     });
                 }
@@ -381,51 +452,62 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
         // lado. Se ve si tiene algo, o mientras se arrastran archivos (para soltarlos ahí).
         let dragging = egui::DragAndDrop::has_payload_of_type::<crate::ui::views::DragFiles>(ui.ctx()) || ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
         if !s.shelf.is_empty() || dragging {
-            let (_, hrect) = section_header(ui, t, &format!("{}  ·  {}", t!("barra.estante"), s.shelf.len()), false);
-            let h = ui.interact(hrect, Id::new("shelf-drag"), Sense::click_and_drag());
-            if let Some(files) = sidebar_drop(ui, t, &h) {
+            let (_, hrect, lr) = section_header_ex(ui, t, t!("barra.estante"), false, false, false);
+            if !s.shelf.is_empty() {
+                // El conteo, junto a la etiqueta.
+                ui.painter().text(pos2(lr.right() + sp::XS, hrect.center().y), Align2::LEFT_CENTER, fsx::thousands(s.shelf.len()), text::mono_s(), t.faint);
+            }
+            let hd = ui.interact(hrect, Id::new("shelf-drag"), Sense::click_and_drag());
+            if let Some(files) = sidebar_drop(ui, t, &hd) {
                 actions.push(Action::ShelfAdd(files));
             }
             // Arrastrar el título lleva todo lo del estante.
-            if h.drag_started() && !s.shelf.is_empty() {
-                h.dnd_set_drag_payload(crate::ui::views::DragFiles(s.shelf.to_vec()));
+            if hd.drag_started() && !s.shelf.is_empty() {
+                hd.dnd_set_drag_payload(crate::ui::views::DragFiles(s.shelf.to_vec()));
+            }
+            if !s.shelf.is_empty() {
+                // Acciones en el encabezado, como las demás secciones: copiar aquí, mover aquí, vaciar.
+                let here = !s.current.is_empty();
+                let btns = [
+                    (2, ic::COPY, here, t!("barra.estante_copiar_aqui"), Action::ShelfToHere(false)),
+                    (1, ic::ARROW_BEND_DOWN_RIGHT, here, t!("barra.estante_mover_aqui"), Action::ShelfToHere(true)),
+                    (0, ic::X, true, t!("barra.vaciar_estante"), Action::ShelfClear),
+                ];
+                for (k, glyph, enabled, tip, action) in btns {
+                    let r = design::icon_button_at(ui, t, head_btn_rect(hrect, k), Id::new(("shelf-btn", k)), glyph, IconBtn { enabled, ..IconBtn::mini() });
+                    if design::tip(r, t, tip).clicked() {
+                        actions.push(action);
+                    }
+                }
             }
             if s.shelf.is_empty() {
-                let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::hover());
-                ui.painter().rect_stroke(r.shrink2(vec2(10.0, 4.0)), 6.0, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-                ui.painter().text(r.center(), Align2::CENTER_CENTER, t!("barra.suelta_estante"), FontId::proportional(12.0), t.faint);
+                // Vacío: un recuadro con trama de puntos para soltar.
+                let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), sp::XXL), Sense::hover());
+                let well = r.shrink2(vec2(NAV_INSET, sp::XS));
+                design::dot_grid(ui.painter(), t, well.shrink(sp::XS));
+                ui.painter().rect_stroke(well, radius::M, Stroke::new(stroke::HAIR, t.border), StrokeKind::Inside);
+                design::micro(ui.painter(), well.center(), Align2::CENTER_CENTER, t!("barra.suelta_estante"), t.faint);
                 if let Some(files) = sidebar_drop(ui, t, &resp) {
                     actions.push(Action::ShelfAdd(files));
                 }
             } else {
                 for p in s.shelf.iter().take(8) {
-                    let (g, c) = crate::ui::icons::for_entry(t, fsx::is_dir_like(p), &fsx::ext_of(p));
-                    let r = side_item(ui, t, g, c, true, &fsx::file_name(p), false).on_hover_text(p);
+                    // El ícono se pinta aparte (el de Windows, como en la lista); " " deja su lugar.
+                    let r = side_row(ui, t, side_spec(" ", &fsx::file_name(p), false, None));
+                    shelf_icon(ui, t, pos2(r.rect.left() + NAV_INSET + sp::S + icon::M / 2.0, r.rect.center().y), p);
+                    let r = design::tip(r, t, p);
                     if r.drag_started() {
                         r.dnd_set_drag_payload(crate::ui::views::DragFiles(vec![p.clone()]));
                     }
-                    r.context_menu(|ui| {
-                        if ui.button(format!("{}  {}", ic::X, t!("barra.quitar_estante"))).clicked() {
+                    design::context_menu(&r, t, |ui| {
+                        if design::menu_item(ui, t, ic::X, t!("barra.quitar_estante"), "").clicked() {
                             actions.push(Action::ShelfRemove(p.clone()));
-                            ui.close();
                         }
                     });
                 }
                 if s.shelf.len() > 8 {
-                    ui.label(egui::RichText::new(tf!("barra.y_mas", n = s.shelf.len() - 8)).size(11.5).color(t.faint));
+                    side_hint(ui, t, &tf!("barra.y_mas", n = s.shelf.len() - 8));
                 }
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-                    if icon_btn(ui, t, ic::COPY, !s.current.is_empty(), false, t!("barra.estante_copiar_aqui")).clicked() {
-                        actions.push(Action::ShelfToHere(false));
-                    }
-                    if icon_btn(ui, t, ic::ARROW_BEND_DOWN_RIGHT, !s.current.is_empty(), false, t!("barra.estante_mover_aqui")).clicked() {
-                        actions.push(Action::ShelfToHere(true));
-                    }
-                    if icon_btn(ui, t, ic::X, true, false, t!("barra.vaciar_estante")).clicked() {
-                        actions.push(Action::ShelfClear);
-                    }
-                });
             }
         }
 
@@ -433,11 +515,10 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
         for gi in 0..ngroups {
             let editing = s.group_edit.as_ref().is_some_and(|(i, _)| *i == gi);
             if editing {
-                ui.add_space(10.0);
+                ui.add_space(sp::M);
                 let (_, buf) = s.group_edit.as_mut().unwrap();
                 let mut f = super::widgets::Field::new(("grupo-nombre", gi), egui_phosphor::regular::TAG, t!("barra.nombre_grupo"));
-                f.width = ui.available_width() - 12.0;
-                f.height = 30.0;
+                f.width = ui.available_width() - sp::M;
                 let r = super::widgets::field(ui, t, buf, f).edit;
                 r.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) || r.lost_focus() {
@@ -451,38 +532,30 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
             }
             let collapsed = s.cfg.groups[gi].collapsed;
             let name = s.cfg.groups[gi].name.clone();
-            let (h, hrect) = section_header(ui, t, &name, collapsed);
-            if let Some(files) = sidebar_drop(ui, t, &h) {
+            let (hd, hrect) = section_header(ui, t, &name, collapsed, false);
+            if let Some(files) = sidebar_drop(ui, t, &hd) {
                 // Soltar carpetas en el título de un grupo: agregarlas a sus favoritos.
                 for f in files.into_iter().filter(|f| fsx::is_dir_like(f)) {
                     actions.push(Action::AddFavorite(gi, f));
                 }
             }
-            if h.clicked() {
+            if hd.clicked() {
                 s.cfg.groups[gi].collapsed ^= true;
             }
-            // Botones del grupo: agregar carpeta actual y menú.
-            let add_r = Rect::from_center_size(pos2(hrect.right() - 36.0, hrect.center().y), vec2(20.0, 20.0));
-            let more_r = Rect::from_center_size(pos2(hrect.right() - 14.0, hrect.center().y), vec2(20.0, 20.0));
-            let add = ui.interact(add_r, Id::new(("gadd", gi)), Sense::click()).on_hover_text(t!("barra.agregar_carpeta_actual"));
-            let more = ui.interact(more_r, Id::new(("gmore", gi)), Sense::click());
-            let p = ui.painter();
-            for (r, resp, icon) in [(add_r, &add, ic::PLUS), (more_r, &more, ic::DOTS_THREE)] {
-                if resp.hovered() {
-                    p.rect_filled(r, 4.0, t.hover);
-                }
-                if h.hovered() || resp.hovered() {
-                    p.text(r.center(), Align2::CENTER_CENTER, icon, theme::icon_font(12.0, false), t.dim);
-                }
-            }
+            // Botones del grupo: agregar carpeta actual y menú (con hover, o mientras el menú está abierto).
+            let more_id = Id::new(("gmore", gi));
+            let menu_open = egui::Popup::is_id_open(ui.ctx(), more_id.with("popup"));
+            let visible = ui.rect_contains_pointer(hrect) || menu_open;
+            let add = design::tip(mini_btn(ui, t, head_btn_rect(hrect, 1), Id::new(("gadd", gi)), ic::PLUS, visible), t, t!("barra.agregar_carpeta_actual"));
+            let more = mini_btn(ui, t, head_btn_rect(hrect, 0), more_id, ic::DOTS_THREE, visible);
             if add.clicked() && !s.current.is_empty() {
                 actions.push(Action::AddFavorite(gi, s.current.to_string()));
             }
-            egui::Popup::menu(&more).show(|ui| {
-                if ui.button(format!("{}  {}", ic::PENCIL_SIMPLE, t!("barra.renombrar_grupo"))).clicked() {
+            design::popup_menu(&more, t, |ui| {
+                if design::menu_item(ui, t, ic::PENCIL_SIMPLE, t!("barra.renombrar_grupo"), "").clicked() {
                     actions.push(Action::RenameGroup(gi));
                 }
-                if ui.button(format!("{}  {}", ic::TRASH, t!("barra.eliminar_grupo"))).clicked() {
+                if design::menu_item_ex(ui, t, MenuItem { icon: ic::TRASH, label: t!("barra.eliminar_grupo"), danger: true, ..Default::default() }).clicked() {
                     actions.push(Action::DeleteGroup(gi));
                 }
             });
@@ -490,15 +563,12 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
                 continue;
             }
             if s.cfg.groups[gi].items.is_empty() {
-                ui.horizontal(|ui| {
-                    ui.add_space(16.0);
-                    ui.label(egui::RichText::new(t!("barra.usa_agregar_carpeta_actual")).size(11.5).color(t.faint));
-                });
+                side_hint(ui, t, t!("barra.usa_agregar_carpeta_actual"));
             }
             for (ii, path) in s.cfg.groups[gi].items.iter().enumerate() {
                 let sel = path.to_lowercase() == cur_lower;
                 let label = if path.len() <= 3 { path.clone() } else { fsx::file_name(path) };
-                let r = side_item(ui, t, ic::FOLDER, t.folder, true, &label, sel).on_hover_text(path);
+                let r = design::tip(side_item(ui, t, ic::FOLDER, if sel { t.accent } else { t.folder }, true, &label, sel, None), t, path);
                 drop_into(ui, t, &r, path, actions);
                 if r.clicked() {
                     actions.push(Action::Navigate(path.clone()));
@@ -506,23 +576,22 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
                 if r.middle_clicked() {
                     actions.push(Action::NewTab(Some(path.clone())));
                 }
-                r.context_menu(|ui| {
-                    location_menu(ui, path, split, &[], actions);
-                    ui.separator();
-                    if ui.button(format!("{}  {}", ic::X, t!("barra.quitar_favoritos"))).clicked() {
+                design::context_menu(&r, t, |ui| {
+                    location_menu(ui, t, path, split, &[], actions);
+                    design::menu_sep(ui, t);
+                    if design::menu_item(ui, t, ic::X, t!("barra.quitar_favoritos"), "").clicked() {
                         actions.push(Action::RemoveFavorite(gi, ii));
                     }
                 });
             }
         }
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.add_space(10.0);
-            if ui.button(egui::RichText::new(format!("{}  {}", ic::PLUS, t!("comun.nuevo_grupo"))).color(t.dim)).clicked() {
-                actions.push(Action::NewGroup);
-            }
-        });
-        ui.add_space(12.0);
+        ui.add_space(sp::M);
+        // Una fila más de la barra lateral (ícono y texto en la misma rejilla), discreta.
+        let spec = Row { icon_color: Some(t.faint), color: Some(t.dim), inset: NAV_INSET, height: h::NAV, ..Row::new(ic::PLUS, t!("comun.nuevo_grupo")) };
+        if design::row(ui, t, Id::new("sidebar-new-group"), spec).clicked() {
+            actions.push(Action::NewGroup);
+        }
+        ui.add_space(sp::M);
     });
 }
 
@@ -530,14 +599,27 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
 
 /// Pestañas de un panel: `show` son los índices (en `tabs`) que le pertenecen.
 /// Alto de la fila de arriba (pestañas y botones de la ventana): es la barra de título.
-pub const TITLE_H: f32 = 40.0;
-/// Cuadro y tamaño de la X de las pestañas y del "+" (iguales, para que se vean parejos).
-const TAB_BTN: f32 = 22.0;
+pub const TITLE_H: f32 = h::TITLE;
+/// La pestaña ocupa desde 6 px bajo el borde de arriba hasta el fondo de la tira.
+const TAB_TOP: f32 = 6.0;
 /// La X se dibuja en diagonal (ocupa menos): un poco más grande para verse igual que el "+".
-const TAB_X_ICON: f32 = 14.0;
-const TAB_PLUS_ICON: f32 = 12.0;
+const TAB_X_ICON: f32 = icon::TAB_X;
+const TAB_PLUS_ICON: f32 = icon::S;
+/// A este tamaño la tipografía dibuja el "+" un poco más arriba que la X.
+const TAB_PLUS_NUDGE: f32 = 1.25;
+/// Centro de la X: a 15 px del borde derecho de la pestaña.
+const TAB_X_INSET: f32 = 15.0;
+/// Ancho de una pestaña: de 34 (solo el ícono) a 220; la activa, al menos 120 si se puede.
+const TAB_MIN_W: f32 = 34.0;
+const TAB_MAX_W: f32 = 220.0;
+const TAB_ACTIVE_MIN_W: f32 = 120.0;
+/// Ancho máximo de la etiqueta de un grupo.
+const GROUP_CHIP_MAX: f32 = 160.0;
 /// Ancho de los tres botones de la ventana.
 pub const WINDOW_BUTTONS_W: f32 = 3.0 * 46.0;
+/// Íconos de los botones de la ventana: maximizar se ve más grande, va uno más chico.
+const CAPTION_ICON: f32 = icon::CAPTION;
+const CAPTION_ICON_MAX: f32 = icon::S;
 
 /// Pestañas de un panel. `reserve`: espacio a la derecha que no se usa (ahí van los
 /// botones de la ventana). Devuelve dónde termina el botón "+" (lo que sigue es espacio
@@ -573,17 +655,39 @@ fn bar_items(tabs: &[Tab], groups: &[super::config::TabGroup], show: &[usize], c
     out
 }
 
+/// Nombre de un grupo recortado para que su chip no pase de `GROUP_CHIP_MAX`.
+fn group_name_fit(p: &egui::Painter, name: &str, color: Color32) -> String {
+    let fits = |s: &str| design::chip_width(p, &Chip { text: s, dot: Some(color), ..Default::default() }) <= GROUP_CHIP_MAX;
+    if fits(name) {
+        return name.to_string();
+    }
+    let mut s: String = name.to_string();
+    while !s.is_empty() && !fits(&format!("{s}…")) {
+        s.pop();
+    }
+    format!("{s}…")
+}
+
+/// Ancho de la etiqueta de un grupo en la barra.
+fn group_chip_w(p: &egui::Painter, t: &Theme, g: &super::config::TabGroup) -> f32 {
+    let color = t.tags[g.color.min(6)];
+    design::chip_width(p, &Chip { text: &group_name_fit(p, &g.name, color), dot: Some(color), ..Default::default() })
+}
+
 /// La etiqueta de un grupo: clic pliega o despliega, doble clic cambia el nombre, clic derecho
 /// ofrece color, nombre, desagrupar y cerrar.
 fn group_chip(ui: &mut Ui, t: &Theme, g: &super::config::TabGroup, r: Rect, actions: &mut Vec<Action>) {
     let p = ui.painter().clone();
-    let color = crate::ui::views::tag_color(g.color);
+    let color = t.tags[g.color.min(6)];
     let key = Id::new("group-rename");
+    let pill = Rect::from_center_size(r.center(), vec2(r.width(), h::CHIP));
     let renaming: Option<(u64, String, bool)> = ui.data(|d| d.get_temp(key)).filter(|(id, _, _): &(u64, String, bool)| *id == g.id);
     if let Some((id, mut buf, first)) = renaming {
-        p.rect_filled(r.shrink2(vec2(0.0, 6.0)), 6.0, color.gamma_multiply(0.25));
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink2(vec2(6.0, 8.0))));
-        let out = egui::TextEdit::singleline(&mut buf).frame(egui::Frame::NONE).desired_width(r.width() - 12.0).font(theme::semibold(12.0)).show(&mut child);
+        // Como el renombrado de archivos: campo hundido con anillo de foco.
+        p.rect_filled(pill, radius::S, t.sidebar);
+        design::focus_ring(&p, t, pill, radius::S);
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pill.shrink2(vec2(sp::S - sp::XXS, 0.0))));
+        let out = egui::TextEdit::singleline(&mut buf).frame(egui::Frame::NONE).desired_width(pill.width() - 2.0 * sp::S).font(text::small()).vertical_align(egui::Align::Center).show(&mut child);
         if first {
             out.response.request_focus();
             let mut st = out.state.clone();
@@ -602,47 +706,57 @@ fn group_chip(ui: &mut Ui, t: &Theme, g: &super::config::TabGroup, r: Rect, acti
         }
         return;
     }
-    let resp = ui.interact(r, Id::new(("tabgroup", g.id)), Sense::click()).on_hover_text(t!("barra.grupo_plegar"));
-    let pill = r.shrink2(vec2(0.0, 7.0));
-    p.rect_filled(pill, 6.0, if resp.hovered() { color.gamma_multiply(0.38) } else { color.gamma_multiply(0.26) });
+    let resp = design::tip(ui.interact(r, Id::new(("tabgroup", g.id)), Sense::click()), t, t!("barra.grupo_plegar"));
+    let name = group_name_fit(&p, &g.name, color);
+    let chip = Chip { text: &name, dot: Some(color), ..Default::default() };
+    let cr = design::chip_paint(&p, t, pill.left_center(), &chip, resp.hovered());
     if g.collapsed {
-        p.rect_stroke(pill, 6.0, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
+        // Plegado: el subrayado del grupo queda bajo la etiqueta (sus pestañas no se ven).
+        p.line_segment([pos2(cr.left(), r.bottom() - stroke::MARK / 2.0), pos2(cr.right(), r.bottom() - stroke::MARK / 2.0)], Stroke::new(stroke::MARK, color));
     }
-    let gl = p.layout_no_wrap(g.name.clone(), theme::semibold(12.0), color);
-    p.galley(pos2(pill.center().x - gl.size().x / 2.0, pill.center().y - gl.size().y / 2.0), gl, color);
     if resp.double_clicked() {
         ui.data_mut(|d| d.insert_temp(key, (g.id, g.name.clone(), true)));
     } else if resp.clicked() {
         actions.push(Action::ToggleTabGroup(g.id));
     }
-    resp.context_menu(|ui| {
+    design::context_menu(&resp, t, |ui| {
         ui.horizontal(|ui| {
-            for c in 0..crate::fsx::tags::COLORS.len() {
-                let (cr, cresp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
-                ui.painter().circle_filled(cr.center(), 7.0, crate::ui::views::tag_color(c));
-                if c == g.color {
-                    ui.painter().circle_stroke(cr.center(), 9.0, egui::Stroke::new(1.5, t.text));
+            // Siete botones mini con un punto de 12; el elegido, con capa gris.
+            ui.spacing_mut().item_spacing.x = sp::XXS;
+            ui.add_space(sp::XS);
+            for c in 0..t.tags.len() {
+                let cresp = design::icon_button(ui, t, "", IconBtn { on: c == g.color, ..IconBtn::mini() });
+                let center = cresp.rect.center();
+                ui.painter().circle_filled(center, 6.0, t.tags[c]);
+                if !t.dark {
+                    ui.painter().circle_stroke(center, 6.0 - stroke::HAIR / 2.0, Stroke::new(stroke::HAIR, Color32::from_black_alpha(41)));
                 }
+                let cresp = design::tip(cresp, t, crate::ui::views::tag_label(c));
                 if cresp.clicked() {
                     actions.push(Action::RecolorTabGroup(g.id, c));
                     ui.close();
                 }
             }
         });
-        ui.separator();
-        if ui.button(format!("{}  {}", ic::PENCIL_SIMPLE, t!("barra.renombrar_grupo"))).clicked() {
+        design::menu_sep(ui, t);
+        if design::menu_item(ui, t, ic::PENCIL_SIMPLE, t!("barra.renombrar_grupo"), "").clicked() {
             ui.data_mut(|d| d.insert_temp(key, (g.id, g.name.clone(), true)));
-            ui.close();
         }
-        if ui.button(format!("{}  {}", ic::SQUARES_FOUR, t!("barra.desagrupar"))).clicked() {
+        if design::menu_item(ui, t, ic::SQUARES_FOUR, t!("barra.desagrupar"), "").clicked() {
             actions.push(Action::Ungroup(g.id));
-            ui.close();
         }
-        if ui.button(format!("{}  {}", ic::X, t!("barra.cerrar_grupo"))).clicked() {
+        if design::menu_item(ui, t, ic::X, t!("barra.cerrar_grupo"), "").clicked() {
             actions.push(Action::CloseTabGroup(g.id));
-            ui.close();
         }
     });
+}
+
+/// Botón mini de la tira de pestañas (X y "+"), con su ícono a su tamaño óptico.
+fn tab_btn(ui: &Ui, t: &Theme, rect: Rect, resp: &Response, glyph: &str, size: f32, nudge: f32) {
+    let p = ui.painter();
+    let hov = design::hover_amount(ui.ctx(), resp.id, resp.hovered());
+    design::state_fill(p, t, rect, radius::S, hov, resp.is_pointer_button_down_on(), Sel::None);
+    p.text(rect.center() + vec2(0.0, nudge), Align2::CENTER_CENTER, glyph, design::icon_font(size), if resp.hovered() { t.text } else { t.faint });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -650,24 +764,33 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], groups: &[super::config::Ta
     let full = ui.available_rect_before_wrap();
     let items = bar_items(tabs, groups, show, cur);
     let painter = ui.painter().clone();
-    let chip_w = |g: &super::config::TabGroup| (painter.layout_no_wrap(g.name.clone(), theme::semibold(12.0), t.text).size().x + 22.0).clamp(36.0, 160.0);
-    let chips: f32 = items.iter().map(|it| if let BarItem::Group(gi) = it { chip_w(&groups[*gi]) + 4.0 } else { 0.0 }).sum();
+    let chips: f32 = items.iter().map(|it| if let BarItem::Group(gi) = it { group_chip_w(&painter, t, &groups[*gi]) + sp::XS } else { 0.0 }).sum();
     let n = items.iter().filter(|it| matches!(it, BarItem::Tab(_))).count().max(1);
     let plus_w = 36.0;
     // Se achican hasta caber (antes tenían un mínimo y, con muchas, tapaban los botones de la
     // ventana): primero se recorta el título, luego queda solo el ícono.
-    let tab_w = ((full.width() - reserve - plus_w - 12.0 - chips) / n as f32).clamp(34.0, 220.0);
-    let narrow = tab_w < 84.0;
-    let tiny = tab_w < 58.0;
-    let mut x = full.left() + 6.0;
+    let room = full.width() - reserve - plus_w - sp::M - chips;
+    let even = (room / n as f32).clamp(TAB_MIN_W, TAB_MAX_W);
+    // La activa conserva su título (al menos 120): las demás se achican primero.
+    let cur_shown = items.iter().any(|it| matches!(it, BarItem::Tab(i) if *i == cur));
+    let (active_w, other_w) = if n > 1 && cur_shown && even < TAB_ACTIVE_MIN_W {
+        let a = TAB_ACTIVE_MIN_W.min(room - TAB_MIN_W * (n - 1) as f32).max(even);
+        (a, ((room - a) / (n - 1) as f32).clamp(TAB_MIN_W, TAB_MAX_W))
+    } else {
+        (even, even)
+    };
+    // La primera pestaña a plomo con el pill de las filas (4 del borde).
+    let mut x = full.left() + sp::XS;
     let p = ui.painter().clone();
+    // Hairline al pie de la tira: la pestaña activa la tapa con su relleno y queda abierta abajo.
+    p.hline(full.x_range(), full.bottom() - stroke::HAIR / 2.0, Stroke::new(stroke::HAIR, t.border));
     let order: Vec<usize> = items.iter().filter_map(|it| if let BarItem::Tab(i) = it { Some(*i) } else { None }).collect();
     for it in &items {
         let i = match it {
             BarItem::Group(gi) => {
-                let w = chip_w(&groups[*gi]);
-                group_chip(ui, t, &groups[*gi], Rect::from_min_size(pos2(x + 2.0, full.top() + 6.0), vec2(w, full.height() - 6.0)), actions);
-                x += w + 4.0;
+                let w = group_chip_w(&painter, t, &groups[*gi]);
+                group_chip(ui, t, &groups[*gi], Rect::from_min_size(pos2(x + sp::XXS, full.top() + TAB_TOP), vec2(w, full.height() - TAB_TOP)), actions);
+                x += w + sp::XS;
                 continue;
             }
             BarItem::Tab(i) => *i,
@@ -675,31 +798,32 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], groups: &[super::config::Ta
         let k = order.iter().position(|&j| j == i).unwrap_or(0);
         let show = &order;
         let tab = &tabs[i];
-        let r = Rect::from_min_size(pos2(x, full.top() + 6.0), vec2(tab_w - 4.0, full.height() - 6.0));
-        let resp = ui.interact(r, Id::new(("tab", tab.id)), Sense::click());
         let active = i == cur;
+        let tab_w = if active { active_w } else { other_w };
+        let narrow = tab_w < 84.0;
+        let tiny = tab_w < 58.0;
+        let r = Rect::from_min_size(pos2(x, full.top() + TAB_TOP), vec2(tab_w - sp::XS, full.height() - TAB_TOP));
+        let resp = ui.interact(r, Id::new(("tab", tab.id)), Sense::click());
         // Arrastrar archivos sobre una pestaña: tras un momento se cambia a ella; soltarlos ahí los lleva a su carpeta.
-        if tab.tool.is_none() && crate::ui::views::drag_hovering(&resp) {
-            p.rect_stroke(r.shrink(1.0), 7.0, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
-            if !active {
-                let key = Id::new("tab-drag-hover");
-                let now = ui.input(|i| i.time);
-                let pass = ui.ctx().cumulative_pass_nr();
-                // (pestaña, desde cuándo, último cuadro): si el puntero se fue, el tiempo vuelve a empezar.
-                let since = ui.data_mut(|d| {
-                    let t0 = match d.get_temp::<(u64, f64, u64)>(key) {
-                        Some((id, t0, last)) if id == tab.id && last + 1 >= pass => t0,
-                        _ => now,
-                    };
-                    d.insert_temp(key, (tab.id, t0, pass));
-                    t0
-                });
-                if now - since > 0.45 {
-                    actions.push(Action::SwitchTab(i));
-                    ui.data_mut(|d| d.remove::<(u64, f64, u64)>(key));
-                } else {
-                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
-                }
+        let drop_hover = tab.tool.is_none() && crate::ui::views::drag_hovering(&resp);
+        if drop_hover && !active {
+            let key = Id::new("tab-drag-hover");
+            let now = ui.input(|i| i.time);
+            let pass = ui.ctx().cumulative_pass_nr();
+            // (pestaña, desde cuándo, último cuadro): si el puntero se fue, el tiempo vuelve a empezar.
+            let since = ui.data_mut(|d| {
+                let t0 = match d.get_temp::<(u64, f64, u64)>(key) {
+                    Some((id, t0, last)) if id == tab.id && last + 1 >= pass => t0,
+                    _ => now,
+                };
+                d.insert_temp(key, (tab.id, t0, pass));
+                t0
+            });
+            if now - since > super::motion::DWELL_TAB {
+                actions.push(Action::SwitchTab(i));
+                ui.data_mut(|d| d.remove::<(u64, f64, u64)>(key));
+            } else {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
             }
         }
         if tab.tool.is_none() {
@@ -711,9 +835,22 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], groups: &[super::config::Ta
         // si dependiera de ella, la X aparecería y desaparecería en cuadros alternos.
         let hovering = ui.rect_contains_pointer(r);
         if active {
-            p.rect_filled(r, egui::CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, t.bg);
-        } else if hovering {
-            p.rect_filled(r.shrink2(vec2(0.0, 2.0)), 6.0, t.hover);
+            let top = radius::M as u8;
+            let corners = egui::CornerRadius { nw: top, ne: top, sw: 0, se: 0 };
+            p.rect_filled(r, corners, t.bg);
+            // Borde a la izquierda, arriba y a la derecha (sin base): el borde de abajo cae fuera
+            // del recorte, así la pestaña se funde con el contenido.
+            let clipped = p.with_clip_rect(r.intersect(p.clip_rect()));
+            clipped.rect_stroke(r.with_max_y(r.bottom() + 2.0 * stroke::HAIR), corners, Stroke::new(stroke::HAIR, t.border), StrokeKind::Inside);
+        } else {
+            // Sin tocar el fondo de la tira: 4 px de aire abajo.
+            let hr = Rect::from_min_max(r.min, pos2(r.right(), r.bottom() - sp::XS));
+            let hov = design::hover_amount(ui.ctx(), resp.id, hovering);
+            design::state_fill(&p, t, hr, radius::M, hov, false, Sel::None);
+        }
+        if drop_hover {
+            p.rect_filled(r, radius::M, t.accent_soft);
+            design::focus_ring(&p, t, r, radius::M);
         }
         let icon = if let Some(tool) = &tab.tool {
             tool.icon()
@@ -728,12 +865,16 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], groups: &[super::config::Ta
         } else {
             ic::FOLDER
         };
-        let close_r = if tiny { Rect::from_center_size(r.center(), vec2(TAB_BTN, TAB_BTN)) } else { Rect::from_center_size(pos2(r.right() - 15.0, r.center().y), vec2(TAB_BTN, TAB_BTN)) };
+        let close_r = if tiny { Rect::from_center_size(r.center(), vec2(h::CHIP, h::CHIP)) } else { Rect::from_center_size(pos2(r.right() - TAB_X_INSET, r.center().y), vec2(h::CHIP, h::CHIP)) };
         // Muy angosta, la X va en el centro: solo en la activa (en las demás, un clic cambia a ella).
         let has_x = !tiny || active;
         if !(tiny && active && hovering) {
-            let ip = if tiny { (r.center(), Align2::CENTER_CENTER) } else { (pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER) };
-            p.text(ip.0, ip.1, icon, theme::icon_font(14.0, true), if active { t.folder } else { t.dim });
+            // Ícono en +8 de la pestaña: a plomo con el de las filas.
+            let ip = if tiny { (r.center(), Align2::CENTER_CENTER) } else { (pos2(r.left() + sp::S, r.center().y), Align2::LEFT_CENTER) };
+            // La carpeta va rellena y en su color solo en la activa; en las demás, contorno.
+            let folder = active && icon == ic::FOLDER;
+            let font = if folder { design::icon_fill(icon::M) } else { design::icon_font(icon::M) };
+            p.text(ip.0, ip.1, icon, font, if folder { t.folder } else { t.dim });
         }
         let recent = tab.search.text.trim_start().to_lowercase().starts_with("recientes:");
         let tag = fsx::tags::query_color(&tab.search.text).filter(|_| tab.tool.is_none());
@@ -750,34 +891,33 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], groups: &[super::config::Ta
             tab.title()
         };
         if !narrow {
-            let g = elided(&p, &title, FontId::proportional(12.5), if active { t.text } else { t.dim }, r.width() - 56.0);
-            p.galley(pos2(r.left() + 32.0, r.center().y - g.size().y / 2.0), g, t.text);
+            // Texto tras el ícono; a la derecha, el lugar de la X.
+            let x_text = r.left() + sp::S + icon::M + sp::S;
+            let g = elided(&p, &title, text::body(), if active { t.text } else { t.dim }, r.right() - TAB_X_INSET - h::CHIP / 2.0 - sp::XS - x_text);
+            p.galley(pos2(x_text, r.center().y - g.size().y / 2.0), g, t.text);
         }
-        let resp = if narrow { resp.on_hover_text(&title) } else { resp };
+        let resp = if narrow { design::tip(resp, t, &title) } else { resp };
         if let Some(g) = groups.iter().find(|g| g.id == tab.group && tab.group != 0) {
             // Las pestañas de un grupo llevan su color abajo.
-            let c = crate::ui::views::tag_color(g.color);
-            p.line_segment([pos2(r.left() + 6.0, r.bottom() - 1.5), pos2(r.right() - 6.0, r.bottom() - 1.5)], egui::Stroke::new(2.0, c));
+            let c = t.tags[g.color.min(6)];
+            let y = r.bottom() - stroke::MARK / 2.0;
+            p.line_segment([pos2(r.left() + sp::S, y), pos2(r.right() - sp::S, y)], Stroke::new(stroke::MARK, c));
         }
-        resp.context_menu(|ui| {
-            if ui.button(format!("{}  {}", ic::PLUS_SQUARE, t!("barra.nuevo_grupo_con_pestana"))).clicked() {
+        design::context_menu(&resp, t, |ui| {
+            if design::menu_item(ui, t, ic::PLUS_SQUARE, t!("barra.nuevo_grupo_con_pestana"), "").clicked() {
                 actions.push(Action::NewTabGroup(i));
-                ui.close();
             }
             for g in groups.iter().filter(|g| g.id != tab.group) {
-                if ui.button(format!("{}  {}", ic::ARROW_SQUARE_RIGHT, tf!("barra.mover_a_grupo", nombre = g.name))).clicked() {
+                if design::menu_item(ui, t, ic::ARROW_SQUARE_RIGHT, &tf!("barra.mover_a_grupo", nombre = g.name), "").clicked() {
                     actions.push(Action::SetTabGroup(i, g.id));
-                    ui.close();
                 }
             }
-            if tab.group != 0 && ui.button(format!("{}  {}", ic::MINUS_SQUARE, t!("barra.quitar_del_grupo"))).clicked() {
+            if tab.group != 0 && design::menu_item(ui, t, ic::MINUS_SQUARE, t!("barra.quitar_del_grupo"), "").clicked() {
                 actions.push(Action::SetTabGroup(i, 0));
-                ui.close();
             }
-            ui.separator();
-            if ui.button(format!("{}  {}", ic::X, t!("barra.cerrar_pestana"))).clicked() {
+            design::menu_sep(ui, t);
+            if design::menu_item(ui, t, ic::X, t!("barra.cerrar_pestana"), "").clicked() {
                 actions.push(Action::CloseTab(i));
-                ui.close();
             }
         });
         if resp.clicked() {
@@ -789,28 +929,24 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], groups: &[super::config::Ta
         // La X existe siempre (así no cambia lo que hay bajo el ratón); se ve en la activa y al pasar por encima.
         let cresp = ui.interact(if has_x { close_r } else { Rect::NOTHING }, Id::new(("tabx", tab.id)), Sense::click());
         if has_x && (hovering || (active && !tiny)) {
-            if cresp.hovered() {
-                p.rect_filled(close_r, 5.0, t.border);
-            }
-            p.text(close_r.center(), Align2::CENTER_CENTER, ic::X, theme::icon_font(TAB_X_ICON, false), t.dim);
+            tab_btn(ui, t, close_r, &cresp, ic::X, TAB_X_ICON, 0.0);
             if cresp.clicked() {
                 actions.push(Action::CloseTab(i));
             }
         }
+        // Divisor fino entre pestañas inactivas.
         let next_active = show.get(k + 1) == Some(&cur);
         if !active && !next_active && k + 1 < show.len() {
-            p.line_segment([pos2(r.right() + 1.5, r.top() + 9.0), pos2(r.right() + 1.5, r.bottom() - 7.0)], egui::Stroke::new(1.0, t.border));
+            let sx = r.right() + sp::XXS - stroke::HAIR / 2.0;
+            p.line_segment([pos2(sx, r.top() + sp::S), pos2(sx, r.bottom() - sp::S)], Stroke::new(stroke::HAIR, t.border));
         }
         x += tab_w;
     }
     // Mismo tamaño y misma altura que la X de las pestañas (centrado con su texto).
-    let pr = Rect::from_center_size(pos2(x + 4.0 + TAB_BTN / 2.0, full.top() + 6.0 + (full.height() - 6.0) / 2.0), vec2(TAB_BTN, TAB_BTN));
-    let presp = ui.interact(pr, Id::new(("newtab", show.first().copied().unwrap_or(0))), Sense::click()).on_hover_text(t!("barra.pestana_nueva_ctrl_t"));
-    if presp.hovered() {
-        p.rect_filled(pr, 5.0, t.hover);
-    }
-    // +1,25 px: a este tamaño la tipografía dibuja el "+" un poco más arriba que la X.
-    p.text(pr.center() + vec2(0.0, 1.25), Align2::CENTER_CENTER, ic::PLUS, theme::icon_font(TAB_PLUS_ICON, false), t.dim);
+    let pr = Rect::from_center_size(pos2(x + sp::XS + h::CHIP / 2.0, full.top() + TAB_TOP + (full.height() - TAB_TOP) / 2.0), vec2(h::CHIP, h::CHIP));
+    let presp = ui.interact(pr, Id::new(("newtab", show.first().copied().unwrap_or(0))), Sense::click());
+    let presp = design::tip_keys(presp, t, t!("barra.pestana_nueva_ctrl_t"), &kbd_keys(&super::commands::get("new_tab").keys()));
+    tab_btn(ui, t, pr, &presp, ic::PLUS, TAB_PLUS_ICON, TAB_PLUS_NUDGE);
     if presp.clicked() {
         actions.push(Action::NewTab(None));
     }
@@ -822,12 +958,12 @@ pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], groups: &[super::config::Ta
 pub fn app_title(ui: &Ui, t: &Theme, band: Rect) {
     let p = ui.painter();
     // A la altura del texto de las pestañas (que empiezan 6 px más abajo).
-    let cy = band.top() + 3.0 + band.height() / 2.0;
-    let c = pos2(band.left() + 22.0, cy + 1.0);
+    let cy = band.top() + TAB_TOP / 2.0 + band.height() / 2.0;
+    let c = pos2(band.left() + 24.0, cy + 1.0);
     // La carpeta con el rayo, como el ícono de la app.
-    p.text(c, Align2::CENTER_CENTER, egui_phosphor::fill::FOLDER, theme::icon_font(17.0, true), t.accent);
-    p.text(c + vec2(0.5, 1.5), Align2::CENTER_CENTER, egui_phosphor::fill::LIGHTNING, theme::icon_font(8.5, true), Color32::WHITE);
-    p.text(pos2(c.x + 16.0, cy), Align2::LEFT_CENTER, "Rayo", theme::semibold(12.5), t.dim);
+    p.text(c, Align2::CENTER_CENTER, egui_phosphor::fill::FOLDER, design::icon_fill(icon::M), t.accent);
+    p.text(c + vec2(0.5, 1.5), Align2::CENTER_CENTER, egui_phosphor::fill::LIGHTNING, design::icon_fill(icon::M / 2.0), t.accent_text);
+    p.text(pos2(c.x + sp::L, cy), Align2::LEFT_CENTER, "Rayo", text::strong(), t.dim);
 }
 
 /// Minimizar, maximizar / restaurar y cerrar, arriba a la derecha (como en Windows 11).
@@ -848,10 +984,10 @@ pub fn window_buttons(ctx: &egui::Context, t: &Theme) -> Rect {
             let hover = resp.hovered() || (k == 1 && crate::ui::win::max_hovered());
             let close = k == 2;
             if hover {
-                ui.painter().rect_filled(r, 0.0, if close { Color32::from_rgb(0xC4, 0x2B, 0x1C) } else { t.hover });
+                ui.painter().rect_filled(r, egui::CornerRadius::ZERO, if close { t.danger_fill } else { t.hover });
             }
-            let color = if close && hover { Color32::WHITE } else { t.text };
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, icon, theme::icon_font(if k == 1 { 12.0 } else { 14.0 }, false), color);
+            let color = if close && hover { t.accent_text } else { t.text };
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, icon, design::icon_font(if k == 1 { CAPTION_ICON_MAX } else { CAPTION_ICON }), color);
             if resp.clicked() {
                 match k {
                     0 => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
@@ -869,84 +1005,189 @@ pub fn window_buttons(ctx: &egui::Context, t: &Theme) -> Rect {
 
 // ---------------------------------------------------------------- barra de herramientas
 
+/// Entre grupos de botones hay 8 px (con los 2 del espaciado entre botones).
+const GROUP_GAP: f32 = sp::S - sp::XXS;
+/// Margen de la barra de herramientas a cada lado (el botón de atrás y la búsqueda).
+const TOOLBAR_EDGE: f32 = 6.0;
+
 /// Clic derecho en un botón de la barra: personalizarla.
-fn customize_menu(resp: &Response, actions: &mut Vec<Action>) {
-    resp.context_menu(|ui| {
-        if ui.button(format!("{}  {}", ic::SLIDERS_HORIZONTAL, t!("cmd.customize_toolbar"))).clicked() {
+fn customize_menu(resp: &Response, t: &Theme, actions: &mut Vec<Action>) {
+    design::context_menu(resp, t, |ui| {
+        if design::menu_item(ui, t, ic::SLIDERS_HORIZONTAL, t!("cmd.customize_toolbar"), "").clicked() {
             actions.push(Action::CustomizeToolbar);
-            ui.close();
         }
     });
 }
 
+/// Ancho del segmentado de vistas: tres opciones de 28 con 2 px de margen.
+const VIEWS_W: f32 = 3.0 * h::CTL + 2.0 * sp::XXS;
+
+/// Columnas / detalles / cuadrícula: un segmentado de tres íconos. Devuelve la respuesta de
+/// cada opción.
+fn view_switch(ui: &mut Ui, t: &Theme, view: ViewMode, shortcuts: &[(String, String)]) -> [Response; 3] {
+    let (rect, _) = ui.allocate_exact_size(vec2(VIEWS_W, h::CTL), Sense::hover());
+    let p = ui.painter().clone();
+    p.rect_filled(rect, radius::M, t.sidebar);
+    p.rect_stroke(rect, radius::M, Stroke::new(stroke::HAIR, t.border), StrokeKind::Inside);
+    let opts = [
+        (ViewMode::Columns, ic::COLUMNS, t!("barra.vista_columnas_ctrl_1"), "view_columns"),
+        (ViewMode::Details, ic::LIST_BULLETS, t!("barra.vista_detalles_ctrl_2"), "view_details"),
+        (ViewMode::Grid, ic::SQUARES_FOUR, t!("barra.vista_cuadricula_ctrl_3"), "view_grid"),
+    ];
+    let opt_w = (VIEWS_W - 2.0 * sp::XXS) / 3.0;
+    opts.map(|(mode, glyph, tip, cmd)| {
+        let k = match mode {
+            ViewMode::Columns => 0.0,
+            ViewMode::Details => 1.0,
+            ViewMode::Grid => 2.0,
+        };
+        let r = Rect::from_min_size(pos2(rect.left() + sp::XXS + k * opt_w, rect.top() + sp::XXS), vec2(opt_w, h::CTL - 2.0 * sp::XXS));
+        let resp = ui.interact(r, ui.id().with(("view-seg", k as u8)), Sense::click());
+        let on = view == mode;
+        let hov = design::hover_amount(ui.ctx(), resp.id, resp.hovered());
+        design::state_fill(&p, t, r, radius::S, hov, resp.is_pointer_button_down_on(), if on { Sel::Unfocused } else { Sel::None });
+        let c = if on {
+            t.accent
+        } else if resp.hovered() {
+            t.text
+        } else {
+            t.dim
+        };
+        p.text(r.center(), Align2::CENTER_CENTER, glyph, design::icon_font(icon::M), c);
+        design::tip_keys(resp, t, tip, &cmd_keys(cmd, shortcuts))
+    })
+}
+
+/// Panel angosto: las tres vistas en un solo botón (con el glifo de la actual) que abre un menú
+/// con las tres, la actual marcada. Devuelve la elegida.
+fn view_menu(ui: &mut Ui, t: &Theme, view: ViewMode, shortcuts: &[(String, String)], actions: &mut Vec<Action>) -> Option<ViewMode> {
+    let opts = [
+        (ViewMode::Columns, ic::COLUMNS, t!("barra.vista_columnas_ctrl_1"), "view_columns"),
+        (ViewMode::Details, ic::LIST_BULLETS, t!("barra.vista_detalles_ctrl_2"), "view_details"),
+        (ViewMode::Grid, ic::SQUARES_FOUR, t!("barra.vista_cuadricula_ctrl_3"), "view_grid"),
+    ];
+    let (_, glyph, label, cmd) = opts.iter().copied().find(|o| o.0 == view).unwrap_or(opts[1]);
+    let r = design::tip_keys(icon_btn(ui, t, glyph, true, false, ""), t, label, &cmd_keys(cmd, shortcuts));
+    customize_menu(&r, t, actions);
+    let mut picked = None;
+    design::popup_menu(&r, t, |ui| {
+        for (mode, icon, label, cmd) in opts {
+            let keys = cmd_keys(cmd, shortcuts);
+            if design::menu_item_ex(ui, t, MenuItem { icon, label, keys: &keys, checked: Some(mode == view), ..Default::default() }).clicked() {
+                picked = Some(mode);
+            }
+        }
+    });
+    picked
+}
+
 /// `enabled`: si cada botón propio (de `cfg.toolbar`) tiene sentido con lo seleccionado ahora.
+#[allow(clippy::too_many_arguments)]
 pub fn toolbar(ui: &mut Ui, t: &Theme, cfg: &Config, tab: &mut Tab, search_id: Id, enabled: &[bool], shortcuts: &[(String, String)], actions: &mut Vec<Action>) {
+    // Panel angosto (cuatro paneles, dividido): la búsqueda se pliega a un botón y, al abrirla,
+    // ocupa el lugar de la ruta hasta Esc o hasta perder el foco vacía (M-7).
+    let narrow = ui.max_rect().width() < design::NARROW_PANE;
+    let exp_id = search_id.with("expanded");
+    let was = ui.data(|d| d.get_temp::<bool>(exp_id)).unwrap_or(false);
+    let focused = ui.memory(|m| m.has_focus(search_id));
+    // Mientras se aprieta (o se suelta) el botón, sigue abierta: el clic en el historial cuenta al soltar.
+    let pressing = ui.input(|i| i.pointer.any_down() || i.pointer.any_released());
+    let expanded = narrow && (tab.search.focus || focused || !tab.search.text.is_empty() || (was && pressing));
+    ui.data_mut(|d| d.insert_temp(exp_id, expanded));
     ui.horizontal_centered(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        ui.add_space(8.0);
-        let r = icon_btn(ui, t, ic::ARROW_LEFT, !tab.back.is_empty(), false, t!("barra.atras_alt"));
-        customize_menu(&r, actions);
-        if r.clicked() {
-            actions.push(Action::Back);
+        ui.spacing_mut().item_spacing.x = sp::XXS;
+        ui.add_space(TOOLBAR_EDGE);
+        let nav = [
+            (ic::ARROW_LEFT, !tab.back.is_empty(), t!("barra.atras_alt"), "Alt ←", Action::Back),
+            (ic::ARROW_RIGHT, !tab.fwd.is_empty(), t!("barra.adelante_alt"), "Alt →", Action::Forward),
+            (ic::ARROW_UP, fsx::parent_of(tab.path()).is_some(), t!("barra.subir_alt"), "Alt ↑", Action::Up),
+        ];
+        for (glyph, on, tip, keys, action) in nav {
+            let r = design::tip_keys(icon_btn(ui, t, glyph, on, false, ""), t, tip, keys);
+            customize_menu(&r, t, actions);
+            if r.clicked() {
+                actions.push(action);
+            }
         }
-        let r = icon_btn(ui, t, ic::ARROW_RIGHT, !tab.fwd.is_empty(), false, t!("barra.adelante_alt"));
-        customize_menu(&r, actions);
-        if r.clicked() {
-            actions.push(Action::Forward);
+        // En panel angosto «Actualizar» no entra: sigue en F5 y en el menú contextual.
+        if !narrow {
+            let r = design::tip_keys(icon_btn(ui, t, ic::ARROW_CLOCKWISE, true, false, ""), t, t!("barra.actualizar_f5"), &cmd_keys("refresh", shortcuts));
+            customize_menu(&r, t, actions);
+            if r.clicked() {
+                actions.push(Action::Refresh);
+            }
         }
-        let can_up = fsx::parent_of(tab.path()).is_some();
-        let r = icon_btn(ui, t, ic::ARROW_UP, can_up, false, t!("barra.subir_alt"));
-        customize_menu(&r, actions);
-        if r.clicked() {
-            actions.push(Action::Up);
-        }
-        let r = icon_btn(ui, t, ic::ARROW_CLOCKWISE, true, false, t!("barra.actualizar_f5"));
-        customize_menu(&r, actions);
-        if r.clicked() {
-            actions.push(Action::Refresh);
-        }
-        ui.add_space(6.0);
+        ui.add_space(GROUP_GAP);
 
         // Lado derecho primero para saber cuánto espacio queda para la ruta.
-        // En paneles angostos la búsqueda se achica para dejarle lugar a la ruta.
-        let search_w = (ui.available_width() * 0.3).clamp(140.0, 300.0);
-        let custom_w = if cfg.toolbar.is_empty() { 0.0 } else { 32.0 * cfg.toolbar.len() as f32 + 8.0 };
-        let right_w = 30.0 * 4.0 + search_w + 24.0 + custom_w;
-        let crumb_w = (ui.available_width() - right_w).max(100.0);
-        breadcrumb(ui, t, tab, crumb_w, actions);
-        ui.add_space(8.0);
+        // En paneles angostos la búsqueda se achica para dejarle lugar a la ruta; más angostos
+        // todavía, queda un botón (o, abierta, va en el lugar de la ruta).
+        let search_w = if narrow { h::CTL } else { (ui.available_width() * 0.3).clamp(140.0, 300.0) };
+        // Lo que sigue a la ruta, tal como se reserva abajo (cada control lleva su `XXS` detrás):
+        // grupo · [botones propios · grupo] · vistas · grupo · vista previa · [grupo · búsqueda] · borde.
+        let btn = h::CTL + sp::XXS;
+        // En panel angosto no van los botones propios y las tres vistas se pliegan a un botón.
+        let show_custom = !narrow && !cfg.toolbar.is_empty();
+        let custom_w = if show_custom { btn * cfg.toolbar.len() as f32 + GROUP_GAP } else { 0.0 };
+        let views_w = if narrow { h::CTL } else { VIEWS_W };
+        let search_slot = if expanded { 0.0 } else { GROUP_GAP + search_w };
+        let right_w = sp::XXS + GROUP_GAP + custom_w + views_w + sp::XXS + GROUP_GAP + btn + search_slot + TOOLBAR_EDGE;
+        let crumb_w = (ui.available_width() - right_w).max(if narrow { 72.0 } else { 100.0 });
+        if expanded {
+            search_box(ui, t, tab, search_id, crumb_w, &cfg.search_history, actions);
+        } else {
+            breadcrumb(ui, t, tab, crumb_w, narrow, actions);
+        }
+        ui.add_space(GROUP_GAP);
 
         // Botones propios (Ctrl+K → "Personalizar barra").
-        for (k, id) in cfg.toolbar.iter().enumerate() {
+        for (k, id) in cfg.toolbar.iter().enumerate().filter(|_| show_custom) {
             let Some(c) = super::commands::ALL.iter().find(|c| c.id == id) else { continue };
-            let keys = super::commands::shortcut_of(c.id, shortcuts);
-            let tip = if keys.is_empty() { c.label().to_string() } else { format!("{}  ({keys})", c.label()) };
-            let r = icon_btn(ui, t, c.icon, enabled.get(k).copied().unwrap_or(true), false, &tip);
-            customize_menu(&r, actions);
+            let r = icon_btn(ui, t, c.icon, enabled.get(k).copied().unwrap_or(true), false, "");
+            let r = design::tip_keys(r, t, c.label(), &cmd_keys(c.id, shortcuts));
+            customize_menu(&r, t, actions);
             if r.clicked() {
                 actions.push(Action::RunCommand(c.id.to_string()));
             }
         }
-        if !cfg.toolbar.is_empty() {
-            ui.add_space(8.0);
+        if show_custom {
+            ui.add_space(GROUP_GAP);
         }
 
-        let r = icon_btn(ui, t, ic::COLUMNS, true, cfg.view == ViewMode::Columns, t!("barra.vista_columnas_ctrl_1"));
-        customize_menu(&r, actions);
-        if r.clicked() {
-            actions.push(Action::SetView(ViewMode::Columns));
+        if narrow {
+            if let Some(mode) = view_menu(ui, t, cfg.view, shortcuts, actions) {
+                actions.push(Action::SetView(mode));
+            }
+        } else {
+            let [cols, details, grid] = view_switch(ui, t, cfg.view, shortcuts);
+            customize_menu(&cols, t, actions);
+            if cols.clicked() {
+                actions.push(Action::SetView(ViewMode::Columns));
+            }
+            if details.clicked() {
+                actions.push(Action::SetView(ViewMode::Details));
+            }
+            if grid.clicked() {
+                actions.push(Action::SetView(ViewMode::Grid));
+            }
         }
-        if icon_btn(ui, t, ic::LIST_BULLETS, true, cfg.view == ViewMode::Details, t!("barra.vista_detalles_ctrl_2")).clicked() {
-            actions.push(Action::SetView(ViewMode::Details));
-        }
-        if icon_btn(ui, t, ic::SQUARES_FOUR, true, cfg.view == ViewMode::Grid, t!("barra.vista_cuadricula_ctrl_3")).clicked() {
-            actions.push(Action::SetView(ViewMode::Grid));
-        }
-        if icon_btn(ui, t, ic::SIDEBAR_SIMPLE, true, cfg.show_preview, t!("barra.panel_vista_previa_ctrl_p")).clicked() {
+        ui.add_space(GROUP_GAP);
+        let r = icon_btn(ui, t, ic::SIDEBAR_SIMPLE, true, cfg.show_preview, "");
+        if design::tip_keys(r, t, t!("barra.panel_vista_previa_ctrl_p"), &cmd_keys("preview", shortcuts)).clicked() {
             actions.push(Action::TogglePreview);
         }
-        ui.add_space(8.0);
-        search_box(ui, t, tab, search_id, search_w, &cfg.search_history, actions);
+        if expanded {
+            return;
+        }
+        ui.add_space(GROUP_GAP);
+        if narrow {
+            let r = icon_btn(ui, t, ic::MAGNIFYING_GLASS, true, false, "");
+            if design::tip_keys(r, t, t!("barra.buscar_archivos_ctrl_f"), &cmd_keys("search", shortcuts)).clicked() {
+                tab.search.focus = true;
+            }
+        } else {
+            search_box(ui, t, tab, search_id, search_w, &cfg.search_history, actions);
+        }
     });
 }
 
@@ -1006,12 +1247,33 @@ fn path_suggestions(ctx: &egui::Context, typed: &str) -> Vec<String> {
     all
 }
 
-fn breadcrumb(ui: &mut Ui, t: &Theme, tab: &mut Tab, width: f32, actions: &mut Vec<Action>) {
-    let (rect, bg) = ui.allocate_exact_size(vec2(width, 30.0), Sense::click());
+
+/// Barra de ruta y búsqueda: campo de 28, relleno hundido, borde fuerte (con hover `faint`).
+fn field_frame(p: &egui::Painter, t: &Theme, rect: Rect, focused: bool, hovered: bool) {
+    p.rect_filled(rect, radius::M, t.sidebar);
+    if focused {
+        design::focus_ring(p, t, rect, radius::M);
+    } else {
+        p.rect_stroke(rect, radius::M, Stroke::new(stroke::HAIR, if hovered { t.faint } else { t.border_strong }), StrokeKind::Inside);
+    }
+}
+
+/// Migas de la ruta: alto 22, 6 px de margen a cada lado; separador ▸ de 18.
+const CRUMB_H: f32 = 22.0;
+const CRUMB_PAD: f32 = 6.0;
+const CRUMB_SEP_W: f32 = 18.0;
+/// El "…" de los tramos que no entran.
+const CRUMB_MORE_W: f32 = 24.0;
+/// Lista de subcarpetas de un ▸ y de sugerencias: `LIST_W` por fuera (sin el margen ni el borde).
+const LIST_INNER_W: f32 = design::LIST_W - 2.0 * sp::XS - 2.0 * stroke::HAIR;
+
+/// `compact` (panel angosto): el último tramo va sin su ▸ (sus subcarpetas siguen en el menú del
+/// tramo anterior) para dejarle el lugar al nombre.
+fn breadcrumb(ui: &mut Ui, t: &Theme, tab: &mut Tab, width: f32, compact: bool, actions: &mut Vec<Action>) {
+    let (rect, bg) = ui.allocate_exact_size(vec2(width, h::CTL), Sense::click());
     let p = ui.painter().clone();
-    p.rect_filled(rect, 7.0, t.bg);
-    p.rect_stroke(rect, 7.0, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
     if let Some(buf) = tab.path_edit.as_mut() {
+        field_frame(&p, t, rect, true, false);
         let id = Id::new(("pathedit", tab.id));
         // Sugerencias: subcarpetas de lo ya escrito que empiezan (o contienen) lo que sigue.
         let sugg = path_suggestions(ui.ctx(), buf);
@@ -1041,8 +1303,15 @@ fn breadcrumb(ui: &mut Ui, t: &Theme, tab: &mut Tab, width: f32, actions: &mut V
             sel = None;
             completed = true;
         }
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(6.0, 3.0))));
-        let mut out = egui::TextEdit::singleline(buf).id(id).lock_focus(true).frame(egui::Frame::NONE).desired_width(rect.width() - 12.0).vertical_align(egui::Align::Center).show(&mut child);
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(sp::S, 0.0))));
+        let mut out = egui::TextEdit::singleline(buf)
+            .id(id)
+            .lock_focus(true)
+            .frame(egui::Frame::NONE)
+            .font(text::mono())
+            .desired_width(rect.width() - 2.0 * sp::S)
+            .vertical_align(egui::Align::Center)
+            .show(&mut child);
         let r = out.response.clone();
         if completed {
             // Cursor al final tras completar.
@@ -1066,18 +1335,19 @@ fn breadcrumb(ui: &mut Ui, t: &Theme, tab: &mut Tab, width: f32, actions: &mut V
         let mut clicked = None;
         if !sugg.is_empty() {
             mark_overlay(ui.ctx());
-            egui::Area::new(id.with("sugg")).order(egui::Order::Foreground).fixed_pos(rect.left_bottom() + vec2(0.0, 4.0)).show(ui.ctx(), |ui| {
-                egui::Frame::new().fill(t.chrome).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(8).inner_margin(4).shadow(ui.visuals().popup_shadow).show(ui, |ui| {
-                    ui.set_width(rect.width() - 8.0);
+            // De `LIST_W`, alineada con el borde izquierdo del campo; cada una con su nombre (la
+            // ruta entera va al tooltip).
+            egui::Area::new(id.with("sugg")).order(egui::Order::Foreground).fixed_pos(rect.left_bottom() + vec2(0.0, sp::XS)).show(ui.ctx(), |ui| {
+                design::popover_frame(t).show(ui, |ui| {
+                    ui.set_width(LIST_INNER_W);
+                    ui.spacing_mut().item_spacing.y = 0.0;
                     for (k, s) in sugg.iter().enumerate() {
-                        let (rr, resp) = ui.allocate_exact_size(vec2(rect.width() - 8.0, 26.0), Sense::click());
-                        if Some(k) == sel || resp.hovered() {
-                            ui.painter().rect_filled(rr, 5.0, if Some(k) == sel { t.sel } else { t.hover });
-                        }
-                        ui.painter().text(pos2(rr.left() + 12.0, rr.center().y), Align2::LEFT_CENTER, ic::FOLDER, theme::icon_font(14.0, true), t.folder);
-                        let g = crate::ui::views::elided(ui.painter(), s, FontId::proportional(13.0), t.text, rr.width() - 44.0);
-                        ui.painter().galley(pos2(rr.left() + 34.0, rr.center().y - g.size().y / 2.0), g, t.text);
-                        if resp.clicked() {
+                        let drive = s.len() <= 3;
+                        let name = if drive { s.clone() } else { fsx::file_name(s) };
+                        theme::want_cjk(&name);
+                        let icon = if drive { ic::HARD_DRIVES } else { ic::FOLDER };
+                        let r = design::menu_item_ex(ui, t, MenuItem { icon, label: &name, highlighted: Some(k) == sel, ..Default::default() });
+                        if design::tip(r, t, s).clicked() {
                             clicked = Some(s.clone());
                         }
                     }
@@ -1099,8 +1369,29 @@ fn breadcrumb(ui: &mut Ui, t: &Theme, tab: &mut Tab, width: f32, actions: &mut V
         }
         return;
     }
-    // Segmentos de la ruta
+    field_frame(&p, t, rect, false, ui.rect_contains_pointer(rect));
     let path = tab.path().to_string();
+    // Recientes, una etiqueta o una colección: un solo tramo con su ícono y su nombre (no la
+    // carpeta desde la que se abrió).
+    if let Some((glyph, dot, name)) = special_view(t, tab) {
+        let cy = rect.center().y;
+        let xi = rect.left() + sp::S + icon::M / 2.0;
+        match dot {
+            Some(c) => design::tag_dot(&p, t, pos2(xi, cy), c),
+            None => {
+                p.text(pos2(xi, cy), Align2::CENTER_CENTER, glyph, design::icon_font(icon::M), t.dim);
+            }
+        }
+        let xt = rect.left() + sp::S + icon::M + sp::S;
+        let g = elided(&p, &name, text::strong(), t.text, rect.right() - sp::S - xt);
+        p.galley(pos2(xt, cy - g.size().y / 2.0), g, t.text);
+        if bg.clicked() {
+            tab.path_edit = Some(path);
+        }
+        design::tip_keys(bg, t, t!("barra.clic_escribir_ruta_comando_ctrl"), "Ctrl L");
+        return;
+    }
+    // Segmentos de la ruta
     let mut segs: Vec<(String, String)> = Vec::new();
     let mut cur = Some(path.clone());
     while let Some(c) = cur {
@@ -1109,53 +1400,66 @@ fn breadcrumb(ui: &mut Ui, t: &Theme, tab: &mut Tab, width: f32, actions: &mut V
         segs.push((label, c));
     }
     segs.reverse();
-    let font = FontId::proportional(13.0);
-    let sep_w = 18.0;
-    let widths: Vec<f32> = segs.iter().map(|(l, _)| p.layout_no_wrap(l.clone(), font.clone(), t.text).size().x + 12.0).collect();
+    let n = segs.len();
+    // La última miga va en `strong`.
+    let font_of = |i: usize| if i + 1 == n { text::strong() } else { text::body() };
+    let mut widths: Vec<f32> = segs.iter().enumerate().map(|(i, (l, _))| design::text_width(&p, l, font_of(i)) + 2.0 * CRUMB_PAD).collect();
     // Cada tramo lleva su ▸ (también el último: abre sus subcarpetas). Si no cabe, se ocultan los primeros.
-    let avail = rect.width() - 34.0;
+    // Se reserva el lugar del "…" y de su ▸.
+    let avail = rect.width() - 2.0 * sp::XS - CRUMB_MORE_W - CRUMB_SEP_W;
     let mut start = 0;
-    let mut total: f32 = widths.iter().sum::<f32>() + sep_w * segs.len() as f32;
+    let last_sep = if compact { 0.0 } else { CRUMB_SEP_W };
+    let mut total: f32 = widths.iter().sum::<f32>() + CRUMB_SEP_W * (segs.len() - 1) as f32 + last_sep;
     while total > avail && start + 1 < segs.len() {
-        total -= widths[start] + sep_w;
+        total -= widths[start] + CRUMB_SEP_W;
         start += 1;
+    }
+    // Si ni el último tramo entra, su texto se recorta (no se corta a mitad de letra).
+    let room_last = rect.width() - 2.0 * sp::XS - last_sep - if start > 0 { CRUMB_MORE_W + CRUMB_SEP_W } else { 0.0 };
+    if let Some(w) = widths.last_mut() {
+        *w = w.min(room_last.max(2.0 * CRUMB_PAD + sp::L));
     }
     let menu_id = Id::new(("crumb-menu", tab.id));
     let open_key = ui.data(|d| d.get_temp::<CrumbMenu>(menu_id)).map(|m| m.key);
-    let mut x = rect.left() + 6.0;
+    let crumb_top = rect.top() + (h::CTL - CRUMB_H) / 2.0;
+    let mut x = rect.left() + sp::XS;
     if start > 0 {
-        // "…": los tramos que no entran, en una lista.
-        let r = Rect::from_min_size(pos2(x, rect.top() + 3.0), vec2(24.0, rect.height() - 6.0));
-        let hit = Rect::from_x_y_ranges(x..=x + 26.0, rect.y_range());
-        let resp = ui.interact(hit, menu_id.with("more"), Sense::click()).on_hover_text(t!("barra.carpetas_anteriores"));
-        if resp.hovered() || open_key == Some(usize::MAX) {
-            p.rect_filled(r, 5.0, t.hover);
-        }
-        p.text(r.center(), Align2::CENTER_CENTER, "…", font.clone(), t.dim);
+        // "…": los tramos que no entran, en una lista; detrás, su ▸ como el de cualquier tramo
+        // (el clic en él también abre la lista, así no cae en el modo de escribir la ruta).
+        let r = Rect::from_min_size(pos2(x, crumb_top), vec2(CRUMB_MORE_W, CRUMB_H));
+        let hit = Rect::from_x_y_ranges(x..=x + CRUMB_MORE_W + CRUMB_SEP_W, rect.y_range());
+        let resp = design::tip(ui.interact(hit, menu_id.with("more"), Sense::click()), t, t!("barra.carpetas_anteriores"));
+        let open = open_key == Some(usize::MAX);
+        let hov = design::hover_amount(ui.ctx(), resp.id, resp.hovered());
+        design::state_fill(&p, t, r, radius::S, hov, resp.is_pointer_button_down_on(), if open { Sel::Unfocused } else { Sel::None });
+        p.text(r.center(), Align2::CENTER_CENTER, ic::DOTS_THREE, design::icon_font(icon::M), if resp.hovered() || open { t.text } else { t.faint });
+        let cr = Rect::from_min_size(pos2(r.right(), crumb_top), vec2(CRUMB_SEP_W, CRUMB_H));
+        p.text(cr.center(), Align2::CENTER_CENTER, ic::CARET_RIGHT, design::icon_font(icon::S), t.faint);
         if resp.clicked() {
             let items = segs[..start].iter().rev().cloned().collect();
             toggle_crumb_menu(ui, menu_id, CrumbMenu { key: usize::MAX, src: r, path: path.clone(), items: std::sync::Arc::new(items), current: None, scrolled: false });
         }
-        x += 26.0;
+        x += CRUMB_MORE_W + CRUMB_SEP_W;
     }
-    let n = segs.len();
     for (i, (label, full)) in segs.iter().enumerate().skip(start) {
         let w = widths[i];
         // Se dibuja con aire arriba y abajo, pero el clic vale en toda la altura: antes esos 3 px
         // abrían el modo de escribir la ruta.
-        let r = Rect::from_min_size(pos2(x, rect.top() + 3.0), vec2(w, rect.height() - 6.0));
+        let r = Rect::from_min_size(pos2(x, crumb_top), vec2(w, CRUMB_H));
         let resp = ui.interact(Rect::from_x_y_ranges(r.x_range(), rect.y_range()), Id::new(("crumb", tab.id, i)), Sense::click_and_drag());
         // Soltar archivos sobre un tramo los lleva a esa carpeta (como en el Explorador de antes).
         if crate::ui::views::drag_hovering(&resp) {
-            p.rect_filled(r, 5.0, t.accent.gamma_multiply(0.18));
-            p.rect_stroke(r, 5.0, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
-        } else if resp.hovered() {
-            p.rect_filled(r, 5.0, t.hover);
+            p.rect_filled(r, radius::S, t.accent_soft);
+            design::focus_ring(&p, t, r, radius::S);
+        } else {
+            let hov = design::hover_amount(ui.ctx(), resp.id, resp.hovered());
+            design::state_fill(&p, t, r, radius::S, hov, resp.is_pointer_button_down_on(), Sel::None);
         }
         let last = i + 1 == n;
-        let c = if last { t.text } else { t.dim };
-        let f = if last { theme::semibold(13.0) } else { font.clone() };
-        p.text(r.center(), Align2::CENTER_CENTER, label, f, c);
+        theme::want_cjk(label);
+        let color = if last { t.text } else { t.dim };
+        let g = elided(&p, label, font_of(i), color, w - 2.0 * CRUMB_PAD);
+        p.galley(r.center() - g.size() / 2.0, g, color);
         if let Some(files) = crate::ui::views::take_drop(&resp) {
             let paths: Vec<String> = files.into_iter().filter(|f| droppable_into(f, full)).collect();
             if !paths.is_empty() {
@@ -1173,29 +1477,45 @@ fn breadcrumb(ui: &mut Ui, t: &Theme, tab: &mut Tab, width: f32, actions: &mut V
             actions.push(Action::NewTab(Some(full.clone())));
         }
         if last {
-            resp.on_hover_text(t!("barra.arrastra_llevar_esta_carpeta_otro"));
+            design::tip(resp, t, t!("barra.arrastra_llevar_esta_carpeta_otro"));
         }
         x += w;
+        if last && compact {
+            break;
+        }
         // ▸: las subcarpetas de este tramo, con la siguiente marcada.
-        let cr = Rect::from_min_size(pos2(x, rect.top() + 3.0), vec2(sep_w, rect.height() - 6.0));
+        let cr = Rect::from_min_size(pos2(x, crumb_top), vec2(CRUMB_SEP_W, CRUMB_H));
         let cresp = ui.interact(Rect::from_x_y_ranges(cr.x_range(), rect.y_range()), Id::new(("crumb-sep", tab.id, i)), Sense::click());
         let open_here = open_key == Some(i);
-        if cresp.hovered() || open_here {
-            p.rect_filled(cr, 5.0, t.hover);
-        }
+        let hov = design::hover_amount(ui.ctx(), cresp.id, cresp.hovered());
+        design::state_fill(&p, t, cr, radius::S, hov, cresp.is_pointer_button_down_on(), if open_here { Sel::Unfocused } else { Sel::None });
         let caret = if open_here { ic::CARET_DOWN } else { ic::CARET_RIGHT };
-        p.text(cr.center(), Align2::CENTER_CENTER, caret, theme::icon_font(10.0, false), if cresp.hovered() || open_here { t.dim } else { t.faint });
+        p.text(cr.center(), Align2::CENTER_CENTER, caret, design::icon_font(icon::S), if cresp.hovered() || open_here { t.dim } else { t.faint });
         if cresp.clicked() {
             let current = segs.get(i + 1).map(|(_, f)| f.clone());
             toggle_crumb_menu(ui, menu_id, CrumbMenu { key: i, src: cr, path: path.clone(), items: std::sync::Arc::new(subfolders(full)), current, scrolled: false });
         }
-        x += sep_w;
+        x += CRUMB_SEP_W;
     }
     if bg.clicked() {
         tab.path_edit = Some(path.clone());
     }
-    bg.on_hover_text(t!("barra.clic_escribir_ruta_comando_ctrl"));
+    design::tip_keys(bg, t, t!("barra.clic_escribir_ruta_comando_ctrl"), "Ctrl L");
     crumb_menu(ui, t, menu_id, &path, actions);
+}
+
+/// Pestaña de recientes, de una etiqueta o de una colección: (ícono, punto de la etiqueta, nombre).
+fn special_view(t: &Theme, tab: &Tab) -> Option<(&'static str, Option<Color32>, String)> {
+    if tab.tool.is_some() {
+        return None;
+    }
+    if tab.search.text.trim_start().to_lowercase().starts_with("recientes:") {
+        Some((ic::CLOCK_COUNTER_CLOCKWISE, None, t!("barra.recientes").to_string()))
+    } else if let Some(c) = fsx::tags::query_color(&tab.search.text) {
+        Some((ic::TAG, Some(t.tags[c.min(6)]), crate::ui::views::tag_label(c).to_string()))
+    } else {
+        fsx::collections::query_name(&tab.search.text).map(|n| (ic::BOOKMARKS_SIMPLE, None, n))
+    }
 }
 
 fn crumb_label(path: &str) -> String {
@@ -1267,31 +1587,23 @@ fn crumb_menu(ui: &mut Ui, t: &Theme, id: Id, path: &str, actions: &mut Vec<Acti
     }
     mark_overlay(ui.ctx());
     let mut close = false;
-    let w = 300.0;
     // Cada lista con su propio id: si no, la nueva hereda el tamaño de la anterior.
-    let area = egui::Area::new(id.with(("area", m.key, m.items.len()))).order(egui::Order::Foreground).fixed_pos(m.src.left_bottom() + vec2(-4.0, 6.0)).show(ui.ctx(), |ui| {
-        egui::Frame::new().fill(t.chrome).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(8).inner_margin(4).shadow(ui.visuals().popup_shadow).show(ui, |ui| {
-            ui.set_width(w);
+    let area = egui::Area::new(id.with(("area", m.key, m.items.len()))).order(egui::Order::Foreground).fixed_pos(m.src.left_bottom() + vec2(-sp::XS, sp::XS)).show(ui.ctx(), |ui| {
+        design::popover_frame(t).show(ui, |ui| {
+            ui.set_width(LIST_INNER_W);
+            ui.spacing_mut().item_spacing.y = 0.0;
             if m.items.is_empty() {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(t!("barra.sin_subcarpetas")).color(t.faint));
-                ui.add_space(4.0);
+                let (r, _) = ui.allocate_exact_size(vec2(LIST_INNER_W, h::ROW), Sense::hover());
+                ui.painter().text(pos2(r.left() + sp::S, r.center().y), Align2::LEFT_CENTER, t!("barra.sin_subcarpetas"), text::small(), t.faint);
                 return;
             }
             egui::ScrollArea::vertical().id_salt(("crumb-scroll", m.key)).max_height(440.0).auto_shrink([false, true]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
                 for (name, full) in m.items.iter() {
                     let is_cur = m.current.as_ref().is_some_and(|c| c.eq_ignore_ascii_case(full));
-                    let (rr, resp) = ui.allocate_exact_size(vec2(w - 8.0, 26.0), Sense::click());
-                    if is_cur {
-                        ui.painter().rect_filled(rr, 5.0, t.sel);
-                    } else if resp.hovered() {
-                        ui.painter().rect_filled(rr, 5.0, t.hover);
-                    }
                     let icon = if full.len() <= 3 { ic::HARD_DRIVES } else { ic::FOLDER };
-                    ui.painter().text(pos2(rr.left() + 12.0, rr.center().y), Align2::LEFT_CENTER, icon, theme::icon_font(14.0, true), t.folder);
-                    let f = if is_cur { theme::semibold(13.0) } else { FontId::proportional(13.0) };
-                    let g = elided(ui.painter(), name, f, t.text, rr.width() - 44.0);
-                    ui.painter().galley(pos2(rr.left() + 34.0, rr.center().y - g.size().y / 2.0), g, t.text);
+                    theme::want_cjk(name);
+                    let resp = design::menu_item_ex(ui, t, MenuItem { icon, label: name, current: is_cur, ..Default::default() });
                     if is_cur && !m.scrolled {
                         resp.scroll_to_me(Some(egui::Align::Center));
                     }
@@ -1320,34 +1632,60 @@ fn crumb_menu(ui: &mut Ui, t: &Theme, id: Id, path: &str, actions: &mut Vec<Acti
     });
 }
 
+/// Ancho mínimo de la búsqueda para mostrar la tecla `Ctrl F` en línea.
+const SEARCH_KBD_MIN_W: f32 = 180.0;
+const SEARCH_KEYS: &str = "Ctrl F";
+
 fn search_box(ui: &mut Ui, t: &Theme, tab: &mut Tab, id: Id, width: f32, history: &[String], actions: &mut Vec<Action>) {
-    let (rect, _) = ui.allocate_exact_size(vec2(width.min(ui.available_width() - 6.0).max(120.0), 30.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(width.min(ui.available_width() - TOOLBAR_EDGE).max(120.0), h::CTL), Sense::hover());
     let p = ui.painter().clone();
     let focused = ui.memory(|m| m.has_focus(id));
-    p.rect_filled(rect, 7.0, t.bg);
-    p.rect_stroke(rect, 7.0, egui::Stroke::new(1.0, if focused { t.accent } else { t.border }), egui::StrokeKind::Inside);
-    p.text(pos2(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, ic::MAGNIFYING_GLASS, theme::icon_font(14.0, false), t.dim);
+    field_frame(&p, t, rect, focused, ui.rect_contains_pointer(rect));
+    p.text(pos2(rect.left() + sp::S + icon::M / 2.0, rect.center().y), Align2::CENTER_CENTER, ic::MAGNIFYING_GLASS, design::icon_font(icon::M), t.dim);
+    // A la derecha, en este orden: X (si hay texto), alcance y la tecla (vacía, sin foco y ancha).
+    let mut right = rect.right() - sp::XS;
+    let show_kbd = tab.search.text.is_empty() && !focused && rect.width() >= SEARCH_KBD_MIN_W;
+    if show_kbd {
+        // Mismo ancho que dibuja `kbd_paint` (texto + 10).
+        let kw = design::text_width(&p, SEARCH_KEYS, text::mono_s()) + sp::S + sp::XXS;
+        design::kbd_paint(&p, t, pos2(right - kw, rect.center().y), SEARCH_KEYS);
+        right -= kw + sp::XS;
+    }
     // Chip de alcance: todo el equipo / esta carpeta.
     let chip_txt = if tab.search.here { t!("barra.aqui") } else { t!("barra.todo") };
-    let chip = Rect::from_min_size(pos2(rect.right() - 50.0, rect.top() + 5.0), vec2(44.0, 20.0));
-    let chip_resp = ui.interact(chip, id.with("chip"), Sense::click()).on_hover_text(t!("barra.buscar_todo_equipo_solo_carpeta"));
-    p.rect_filled(chip, 5.0, if chip_resp.hovered() { t.border } else { t.hover });
-    p.text(chip.center(), Align2::CENTER_CENTER, chip_txt, FontId::proportional(11.5), if tab.search.here { t.accent } else { t.dim });
+    let chip = Chip { text: chip_txt, tone: if tab.search.here { Tone::Accent } else { Tone::Neutral }, ..Default::default() };
+    let cw = design::chip_width(&p, &chip);
+    let chip_rect = Rect::from_min_size(pos2(right - cw, rect.center().y - h::CHIP / 2.0), vec2(cw, h::CHIP));
+    let chip_resp = design::tip(ui.interact(chip_rect, id.with("chip"), Sense::click()), t, t!("barra.buscar_todo_equipo_solo_carpeta"));
+    design::chip_paint(&p, t, chip_rect.left_center(), &chip, chip_resp.hovered());
     if chip_resp.clicked() {
         tab.search.here ^= true;
     }
-    let edit_rect = Rect::from_min_max(pos2(rect.left() + 30.0, rect.top() + 3.0), pos2(chip.left() - 4.0, rect.bottom() - 3.0));
+    right = chip_rect.left() - sp::XXS;
+    // X para vaciar.
+    if !tab.search.text.is_empty() {
+        let xr = Rect::from_min_size(pos2(right - h::CHIP, rect.center().y - h::CHIP / 2.0), vec2(h::CHIP, h::CHIP));
+        if design::icon_button_at(ui, t, xr, id.with("clear"), ic::X, IconBtn::mini()).clicked() {
+            tab.search.text.clear();
+            ui.memory_mut(|m| m.request_focus(id));
+        }
+        right = xr.left() - sp::XXS;
+    }
+    let edit_rect = Rect::from_min_max(pos2(rect.left() + sp::S + icon::M + sp::S, rect.top()), pos2(right, rect.bottom()));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(edit_rect));
     let hist_shown = tab.search.text.is_empty() && !history.is_empty();
     // Enter con una búsqueda elegida: se toma antes de que la caja lo use (y pierda el foco).
     let hist_enter = hist_shown && ui.data(|d| d.get_temp::<Option<usize>>(id.with("hist-sel"))).flatten().is_some() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    // Solo «Buscar»: el atajo va como tecla en línea.
+    let hint = t!("barra.buscar_archivos_ctrl_f");
     let r = child.add(
         egui::TextEdit::singleline(&mut tab.search.text)
             .id(id)
             // Con el historial a la vista, ↑ ↓ son de la lista (no pasan el foco a otro control).
             .lock_focus(hist_shown)
             .frame(egui::Frame::NONE)
-            .hint_text(egui::RichText::new(t!("barra.buscar_archivos_ctrl_f")).color(t.faint))
+            .font(text::body())
+            .hint_text(egui::RichText::new(hint).color(t.faint))
             .desired_width(edit_rect.width())
             .vertical_align(egui::Align::Center),
     );
@@ -1390,32 +1728,21 @@ fn search_history(ui: &mut Ui, t: &Theme, tab: &mut Tab, id: Id, rect: Rect, foc
     if enter {
         pick = sel.map(|s| history[s].clone());
     }
-    let w = rect.width().max(260.0);
-    let area = egui::Area::new(area_id).order(egui::Order::Foreground).fixed_pos(pos2(rect.right() - w, rect.bottom() + 4.0)).show(ui.ctx(), |ui| {
-        egui::Frame::new().fill(t.chrome).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(8).inner_margin(4).shadow(ui.visuals().popup_shadow).show(ui, |ui| {
-            ui.set_width(w - 8.0);
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new(t!("barra.busquedas_recientes")).size(11.5).color(t.faint));
-            });
+    let w = rect.width().max(design::LIST_W);
+    let area = egui::Area::new(area_id).order(egui::Order::Foreground).fixed_pos(pos2(rect.right() - w, rect.bottom() + sp::XS)).show(ui.ctx(), |ui| {
+        design::popover_frame(t).show(ui, |ui| {
+            ui.set_width(w - 2.0 * sp::XS);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            design::menu_title(ui, t, t!("barra.busquedas_recientes"));
             for (k, q) in history.iter().take(shown).enumerate() {
-                let (rr, resp) = ui.allocate_exact_size(vec2(w - 8.0, 26.0), Sense::click());
+                theme::want_cjk(q);
+                // Los espacios del atajo reservan el lugar de la X (el texto no pasa por debajo).
+                let resp = design::menu_item_ex(ui, t, MenuItem { icon: ic::CLOCK_COUNTER_CLOCKWISE, label: q, keys: "   ", highlighted: Some(k) == sel, ..Default::default() });
+                let rr = resp.rect;
                 let hovering = ui.rect_contains_pointer(rr);
-                if Some(k) == sel || hovering {
-                    ui.painter().rect_filled(rr, 5.0, if Some(k) == sel { t.sel } else { t.hover });
-                }
-                ui.painter().text(pos2(rr.left() + 12.0, rr.center().y), Align2::LEFT_CENTER, ic::CLOCK_COUNTER_CLOCKWISE, theme::icon_font(13.0, false), t.dim);
-                let g = elided(ui.painter(), q, FontId::proportional(13.0), t.text, rr.width() - 64.0);
-                ui.painter().galley(pos2(rr.left() + 34.0, rr.center().y - g.size().y / 2.0), g, t.text);
                 // Quitar esta búsqueda del historial.
-                let xr = Rect::from_center_size(pos2(rr.right() - 14.0, rr.center().y), vec2(20.0, 20.0));
-                let xresp = ui.interact(xr, area_id.with(("x", k)), Sense::click());
-                if hovering || Some(k) == sel {
-                    if xresp.hovered() {
-                        ui.painter().rect_filled(xr, 4.0, t.border);
-                    }
-                    ui.painter().text(xr.center(), Align2::CENTER_CENTER, ic::X, theme::icon_font(11.0, false), t.dim);
-                }
+                let xr = Rect::from_center_size(pos2(rr.right() - sp::XS - h::CHIP / 2.0, rr.center().y), vec2(h::CHIP, h::CHIP));
+                let xresp = mini_btn(ui, t, xr, area_id.with(("x", k)), ic::X, hovering || Some(k) == sel);
                 if xresp.clicked() {
                     actions.push(Action::ForgetSearch(Some(k)));
                     // La lista queda abierta (la caja recupera el foco) para seguir quitando.
@@ -1424,13 +1751,10 @@ fn search_history(ui: &mut Ui, t: &Theme, tab: &mut Tab, id: Id, rect: Rect, foc
                     pick = Some(q.clone());
                 }
             }
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.add_space(4.0);
-                if ui.add(egui::Button::new(egui::RichText::new(t!("barra.borrar_historial")).size(11.5).color(t.faint)).frame(false)).clicked() {
-                    actions.push(Action::ForgetSearch(None));
-                }
-            });
+            design::menu_sep(ui, t);
+            if design::menu_item(ui, t, ic::TRASH, t!("barra.borrar_historial"), "").clicked() {
+                actions.push(Action::ForgetSearch(None));
+            }
         });
     });
     if let Some(q) = pick {
@@ -1453,29 +1777,52 @@ fn search_history(ui: &mut Ui, t: &Theme, tab: &mut Tab, id: Id, rect: Rect, foc
 
 // ---------------------------------------------------------------- barra de estado
 
-/// `mode`: cómo se mantiene al día el índice ("USN (servicio)", "vigilancia"…).
+/// Texto de la barra de estado en el flujo de `ui` (mono chica, tal cual, sin mayúsculas).
+fn status_text(ui: &mut Ui, text: &str, color: Color32) -> Response {
+    let w = design::text_width(ui.painter(), text, text::mono_s());
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h::HEAD), Sense::hover());
+    design::mono_label(ui.painter(), rect.left_center(), Align2::LEFT_CENTER, text, color);
+    resp
+}
+
+/// Texto de la barra de estado con un ícono delante que se puede apretar.
+fn status_link(ui: &mut Ui, t: &Theme, glyph: &str, label: &str) -> Response {
+    let tw = design::text_width(ui.painter(), label, text::mono_s());
+    let w = icon::S + sp::XS + tw;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h::HEAD), Sense::click());
+    let c = if resp.hovered() { t.accent_hover } else { t.accent };
+    let p = ui.painter();
+    p.text(pos2(rect.left() + icon::S / 2.0, rect.center().y), Align2::CENTER_CENTER, glyph, design::icon_fill(icon::S), c);
+    design::mono_label(p, pos2(rect.left() + icon::S + sp::XS, rect.center().y), Align2::LEFT_CENTER, label, c);
+    resp
+}
+
+/// `mode`: cómo se mantiene al día el índice ("USN (servicio)", "vigilancia"…); el detalle
+/// (servicio / administrador) va en el tooltip, no en el texto.
 pub fn status_bar(ui: &mut Ui, t: &Theme, left: &str, right: &str, busy: bool, mode: &str, actions: &mut Vec<Action>) {
     ui.horizontal_centered(|ui| {
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new(left).size(11.5).color(t.dim));
+        ui.add_space(sp::M);
+        status_text(ui, left, t.dim);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(12.0);
+            ui.add_space(sp::M);
             let usn = mode.starts_with("USN");
             let c = if busy || usn { t.accent } else { t.faint };
-            let label = ui.add(egui::Label::new(egui::RichText::new(right).size(11.5).color(if busy { t.accent } else { t.faint })).sense(Sense::click()));
-            ui.label(egui::RichText::new(ic::LIGHTNING).font(theme::icon_font(12.0, true)).color(c));
+            let shown = status_text(ui, right, if busy { t.accent } else { t.faint });
+            let label = ui.interact(shown.rect, Id::new("status-index"), Sense::click());
+            ui.label(egui::RichText::new(egui_phosphor::fill::LIGHTNING).font(design::icon_fill(icon::S)).color(c));
             if mode == crate::index::MODE_WATCH {
                 // Sin servicio: ofrecer activarlo (una vez, con permiso de administrador).
-                let b = ui
-                    .add(egui::Button::new(egui::RichText::new(format!("{}  {}", ic::LIGHTNING, t!("barra.activar_indice_instantaneo"))).size(11.5).color(t.accent)).frame(false))
-                    .on_hover_text(t!("barra.instala_pequeno_servicio_windows_lee"));
+                ui.add_space(sp::S);
+                let b = design::tip(status_link(ui, t, egui_phosphor::fill::LIGHTNING, t!("barra.activar_indice_instantaneo")), t, t!("barra.instala_pequeno_servicio_windows_lee"));
                 if b.clicked() {
                     actions.push(Action::InstallService);
                 }
             }
             if usn {
-                label.on_hover_text(t!("barra.indice_mantiene_dia_usn_journal")).context_menu(|ui| {
-                    if mode == crate::index::MODE_SERVICE && ui.button(format!("{}  {}", ic::TRASH, t!("barra.quitar_servicio_indexado"))).clicked() {
+                // El modo completo («USN (servicio)») va aquí; en la barra, solo «USN».
+                let label = design::tip(label, t, &format!("{}\n{}", crate::index::mode_label(mode), t!("barra.indice_mantiene_dia_usn_journal")));
+                design::context_menu(&label, t, |ui| {
+                    if mode == crate::index::MODE_SERVICE && design::menu_item_ex(ui, t, MenuItem { icon: ic::TRASH, label: t!("barra.quitar_servicio_indexado"), danger: true, ..Default::default() }).clicked() {
                         actions.push(Action::UninstallService);
                     }
                 });
@@ -1508,9 +1855,7 @@ fn job_line(j: &transfer::JobView) -> String {
             } else if let Some(e) = j.eta_secs() {
                 s.push_str(&tf!("barra.faltan", tiempo = fmt_eta(e)));
             }
-            if j.workers > 1 {
-                s.push_str(&tf!("barra.a_la_vez", n = j.workers));
-            }
+            // «N a la vez» va al tooltip de la fila: en la línea la cortaba.
             s
         }
         State::Done if j.errors.is_empty() => tp!(j.done_files, "barra.listo_archivos", n = fsx::thousands(j.done_files)),
@@ -1519,90 +1864,155 @@ fn job_line(j: &transfer::JobView) -> String {
     }
 }
 
-/// Barra compacta en la barra de estado. Devuelve true si se le hizo clic.
+/// Dónde quedó el chip de copias (la lista se abre sobre él).
+const XFER_CHIP_RECT: &str = "xfer-chip-rect";
+
+/// Barra compacta en la barra de estado: nombre a la izquierda, porcentaje a la derecha y el
+/// medidor de puntos debajo, a 1 px del fondo del chip. Devuelve true si se le hizo clic.
 pub fn transfer_chip(ui: &mut Ui, t: &Theme, area: Rect, jobs: &[transfer::JobView]) -> bool {
-    let resp = ui.interact(area, Id::new("xfer-chip"), Sense::click()).on_hover_text(t!("barra.ver_copias"));
+    ui.ctx().data_mut(|d| d.insert_temp(Id::new(XFER_CHIP_RECT), area));
+    let resp = design::tip(ui.interact(area, Id::new("xfer-chip"), Sense::click()), t, t!("barra.ver_copias"));
     let p = ui.painter();
-    if resp.hovered() {
-        p.rect_filled(area, 5.0, t.hover);
-    }
+    let hov = design::hover_amount(ui.ctx(), resp.id, resp.hovered());
+    design::state_fill(p, t, area, radius::M, hov, resp.is_pointer_button_down_on(), Sel::None);
     let running: Vec<&transfer::JobView> = jobs.iter().filter(|j| !j.finished()).collect();
-    let (label, frac, color) = match running.first() {
+    let (label, pct, frac, color) = match running.first() {
         Some(j) => {
             let extra = if running.len() > 1 { format!(" (+{})", running.len() - 1) } else { String::new() };
-            let pct = (j.fraction() * 100.0) as u32;
-            let c = if j.state == transfer::State::Conflict { t.danger } else { t.accent };
-            (format!("{}{extra} · {pct}%", j.label), j.fraction(), c)
+            let pct = format!("{}%", (j.fraction() * 100.0) as u32);
+            (format!("{}{extra}", j.label), pct, j.fraction(), t.accent)
         }
         None => {
             let errs: usize = jobs.iter().map(|j| j.errors.len()).sum();
             let txt = if errs > 0 { tf!("barra.copias_terminadas_error", errores = errs) } else { t!("barra.copias_terminadas").to_string() };
-            (txt, 1.0, if errs > 0 { t.danger } else { t.dim })
+            (txt, String::new(), 1.0, if errs > 0 { t.danger } else { t.dim })
         }
     };
-    let bar = Rect::from_min_size(pos2(area.left() + 8.0, area.bottom() - 5.0), vec2(area.width() - 16.0, 3.0));
-    p.rect_filled(bar, 1.5, t.border);
-    p.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * frac.clamp(0.0, 1.0), 3.0)), 1.5, color);
-    let g = elided(p, &label, FontId::proportional(11.5), t.text, area.width() - 16.0);
-    p.galley(pos2(area.left() + 8.0, area.top() + 1.0), g, t.text);
+    let inner = area.shrink2(vec2(sp::S, 0.0));
+    // Pegado al fondo: a 4 px el descendente del texto lo tocaba.
+    let meter = Rect::from_min_max(pos2(inner.left(), area.bottom() - 4.0), pos2(inner.right(), area.bottom() - 1.0));
+    // El texto, centrado en lo que queda sobre el medidor.
+    let cy = (area.top() + meter.top()) / 2.0;
+    let pw = if pct.is_empty() { 0.0 } else { p.text(pos2(inner.right(), cy), Align2::RIGHT_CENTER, &pct, text::mono_s(), t.dim).width() + sp::S };
+    let g = elided(p, &label, text::small(), t.text, inner.width() - pw);
+    p.galley(pos2(inner.left(), cy - g.size().y / 2.0), g, t.text);
+    design::dot_meter(p, t, meter, frac, color);
     resp.clicked()
 }
 
-/// Lista de copias (sobre la barra de estado). Devuelve false si se cerró.
+/// Botón fantasma de 20 (cabecera de la lista de copias).
+fn ghost_small(ui: &mut Ui, t: &Theme, label: &str) -> Response {
+    let w = design::text_width(ui.painter(), label, text::small()) + 2.0 * sp::S;
+    let (rect, r) = ui.allocate_exact_size(vec2(w, h::CHIP), Sense::click());
+    let hov = design::hover_amount(ui.ctx(), r.id, r.hovered());
+    design::state_fill(ui.painter(), t, rect, radius::S, hov, r.is_pointer_button_down_on(), Sel::None);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, text::small(), if r.hovered() { t.text } else { t.dim });
+    r
+}
+
+/// Bajo una fila de la lista de copias, alineado con su texto (ícono en x = 4 + 8).
+const JOB_TEXT_X: f32 = sp::XS + sp::S + icon::M + sp::S;
+
+fn job_indent(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        ui.add_space(JOB_TEXT_X);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.set_width(ui.available_width() - sp::M);
+            add(ui);
+        });
+    });
+}
+
+/// Lista de copias (sobre la barra de estado): popover de `PANEL_W`, cada trabajo una fila de dos
+/// líneas con su medidor debajo. Devuelve false si se cerró.
 pub fn transfers_popup(ctx: &egui::Context, t: &Theme, jobs: &[transfer::JobView], actions: &mut Vec<Action>) -> bool {
+    use transfer::State;
     let mut open = true;
-    egui::Area::new(Id::new("xfer-popup")).order(egui::Order::Foreground).anchor(Align2::CENTER_BOTTOM, vec2(0.0, -32.0)).show(ctx, |ui| {
-        egui::Frame::new().fill(t.chrome).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(10).inner_margin(12).show(ui, |ui| {
-            ui.set_width(460.0);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(t!("barra.copias")).font(theme::semibold(14.0)));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(ic::X).clicked() {
-                        open = false;
+    // Centrada sobre su chip (no sobre la ventana); sin chip, sobre la barra de estado.
+    let area = egui::Area::new(Id::new("xfer-popup")).order(egui::Order::Foreground);
+    let area = match ctx.data(|d| d.get_temp::<Rect>(Id::new(XFER_CHIP_RECT))) {
+        Some(chip) => area.pivot(Align2::CENTER_BOTTOM).fixed_pos(chip.center_top() - vec2(0.0, sp::S)),
+        None => area.anchor(Align2::CENTER_BOTTOM, vec2(0.0, -(h::HEAD + sp::S))),
+    };
+    area.show(ctx, |ui| {
+        design::popover_frame(t).show(ui, |ui| {
+            ui.set_width(design::PANEL_W - 2.0 * sp::XS - 2.0 * stroke::HAIR);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            // Cabecera: micro-etiqueta, «Limpiar terminadas» y cerrar.
+            let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), h::HEAD), Sense::hover());
+            design::micro(ui.painter(), pos2(hr.left() + sp::S, hr.center().y), Align2::LEFT_CENTER, t!("barra.copias"), t.faint);
+            let mut head = ui.new_child(egui::UiBuilder::new().max_rect(hr.shrink2(vec2(sp::XS, 0.0))).layout(egui::Layout::right_to_left(egui::Align::Center)));
+            head.spacing_mut().item_spacing.x = sp::XS;
+            let close = design::icon_button(&mut head, t, ic::X, IconBtn::mini());
+            if design::tip(close, t, t!("comun.cerrar")).clicked() {
+                open = false;
+            }
+            if jobs.iter().any(|j| j.finished()) && ghost_small(&mut head, t, t!("barra.limpiar_terminadas")).clicked() {
+                actions.push(Action::TransferClear);
+            }
+            for j in jobs.iter().rev() {
+                design::menu_sep(ui, t);
+                let icon = match j.op {
+                    transfer::Op::Copy => ic::COPY,
+                    transfer::Op::Move => ic::ARROW_RIGHT,
+                    transfer::Op::Extract | transfer::Op::Compress => ic::FILE_ZIP,
+                    transfer::Op::Delete => ic::TRASH,
+                };
+                let line = job_line(j);
+                theme::want_cjk(&j.label);
+                let spec = design::Row2 {
+                    icon,
+                    // Acento solo mientras corre (no en espera ni en pausa).
+                    icon_color: Some(if j.state == State::Running { t.accent } else { t.dim }),
+                    title: &j.label,
+                    sub: &line,
+                    sub_mono: true,
+                    sub_color: (j.state == State::Conflict).then_some(t.warn),
+                    ..Default::default()
+                };
+                let row = design::row2(ui, t, Id::new(("xfer-job", j.id)), spec, |ui| {
+                    if j.finished() {
+                        return;
                     }
-                    if jobs.iter().any(|j| j.finished()) && ui.button(t!("barra.limpiar_terminadas")).clicked() {
-                        actions.push(Action::TransferClear);
+                    ui.spacing_mut().item_spacing.x = sp::XXS;
+                    if design::tip(design::icon_button(ui, t, ic::X, IconBtn::mini()), t, t!("comun.cancelar")).clicked() {
+                        actions.push(Action::TransferCancel(j.id));
+                    }
+                    if j.state != State::Conflict {
+                        let paused = j.state == State::Paused;
+                        let (glyph, tip) = if paused { (ic::PLAY, t!("barra.continuar")) } else { (ic::PAUSE, t!("barra.pausar")) };
+                        if design::tip(design::icon_button(ui, t, glyph, IconBtn::mini()), t, tip).clicked() {
+                            actions.push(Action::TransferPause(j.id, !paused));
+                        }
                     }
                 });
-            });
-            ui.add_space(6.0);
-            for j in jobs.iter().rev() {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    let icon = match j.op {
-                        transfer::Op::Copy => ic::COPY,
-                        transfer::Op::Move => ic::ARROW_RIGHT,
-                        transfer::Op::Extract | transfer::Op::Compress => ic::FILE_ZIP,
-                        transfer::Op::Delete => ic::TRASH,
-                    };
-                    ui.label(egui::RichText::new(icon).font(theme::icon_font(14.0, false)).color(t.accent));
-                    ui.vertical(|ui| {
-                        ui.set_width(330.0);
-                        ui.label(egui::RichText::new(&j.label).size(12.5));
-                        ui.label(egui::RichText::new(job_line(j)).size(11.5).color(t.dim));
-                        if !j.finished() {
-                            ui.add(egui::ProgressBar::new(j.fraction()).desired_height(4.0).fill(t.accent));
-                            if !j.current.is_empty() {
-                                ui.label(egui::RichText::new(&j.current).size(10.5).color(t.faint));
-                            }
-                        }
-                        for e in j.errors.iter().take(3) {
-                            ui.label(egui::RichText::new(e).size(10.5).color(t.danger));
+                // La línea entera, con cuántos archivos van a la vez (en la fila no entra).
+                if j.state == State::Running && j.workers > 1 {
+                    design::tip(row, t, &format!("{line}{}", tf!("barra.a_la_vez", n = j.workers)));
+                }
+                // Bajo la fila: medidor, archivo en curso y errores.
+                if !j.finished() {
+                    job_indent(ui, |ui| {
+                        let (mr, _) = ui.allocate_exact_size(vec2(ui.available_width(), sp::S), Sense::hover());
+                        let c = if j.state == State::Paused { t.accent.gamma_multiply(0.5) } else { t.accent };
+                        design::dot_meter(ui.painter(), t, mr, j.fraction(), c);
+                        if !j.current.is_empty() {
+                            let w = ui.available_width();
+                            let cur = design::elide_middle(ui.painter(), &j.current, text::mono_s(), w);
+                            let (cr, _) = ui.allocate_exact_size(vec2(w, 16.0), Sense::hover());
+                            design::mono_label(ui.painter(), cr.left_center(), Align2::LEFT_CENTER, &cur, t.faint);
                         }
                     });
-                    if !j.finished() {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button(ic::X).on_hover_text(t!("comun.cancelar")).clicked() {
-                                actions.push(Action::TransferCancel(j.id));
-                            }
-                            let paused = j.state == transfer::State::Paused;
-                            let (icon, tip) = if paused { (ic::PLAY, t!("barra.continuar")) } else { (ic::PAUSE, t!("barra.pausar")) };
-                            if ui.button(icon).on_hover_text(tip).clicked() {
-                                actions.push(Action::TransferPause(j.id, !paused));
-                            }
-                        });
-                    }
-                });
+                }
+                if !j.errors.is_empty() {
+                    job_indent(ui, |ui| {
+                        for e in j.errors.iter().take(3) {
+                            design::status_line(ui, t, Tone::Danger, "", e);
+                        }
+                    });
+                }
+                ui.add_space(sp::XS);
             }
         });
     });
@@ -1614,46 +2024,65 @@ pub fn conflict_dialog(ctx: &egui::Context, t: &Theme, j: &transfer::JobView, ac
     let Some(c) = &j.conflict else { return };
     let all_id = Id::new(("conflict-all", j.id));
     let mut all = ctx.data_mut(|d| *d.get_temp_mut_or(all_id, false));
-    egui::Modal::new(Id::new(("conflict", j.id))).show(ctx, |ui| {
-        ui.set_width(440.0);
-        ui.label(egui::RichText::new(t!("barra.este_archivo_ya_existe_destino")).font(theme::semibold(15.0)));
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new(fsx::file_name(&c.dst)).color(t.accent));
-        ui.add_space(8.0);
-        egui::Grid::new("conflict-grid").num_columns(3).spacing([16.0, 4.0]).show(ui, |ui| {
-            ui.label("");
-            ui.label(egui::RichText::new(t!("comun.nuevo")).color(t.dim));
-            ui.label(egui::RichText::new(t!("barra.ya_esta")).color(t.dim));
-            ui.end_row();
-            ui.label(egui::RichText::new(t!("comun.tamano")).color(t.dim));
-            ui.label(fsx::human_size(c.src_size));
-            ui.label(fsx::human_size(c.dst_size));
-            ui.end_row();
-            ui.label(egui::RichText::new(t!("comun.modificado")).color(t.dim));
-            let newer = |a: u32, b: u32| if a > b { t!("barra.mas_nuevo") } else { "" };
-            ui.label(format!("{}{}", fsx::fmt_date(c.src_mtime), newer(c.src_mtime, c.dst_mtime)));
-            ui.label(format!("{}{}", fsx::fmt_date(c.dst_mtime), newer(c.dst_mtime, c.src_mtime)));
-            ui.end_row();
-        });
-        ui.add_space(10.0);
-        ui.checkbox(&mut all, t!("barra.hacer_mismo_siguientes"));
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui.button(t!("barra.reemplazar")).clicked() {
-                actions.push(Action::TransferResolve(j.id, transfer::Choice::Replace, all));
+    design::dialog(ctx, t, ("conflict", j.id), DialogW::M, |ui| {
+        let name = fsx::file_name(&c.dst);
+        theme::want_cjk(&name);
+        design::dialog_header(ui, t, ic::COPY, Tone::Warn, t!("barra.este_archivo_ya_existe_destino"), Some(&name));
+        ui.add_space(sp::L);
+        // Comparación: rótulo (88), «Nuevo» y «El que ya está»; valores en mono.
+        design::card_frame(t).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 3.0 * h::HEAD), Sense::hover());
+            let p = ui.painter();
+            let key_w = 88.0;
+            let col_w = (rect.width() - key_w) / 2.3;
+            let x1 = rect.left() + key_w;
+            let x2 = x1 + 1.3 * col_w;
+            let cy = |row: f32| rect.top() + (row + 0.5) * h::HEAD;
+            design::micro(p, pos2(x1, cy(0.0)), Align2::LEFT_CENTER, t!("comun.nuevo"), t.faint);
+            design::micro(p, pos2(x2, cy(0.0)), Align2::LEFT_CENTER, t!("barra.ya_esta"), t.faint);
+            for (row, key) in [(1.0, t!("comun.tamano")), (2.0, t!("comun.modificado"))] {
+                p.text(pos2(rect.left(), cy(row)), Align2::LEFT_CENTER, key, text::small(), t.dim);
             }
-            if ui.button(t!("barra.conservar_ambos")).clicked() {
-                actions.push(Action::TransferResolve(j.id, transfer::Choice::KeepBoth, all));
-            }
-            if ui.button(t!("barra.omitir")).clicked() {
-                actions.push(Action::TransferResolve(j.id, transfer::Choice::Skip, all));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(t!("barra.cancelar_copia")).clicked() {
-                    actions.push(Action::TransferCancel(j.id));
+            let val = |x: f32, row: f32, s: &str| p.text(pos2(x, cy(row)), Align2::LEFT_CENTER, s, text::mono(), t.text);
+            val(x1, 1.0, &fsx::human_size(c.src_size));
+            val(x2, 1.0, &fsx::human_size(c.dst_size));
+            // «más nuevo» como chip junto a la fecha más reciente (el texto traducido trae « (…)»).
+            let newer = t!("barra.mas_nuevo").trim().trim_start_matches('(').trim_end_matches(')').trim();
+            let chip = Chip { text: newer, tone: Tone::Accent, mono: true, compact: true, ..Default::default() };
+            for (x, mine, other) in [(x1, c.src_mtime, c.dst_mtime), (x2, c.dst_mtime, c.src_mtime)] {
+                let r = val(x, 2.0, &fsx::fmt_date(mine));
+                if mine > other {
+                    design::chip_paint(p, t, pos2(r.right() + sp::S, cy(2.0)), &chip, false);
                 }
-            });
+            }
         });
+        ui.add_space(sp::S);
+        design::checkbox(ui, t, &mut all, t!("barra.hacer_mismo_siguientes"));
+        let mut cancel = false;
+        let mut pick = None;
+        design::dialog_footer(
+            ui,
+            |ui| cancel = design::button(ui, t, Kind::Ghost, "", t!("barra.cancelar_copia"), true).clicked(),
+            |ui| {
+                // De derecha a izquierda: «Reemplazar» (primario), «Conservar ambos», «Omitir».
+                let answers = [
+                    (Kind::Primary, t!("barra.reemplazar"), transfer::Choice::Replace),
+                    (Kind::Secondary, t!("barra.conservar_ambos"), transfer::Choice::KeepBoth),
+                    (Kind::Secondary, t!("barra.omitir"), transfer::Choice::Skip),
+                ];
+                for (kind, label, choice) in answers {
+                    if design::button(ui, t, kind, "", label, true).clicked() {
+                        pick = Some(choice);
+                    }
+                }
+            },
+        );
+        if cancel {
+            actions.push(Action::TransferCancel(j.id));
+        }
+        if let Some(choice) = pick {
+            actions.push(Action::TransferResolve(j.id, choice, all));
+        }
     });
     ctx.data_mut(|d| d.insert_temp(all_id, all));
 }

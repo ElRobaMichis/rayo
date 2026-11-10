@@ -6,88 +6,179 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
     pub dark: bool,
-    pub bg: Color32,
+    // Superficies, de la más hundida a la que flota (ver `design.rs`).
+    /// Hundida: barra lateral, campos, pozos (vista previa, código), terminal.
     pub sidebar: Color32,
+    /// Contenido: listas, pestaña activa, barra de herramientas.
+    pub bg: Color32,
+    /// Panel: tira de pestañas, barra de estado, panel de vista previa.
     pub chrome: Color32,
-    pub hover: Color32,
+    /// Lo que flota: menús, popovers, tooltips, avisos, diálogos.
+    pub raised: Color32,
     pub border: Color32,
+    /// Contorno de controles y de lo que flota.
+    pub border_strong: Color32,
+    // Capas de estado: alfa, valen sobre cualquier superficie.
+    pub hover: Color32,
+    /// Presionado, seleccionado sin foco, ítem activo de navegación.
+    pub sel_inactive: Color32,
+    // Texto.
     pub text: Color32,
     pub dim: Color32,
     pub faint: Color32,
-    pub accent: Color32,
+    pub disabled: Color32,
+    /// Texto sobre un relleno de acento o de peligro.
     pub accent_text: Color32,
+    // Acento: el azul es «ahora» (foco, selección con foco, acción primaria, lo instantáneo).
+    pub accent: Color32,
+    pub accent_hover: Color32,
+    pub accent_fill: Color32,
+    pub accent_fill_hover: Color32,
+    pub accent_fill_pressed: Color32,
+    pub accent_soft: Color32,
+    /// Selección con foco (tinte de acento; el texto no cambia de color).
     pub sel: Color32,
-    pub sel_inactive: Color32,
     pub folder: Color32,
+    // Estado: texto y fondo suave.
+    pub ok: Color32,
+    pub ok_soft: Color32,
+    pub warn: Color32,
+    pub warn_soft: Color32,
     pub danger: Color32,
+    pub danger_soft: Color32,
+    pub danger_fill: Color32,
+    /// Trama de puntos (firma de Rayo: vacíos, pozo de la vista previa).
+    pub dots: Color32,
     pub overlay: Color32,
+    // Colores de contenido (no de interfaz): siempre de aquí, nunca literales sueltos.
+    /// Etiquetas de color, en el orden de `fsx::tags::COLORS`: rojo, naranja, amarillo, verde,
+    /// azul, morado, gris.
+    pub tags: [Color32; 7],
+    /// Tipos de archivo (glifo grande), los de `icons.rs`: morado (imagen), rosa (video, audio),
+    /// rojo (pdf), naranja (código, presentación), ámbar (comprimido), verde (planilla), turquesa
+    /// (ejecutable), azul (documento).
+    pub kinds: [Color32; 8],
+    /// Resaltado de código: palabra clave, cadena, número, tipo.
+    pub syntax: [Color32; 4],
+    /// Los 16 colores básicos de la terminal: los 8 normales salen de los tokens y los 8
+    /// brillantes son los mismos mezclados 15 % hacia `text`.
+    pub ansi: [Color32; 16],
 }
 
 const fn hex(c: u32) -> Color32 {
     Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
 }
 
+/// `c` con alfa `a` (0-1).
+fn alpha(c: Color32, a: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (a * 255.0).round() as u8)
+}
+
+/// `a` mezclado una fracción `k` hacia `b` (colores opacos).
+fn mix(a: Color32, b: Color32, k: f32) -> Color32 {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * k).round() as u8;
+    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
+const TAGS: [Color32; 7] = [hex(0xFF5F57), hex(0xFF9F0A), hex(0xFFD60A), hex(0x32D74B), hex(0x0A84FF), hex(0xBF5AF2), hex(0x98989D)];
+const KINDS: [Color32; 8] = [hex(0xB57CFF), hex(0xF472B6), hex(0xF0605D), hex(0xF59E42), hex(0xE9B949), hex(0x3FC07A), hex(0x2EC4B6), hex(0x5B9BFF)];
+
+/// Negro `faint`, rojo `danger`, verde `ok`, amarillo `warn`, azul `accent`, magenta `syntax[0]`,
+/// cian `syntax[3]`, blanco `text`; después los brillantes.
+fn ansi(t: &Theme) -> [Color32; 16] {
+    let base = [t.faint, t.danger, t.ok, t.warn, t.accent, t.syntax[0], t.syntax[3], t.text];
+    std::array::from_fn(|i| if i < 8 { base[i] } else { mix(base[i - 8], t.text, 0.15) })
+}
+
 impl Theme {
     pub fn dark() -> Self {
-        Theme {
+        let accent = hex(0x4C8DFF);
+        let mut t = Theme {
             dark: true,
-            bg: hex(0x16171B),
-            sidebar: hex(0x111215),
-            chrome: hex(0x1B1C21),
-            hover: hex(0x24262C),
-            border: hex(0x2A2C33),
-            text: hex(0xE8EAEF),
-            dim: hex(0x9AA1AD),
-            faint: hex(0x626875),
-            accent: hex(0x4C8DFF),
+            sidebar: hex(0x0F0F10),
+            bg: hex(0x141415),
+            chrome: hex(0x19191B),
+            raised: hex(0x1E1E21),
+            border: hex(0x232326),
+            border_strong: hex(0x303036),
+            hover: Color32::from_white_alpha(15),
+            sel_inactive: Color32::from_white_alpha(26),
+            text: hex(0xEDEDEF),
+            dim: hex(0xA8A8B0),
+            faint: hex(0x82828C),
+            disabled: hex(0x55555E),
             accent_text: hex(0xFFFFFF),
-            sel: hex(0x2F5FCC),
-            sel_inactive: hex(0x2C2F37),
+            accent,
+            accent_hover: hex(0x6EA4FF),
+            accent_fill: hex(0x3366D6),
+            accent_fill_hover: hex(0x3D72E6),
+            accent_fill_pressed: hex(0x2B59BF),
+            accent_soft: alpha(accent, 0.14),
+            sel: alpha(accent, 0.24),
             folder: hex(0x5EA6F8),
+            ok: hex(0x4CC38A),
+            ok_soft: alpha(hex(0x4CC38A), 0.14),
+            warn: hex(0xF2B84B),
+            warn_soft: alpha(hex(0xF2B84B), 0.14),
             danger: hex(0xFF6B6B),
-            overlay: Color32::from_black_alpha(170),
-        }
+            danger_soft: alpha(hex(0xFF6B6B), 0.14),
+            danger_fill: hex(0xD93D42),
+            dots: alpha(hex(0xEDEDEF), 0.12),
+            overlay: Color32::from_black_alpha(153),
+            tags: TAGS,
+            kinds: KINDS,
+            syntax: [hex(0xC792EA), hex(0x9ECE6A), hex(0xF7A35C), hex(0x5FC8D8)],
+            ansi: [Color32::BLACK; 16],
+        };
+        t.ansi = ansi(&t);
+        t
     }
 
     pub fn light() -> Self {
-        Theme {
+        let accent = hex(0x2563EB);
+        let mut t = Theme {
             dark: false,
+            sidebar: hex(0xF5F5F6),
             bg: hex(0xFFFFFF),
-            sidebar: hex(0xF3F4F7),
-            chrome: hex(0xF8F9FB),
-            hover: hex(0xECEEF2),
-            border: hex(0xE1E4E9),
-            text: hex(0x1D2127),
-            dim: hex(0x5D6573),
-            faint: hex(0x9AA1AD),
-            accent: hex(0x2F6FED),
+            chrome: hex(0xFAFAFB),
+            raised: hex(0xFFFFFF),
+            border: hex(0xEBEBEE),
+            border_strong: hex(0xDCDCE1),
+            hover: Color32::from_black_alpha(10),
+            sel_inactive: Color32::from_black_alpha(20),
+            text: hex(0x18181B),
+            dim: hex(0x52525B),
+            faint: hex(0x71717A),
+            disabled: hex(0xA1A1AA),
             accent_text: hex(0xFFFFFF),
-            sel: hex(0x2F6FED),
-            sel_inactive: hex(0xDDE1E8),
+            accent,
+            accent_hover: hex(0x1D4ED8),
+            accent_fill: hex(0x2563EB),
+            accent_fill_hover: hex(0x1D58D8),
+            accent_fill_pressed: hex(0x1A4DBF),
+            accent_soft: alpha(accent, 0.10),
+            sel: alpha(accent, 0.16),
             folder: hex(0x4A9AF5),
-            danger: hex(0xE5484D),
-            overlay: Color32::from_black_alpha(120),
-        }
+            ok: hex(0x18794E),
+            ok_soft: alpha(hex(0x18794E), 0.10),
+            warn: hex(0x9A6700),
+            warn_soft: alpha(hex(0x9A6700), 0.12),
+            danger: hex(0xCE2C31),
+            danger_soft: alpha(hex(0xCE2C31), 0.10),
+            danger_fill: hex(0xCE2C31),
+            dots: alpha(hex(0x18181B), 0.14),
+            overlay: Color32::from_black_alpha(82),
+            tags: TAGS,
+            kinds: KINDS,
+            syntax: [hex(0x8B3FD9), hex(0x2E7D32), hex(0xB35C00), hex(0x0B7285)],
+            ansi: [Color32::BLACK; 16],
+        };
+        t.ansi = ansi(&t);
+        t
     }
 
     pub fn get(dark: bool) -> Self {
         if dark { Self::dark() } else { Self::light() }
-    }
-
-    /// Color de la etiqueta de antigüedad: rojo (nuevo) → azul → gris (viejo).
-    pub fn age_color(&self, age_secs: u32) -> Color32 {
-        let c = match age_secs {
-            0..3600 => 0xFF5D5D,
-            3600..86_400 => 0xFF9944,
-            86_400..604_800 => 0xF2C94C,
-            604_800..2_592_000 => 0x4CCB8A,
-            2_592_000..15_552_000 => 0x38C2D6,
-            15_552_000..31_536_000 => 0x4C8DFF,
-            _ => {
-                return if self.dark { hex(0x3A3E47) } else { hex(0xD5D9E0) };
-            }
-        };
-        hex(c)
     }
 }
 
@@ -128,23 +219,41 @@ pub fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(definitions(false));
 }
 
+/// Geist y Geist Mono (SIL OFL 1.1, ver `assets/fonts/OFL.txt`), variables: un archivo por familia
+/// y el peso se elige con el eje `wght`.
+const GEIST: &[u8] = include_bytes!("../../assets/fonts/Geist-Variable.ttf");
+const GEIST_MONO: &[u8] = include_bytes!("../../assets/fonts/GeistMono-Variable.ttf");
+
+fn weight(bytes: &'static [u8], w: f32) -> Arc<FontData> {
+    let coords = egui::epaint::text::VariationCoords::new([(b"wght", w)]);
+    Arc::new(FontData::from_static(bytes).tweak(egui::FontTweak { coords, ..Default::default() }))
+}
+
 fn definitions(cjk: bool) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let read = |f: &str| std::fs::read(format!("C:\\Windows\\Fonts\\{f}")).ok();
-    if let Some(b) = read("segoeui.ttf") {
-        fonts.font_data.insert("segoe".into(), Arc::new(FontData::from_owned(b)));
-        fonts.families.get_mut(&FontFamily::Proportional).unwrap().insert(0, "segoe".into());
+    fonts.font_data.insert("geist".into(), weight(GEIST, 400.0));
+    fonts.font_data.insert("geist-medium".into(), weight(GEIST, 500.0));
+    fonts.font_data.insert("geist-mono".into(), weight(GEIST_MONO, 400.0));
+    // Respaldo: Segoe UI y Consolas de Windows (cirílico, griego, árabe en nombres de archivo).
+    let mut prop = vec!["geist".to_string()];
+    let mut medium = vec!["geist-medium".to_string()];
+    let mut mono = vec!["geist-mono".to_string()];
+    for (name, file, list) in [("segoe", "segoeui.ttf", &mut prop), ("segoe-sb", "seguisb.ttf", &mut medium), ("consolas", "consola.ttf", &mut mono)] {
+        if let Some(b) = read(file) {
+            fonts.font_data.insert(name.into(), Arc::new(FontData::from_owned(b)));
+            list.push(name.into());
+        }
     }
-    let mut semi = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    if let Some(b) = read("seguisb.ttf") {
-        fonts.font_data.insert("segoe-sb".into(), Arc::new(FontData::from_owned(b)));
-        semi.insert(0, "segoe-sb".into());
-    }
-    fonts.families.insert(FontFamily::Name("semibold".into()), semi);
-    if let Some(b) = read("consola.ttf") {
-        fonts.font_data.insert("consolas".into(), Arc::new(FontData::from_owned(b)));
-        fonts.families.get_mut(&FontFamily::Monospace).unwrap().insert(0, "consolas".into());
-    }
+    let egui_prop = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    let egui_mono = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
+    medium.extend(prop.iter().skip(1).cloned());
+    prop.extend(egui_prop.iter().cloned());
+    medium.extend(egui_prop.iter().cloned());
+    mono.extend(egui_mono.iter().cloned());
+    fonts.families.insert(FontFamily::Proportional, prop);
+    fonts.families.insert(FontFamily::Monospace, mono);
+    fonts.families.insert(FontFamily::Name("semibold".into()), medium);
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     egui_phosphor::add_font_bytes_as_family(&mut fonts, "phosphor-fill", egui_phosphor::bytes::fill::FONT);
     if cjk {
@@ -161,58 +270,71 @@ fn definitions(cjk: bool) -> FontDefinitions {
 }
 
 pub fn apply_style(ctx: &egui::Context, t: &Theme) {
+    use super::design::{dur, radius, text};
     let mut v = if t.dark { Visuals::dark() } else { Visuals::light() };
     v.panel_fill = t.bg;
-    v.window_fill = t.chrome;
-    v.extreme_bg_color = if t.dark { Color32::from_rgb(0x0F, 0x10, 0x13) } else { Color32::WHITE };
+    v.window_fill = t.raised;
+    v.extreme_bg_color = t.sidebar;
+    v.text_edit_bg_color = Some(t.sidebar);
     v.faint_bg_color = t.hover;
-    v.window_stroke = Stroke::new(1.0, t.border);
-    v.window_corner_radius = CornerRadius::same(10);
-    v.menu_corner_radius = CornerRadius::same(8);
-    v.selection.bg_fill = t.accent.gamma_multiply(0.45);
-    v.selection.stroke = Stroke::new(1.0, t.accent);
+    v.window_stroke = Stroke::new(1.0, t.border_strong);
+    v.window_corner_radius = CornerRadius::same(radius::XL as u8);
+    v.menu_corner_radius = CornerRadius::same(radius::L as u8);
+    v.selection.bg_fill = t.sel;
+    // La selección no cambia el color del texto (4.0).
+    v.selection.stroke = Stroke::new(1.0, t.text);
+    v.text_cursor.stroke = Stroke::new(super::design::stroke::FOCUS, t.accent);
     v.hyperlink_color = t.accent;
     v.override_text_color = Some(t.text);
-    let r = CornerRadius::same(6);
+    let r = CornerRadius::same(radius::M as u8);
     for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
         w.corner_radius = r;
     }
+    // ui.separator()
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, t.border);
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, t.text);
+    // El botón de egui por defecto es el «secundario» de Rayo: transparente con contorno (los menús
+    // de egui le quitan el contorno solos).
     v.widgets.inactive.bg_fill = t.hover;
     v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-    v.widgets.inactive.bg_stroke = Stroke::NONE;
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, t.border_strong);
     v.widgets.inactive.fg_stroke = Stroke::new(1.0, t.text);
     v.widgets.hovered.bg_fill = t.hover;
     v.widgets.hovered.weak_bg_fill = t.hover;
-    v.widgets.hovered.bg_stroke = Stroke::NONE;
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, t.border_strong);
     v.widgets.hovered.fg_stroke = Stroke::new(1.0, t.text);
     v.widgets.active.bg_fill = t.sel_inactive;
     v.widgets.active.weak_bg_fill = t.sel_inactive;
-    v.widgets.active.bg_stroke = Stroke::NONE;
+    v.widgets.active.bg_stroke = Stroke::new(1.0, t.border_strong);
     v.widgets.active.fg_stroke = Stroke::new(1.0, t.text);
-    v.widgets.open.weak_bg_fill = t.hover;
-    v.popup_shadow = egui::Shadow { offset: [0, 6], blur: 24, spread: 0, color: Color32::from_black_alpha(if t.dark { 120 } else { 40 }) };
-    v.window_shadow = v.popup_shadow;
+    v.widgets.open.weak_bg_fill = t.sel_inactive;
+    v.widgets.open.bg_stroke = Stroke::new(1.0, t.border_strong);
+    v.popup_shadow = egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(if t.dark { 110 } else { 36 }) };
+    v.window_shadow = egui::Shadow { offset: [0, 16], blur: 48, spread: 0, color: Color32::from_black_alpha(if t.dark { 140 } else { 48 }) };
     ctx.set_visuals(v);
 
     ctx.global_style_mut(|s| {
-        s.spacing.item_spacing = egui::vec2(6.0, 4.0);
-        s.spacing.button_padding = egui::vec2(8.0, 4.0);
-        s.spacing.menu_margin = Margin::same(6);
-        s.spacing.interact_size.y = 26.0;
+        s.spacing.item_spacing = egui::vec2(8.0, 4.0);
+        s.spacing.button_padding = egui::vec2(12.0, 4.0);
+        s.spacing.menu_margin = Margin::same(4);
+        s.spacing.window_margin = Margin::same(24);
+        s.spacing.interact_size.y = 28.0;
         s.spacing.scroll = egui::style::ScrollStyle::floating();
-        s.spacing.scroll.floating_width = 8.0;
+        s.spacing.scroll.floating_width = 4.0;
         s.spacing.scroll.bar_width = 8.0;
+        s.spacing.scroll.handle_min_length = 24.0;
+        s.spacing.scroll.dormant_handle_opacity = 0.20;
+        s.spacing.scroll.active_handle_opacity = 0.45;
+        s.spacing.scroll.interact_handle_opacity = 0.70;
         s.text_styles = [
-            (TextStyle::Heading, semibold(17.0)),
-            (TextStyle::Body, FontId::proportional(13.5)),
-            (TextStyle::Button, FontId::proportional(13.5)),
-            (TextStyle::Small, FontId::proportional(11.5)),
-            (TextStyle::Monospace, FontId::monospace(12.5)),
+            (TextStyle::Heading, text::title()),
+            (TextStyle::Body, text::body()),
+            (TextStyle::Button, text::body()),
+            (TextStyle::Small, text::small()),
+            (TextStyle::Monospace, text::mono()),
         ]
         .into();
         s.interaction.selectable_labels = false;
-        s.animation_time = 0.12;
+        s.animation_time = dur::BASE;
     });
 }

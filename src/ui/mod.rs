@@ -2,10 +2,12 @@
 
 pub mod actions;
 pub mod app;
+pub mod capture;
 pub mod chrome;
 pub mod commands;
 pub mod config;
 pub mod ctxmenu;
+pub mod design;
 pub mod icons;
 pub mod language;
 pub mod motion;

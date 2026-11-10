@@ -3,9 +3,11 @@
 //! clic derecho, así que una función nueva aparece en los dos sin duplicar nada.
 
 use super::actions::Action;
+use super::design::{self, DialogW, IconBtn, Row, Sel, Tone, Trailing, h, icon, radius, sp, stroke, text};
 use super::theme::Theme;
 use crate::index::store::search_key;
-use egui::{Align2, FontId, Id, Key, Modifiers, Sense, pos2, vec2};
+use egui::text::{LayoutJob, TextFormat, TextWrapping};
+use egui::{Align2, Id, Key, Modifiers, Rect, Response, RichText, Sense, Ui, pos2, vec2};
 use egui_phosphor::regular as ic;
 
 /// Sobre qué se ejecuta un comando.
@@ -378,7 +380,7 @@ impl Palette {
         let del = self.mode == Mode::Commands && matches!(entries.get(self.cursor), Some((Entry::Workspace(_), _))) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete));
         let mut run: Option<Action> = None;
         let mut next_mode: Option<Mode> = None;
-        let (icon, hint) = match &self.mode {
+        let (field_icon, hint) = match &self.mode {
             Mode::SaveWorkspace => (ic::BOOKMARKS, t!("paleta.nombre_espacio").to_string()),
             Mode::AddAlias => (ic::AT, tf!("paleta.alias_para", carpeta = crate::fsx::file_name(&target.dir))),
             Mode::PickCommand => (ic::KEYBOARD, t!("paleta.elige_comando_atajo").to_string()),
@@ -386,12 +388,11 @@ impl Palette {
             _ => (if entries.first().is_some_and(|e| matches!(e.0, Entry::Go(_))) && !raw.is_empty() { ic::FOLDER_OPEN } else { ic::COMMAND }, t!("paleta.escribe").to_string()),
         };
         let screen = ctx.content_rect();
-        let area = egui::Area::new(Id::new("palette")).order(egui::Order::Foreground).fixed_pos(pos2(screen.center().x - 280.0, screen.top() + 90.0)).show(ctx, |ui| {
-            egui::Frame::new().fill(theme.chrome).stroke(egui::Stroke::new(1.0, theme.border)).corner_radius(12).inner_margin(10).shadow(ui.visuals().popup_shadow).show(ui, |ui| {
-                ui.set_width(560.0);
-                let mut f = super::widgets::Field::new("palette-text", icon, &hint);
-                f.height = 42.0;
-                let r = super::widgets::field(ui, theme, &mut self.text, f).edit;
+        let area = egui::Area::new(Id::new("palette")).order(egui::Order::Foreground).fixed_pos(pos2(screen.center().x - WIDTH / 2.0, screen.top() + TOP)).show(ctx, |ui| {
+            veil(ui, theme, screen);
+            frame(theme).show(ui, |ui| {
+                ui.set_width(WIDTH - sp::S - FRAME_RIGHT);
+                let r = input(ui, theme, &mut self.text, field_icon, &hint);
                 if self.first_frame {
                     r.request_focus();
                     self.first_frame = false;
@@ -400,8 +401,7 @@ impl Palette {
                     self.cursor = 0;
                 }
                 if let Mode::NewCollection(paths) = &self.mode {
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new(t!("paleta.enter_crea_coleccion")).size(12.0).color(theme.faint));
+                    help(ui, theme, t!("paleta.enter_crea_coleccion"));
                     if enter && !raw.is_empty() {
                         run = Some(Action::AddToCollection(raw.clone(), paths.clone()));
                     }
@@ -409,9 +409,8 @@ impl Palette {
                 }
                 match self.mode {
                     Mode::SaveWorkspace | Mode::AddAlias => {
-                        ui.add_space(6.0);
                         let what = if self.mode == Mode::SaveWorkspace { t!("paleta.enter_guarda_espacio") } else { t!("paleta.enter_guarda_alias") };
-                        ui.label(egui::RichText::new(what).size(12.0).color(theme.faint));
+                        help(ui, theme, what);
                         if enter && !raw.is_empty() {
                             run = Some(if self.mode == Mode::SaveWorkspace { Action::SaveWorkspace(raw.clone()) } else { Action::SetAlias(raw.clone(), target.dir.clone()) });
                         }
@@ -419,42 +418,54 @@ impl Palette {
                     }
                     _ => {}
                 }
-                ui.add_space(6.0);
-                egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
-                    for (k, (e, _)) in entries.iter().enumerate() {
-                        let (label, keys) = match e {
-                            Entry::Cmd(c) => (format!("{}  {}", c.icon, c.label()), shortcut_of(c.id, data.shortcuts)),
-                            Entry::Go(d) => (format!("{}  {}", ic::FOLDER_OPEN, tf!("paleta.ir_a", ruta = d)), String::new()),
-                            Entry::Workspace(n) => (format!("{}  {}", ic::BOOKMARKS, tf!("paleta.abrir_espacio", nombre = n)), t!("paleta.supr_borra").to_string()),
-                            Entry::Alias(a, d) => (format!("{}  {a}  →  {}", ic::AT, d), String::new()),
-                        };
-                        let resp = row(ui, theme, &label, &keys, k == self.cursor);
-                        if moved && k == self.cursor {
-                            resp.scroll_to_me(None);
-                        }
-                        if resp.clicked() || (enter && k == self.cursor) {
-                            match e {
-                                Entry::Cmd(c) if self.mode == Mode::PickCommand => next_mode = Some(Mode::Record(c.id, Vec::new(), 0.0)),
-                                Entry::Cmd(c) if c.id == "save_workspace" => next_mode = Some(Mode::SaveWorkspace),
-                                Entry::Cmd(c) if c.id == "add_alias" => next_mode = Some(Mode::AddAlias),
-                                Entry::Cmd(c) if c.id == "assign_shortcut" => next_mode = Some(Mode::PickCommand),
-                                Entry::Cmd(c) if c.id == "new_collection" => next_mode = Some(Mode::NewCollection(target.paths.clone())),
-                                Entry::Cmd(c) => run = Some(Action::Command(c.id, target.clone())),
-                                Entry::Go(d) => run = Some(Action::Navigate(d.clone())),
-                                Entry::Workspace(n) => run = Some(Action::OpenWorkspace(n.to_string())),
-                                Entry::Alias(_, d) => run = Some(Action::Navigate(d.to_string())),
+                ui.add_space(sp::XS);
+                // La lista va a todo el ancho y la barra de desplazamiento, fina, en los 6 px que
+                // le reserva el área a la derecha: así no pisa el pill de la fila.
+                ui.scope(|ui| {
+                    ui.spacing_mut().scroll.floating_allocated_width = SCROLL_W;
+                    egui::ScrollArea::vertical().max_height(LIST_ROWS * h::NAV).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        // Mismo ancho haya o no barra, para que las filas queden a plomo con el campo.
+                        ui.set_width(INNER_W);
+                        // «Ir a» sin la ruta: la ruta va aparte, en mono.
+                        let go = tf!("paleta.ir_a", ruta = "").trim().to_string();
+                        for (k, (e, _)) in entries.iter().enumerate() {
+                            let (glyph, label, path, keys) = match e {
+                                Entry::Cmd(c) => (c.icon, c.label().to_string(), "", shortcut_of(c.id, data.shortcuts)),
+                                Entry::Go(d) => (ic::FOLDER_OPEN, go.clone(), d.as_str(), String::new()),
+                                Entry::Workspace(n) => (ic::BOOKMARKS, tf!("paleta.abrir_espacio", nombre = n), "", t!("paleta.supr_borra").to_string()),
+                                Entry::Alias(a, d) => (ic::AT, a.to_string(), *d, String::new()),
+                            };
+                            let resp = row(ui, theme, k, glyph, &label, path, &keys, &query, k == self.cursor);
+                            if moved && k == self.cursor {
+                                resp.scroll_to_me(None);
+                            }
+                            if resp.clicked() || (enter && k == self.cursor) {
+                                match e {
+                                    Entry::Cmd(c) if self.mode == Mode::PickCommand => next_mode = Some(Mode::Record(c.id, Vec::new(), 0.0)),
+                                    Entry::Cmd(c) if c.id == "save_workspace" => next_mode = Some(Mode::SaveWorkspace),
+                                    Entry::Cmd(c) if c.id == "add_alias" => next_mode = Some(Mode::AddAlias),
+                                    Entry::Cmd(c) if c.id == "assign_shortcut" => next_mode = Some(Mode::PickCommand),
+                                    Entry::Cmd(c) if c.id == "new_collection" => next_mode = Some(Mode::NewCollection(target.paths.clone())),
+                                    Entry::Cmd(c) => run = Some(Action::Command(c.id, target.clone())),
+                                    Entry::Go(d) => run = Some(Action::Navigate(d.clone())),
+                                    Entry::Workspace(n) => run = Some(Action::OpenWorkspace(n.to_string())),
+                                    Entry::Alias(_, d) => run = Some(Action::Navigate(d.to_string())),
+                                }
+                            }
+                            if del && k == self.cursor {
+                                if let Entry::Workspace(n) = e {
+                                    run = Some(Action::DeleteWorkspace(n.to_string()));
+                                }
                             }
                         }
-                        if del && k == self.cursor {
-                            if let Entry::Workspace(n) = e {
-                                run = Some(Action::DeleteWorkspace(n.to_string()));
-                            }
-                        }
-                    }
+                    });
                 });
                 if total == 0 {
-                    ui.label(egui::RichText::new(t!("paleta.sin_coincidencias")).color(theme.faint));
+                    let (rr, _) = ui.allocate_exact_size(vec2(INNER_W, h::NAV), Sense::hover());
+                    ui.painter().text(pos2(rr.left() + TEXT_X, rr.center().y), Align2::LEFT_CENTER, t!("paleta.sin_coincidencias"), text::small(), theme.faint);
                 }
+                footer(ui, theme, INNER_W, sp::S, &[(&[ic::ARROW_UP, ic::ARROW_DOWN], "", t!("paleta.navegar")), (&[ic::ARROW_ELBOW_DOWN_LEFT], "", t!("paleta.ejecutar")), (&[], "esc", t!("paleta.cerrar"))]);
             });
         });
         let inside = area.response.rect;
@@ -520,19 +531,41 @@ impl Palette {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.mode = Mode::Record(id, chords.clone(), last);
-        let screen = ctx.content_rect();
-        egui::Area::new(Id::new("palette")).order(egui::Order::Foreground).fixed_pos(pos2(screen.center().x - 280.0, screen.top() + 90.0)).show(ctx, |ui| {
-            egui::Frame::new().fill(theme.chrome).stroke(egui::Stroke::new(1.0, theme.border)).corner_radius(12).inner_margin(16).shadow(ui.visuals().popup_shadow).show(ui, |ui| {
-                ui.set_width(548.0);
-                ui.label(egui::RichText::new(format!("{}  {}", ic::KEYBOARD, tf!("paleta.presiona_atajo", comando = get(id).label()))).size(15.0).color(theme.text));
-                ui.add_space(10.0);
-                let shown = if chords.is_empty() { t!("paleta.esperando_teclas").to_string() } else { keys_label(&chords.join(" ")) };
-                ui.label(egui::RichText::new(shown).font(super::theme::semibold(20.0)).color(if chords.is_empty() { theme.faint } else { theme.accent }));
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new(t!("paleta.ayuda_atajo")).size(12.0).color(theme.faint));
+        // Un diálogo S (no el marco de la paleta): sin botones, porque captura el teclado.
+        design::dialog(ctx, theme, "palette-record", DialogW::S, |ui| {
+            design::dialog_header(ui, theme, ic::KEYBOARD, Tone::Accent, t!("paleta.asignar_atajo"), Some(get(id).label()));
+            ui.add_space(sp::L);
+            // Las teclas en `display` de acento, centradas en una tarjeta de 64.
+            design::card_frame(theme).show(ui, |ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0 - 2.0 * sp::M - 2.0 * stroke::HAIR), Sense::hover());
+                let g = ui.painter().layout_job(keys_job(theme, &chords));
+                ui.painter().galley(r.center() - g.size() / 2.0, g, theme.accent);
             });
+            ui.add_space(sp::S);
+            design::dialog_help(ui, theme, t!("paleta.ayuda_atajo"));
+            ui.add_space(sp::L - sp::XS);
+            let w = ui.available_width();
+            footer(ui, theme, w, 0.0, &[(&[ic::ARROW_ELBOW_DOWN_LEFT], "", t!("conexion.guardar")), (&[ic::BACKSPACE], "", t!("paleta.borrar")), (&[], "esc", t!("comun.cancelar"))]);
         });
     }
+}
+
+/// Lo grabado: cada combinación en `display` de acento, separadas por una flecha a medio tono.
+/// Sin nada todavía, «Esperando teclas…» en `faint`.
+fn keys_job(t: &Theme, chords: &[String]) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    if chords.is_empty() {
+        job.append(t!("paleta.esperando_teclas"), 0.0, TextFormat::simple(text::display(), t.faint));
+        return job;
+    }
+    for (k, c) in chords.iter().enumerate() {
+        if k > 0 {
+            let arrow = TextFormat { valign: egui::Align::Center, ..TextFormat::simple(design::icon_font(icon::M), t.accent.gamma_multiply(0.5)) };
+            job.append(ic::ARROW_RIGHT, sp::S, arrow);
+        }
+        job.append(&keys_label(c), if k > 0 { sp::S } else { 0.0 }, TextFormat::simple(text::display(), t.accent));
+    }
+    job
 }
 
 /// Puntaje de un texto (nombre y palabras extra) para lo escrito.
@@ -557,18 +590,154 @@ fn score_text(name: &str, extra: &str, query: &str) -> Option<i32> {
     Some(s)
 }
 
-fn row(ui: &mut egui::Ui, t: &Theme, label: &str, keys: &str, selected: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
-    let p = ui.painter();
-    if selected {
-        p.rect_filled(rect, 6.0, t.sel);
-    } else if resp.hovered() {
-        p.rect_filled(rect, 6.0, t.hover);
+/// Ancho de la paleta y distancia al borde de arriba.
+const WIDTH: f32 = 560.0;
+const TOP: f32 = 88.0;
+/// Filas visibles de la lista (sin fila cortada al pie).
+const LIST_ROWS: f32 = 12.0;
+/// Margen derecho del marco: 2 en vez de 8, para que la barra de desplazamiento quede fuera del pill.
+const FRAME_RIGHT: f32 = 2.0;
+/// Lo que el área de la lista reserva para su barra flotante.
+const SCROLL_W: f32 = 6.0;
+/// Ancho del campo, las filas y el pie: el del marco menos 8 a cada lado.
+const INNER_W: f32 = WIDTH - 2.0 * sp::S;
+/// Columna del texto en las filas y en el campo: `[8][ícono 16][8]`.
+const TEXT_X: f32 = sp::S + icon::M + sp::S;
+
+/// Marco de la paleta: el de los diálogos, con margen 8 (2 a la derecha, donde va la barra).
+fn frame(t: &Theme) -> egui::Frame {
+    design::dialog_frame(t).inner_margin(egui::Margin { left: sp::S as i8, right: FRAME_RIGHT as i8, top: sp::S as i8, bottom: sp::S as i8 })
+}
+
+/// Velo detrás de la paleta: oscurece un poco la ventana (solo se pinta, no ataja clics).
+fn veil(ui: &Ui, t: &Theme, screen: Rect) {
+    let a = if t.dark { 76 } else { 41 };
+    ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(a));
+}
+
+/// El campo de la paleta: 40 de alto, relleno hundido sin borde, ícono 16, texto `title` y X
+/// para vaciarlo. Devuelve la respuesta del texto.
+fn input(ui: &mut Ui, t: &Theme, buf: &mut String, glyph: &str, hint: &str) -> Response {
+    let id = Id::new("palette-text");
+    let (rect, outer) = ui.allocate_exact_size(vec2(INNER_W, h::PALETTE), Sense::click());
+    ui.painter().rect_filled(rect, radius::M, t.sidebar);
+    ui.painter().text(pos2(rect.left() + sp::S + icon::M / 2.0, rect.center().y), Align2::CENTER_CENTER, glyph, design::icon_font(icon::M), t.dim);
+    let mut right = rect.right() - sp::S;
+    let mut cleared = false;
+    if !buf.is_empty() {
+        let xr = Rect::from_min_max(pos2(right - h::CHIP, rect.center().y - h::CHIP / 2.0), pos2(right, rect.center().y + h::CHIP / 2.0));
+        if design::icon_button_at(ui, t, xr, id.with("clear"), ic::X, IconBtn::mini()).clicked() {
+            buf.clear();
+            cleared = true;
+        }
+        right = xr.left() - sp::XS;
     }
-    let c = if selected { t.accent_text } else { t.text };
-    p.text(pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.5), c);
-    if !keys.is_empty() {
-        p.text(pos2(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, keys, FontId::proportional(11.5), if selected { c } else { t.faint });
+    let er = Rect::from_min_max(pos2(rect.left() + TEXT_X, rect.top()), pos2(right, rect.bottom()));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(er).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let edit = child.add(
+        egui::TextEdit::singleline(buf)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .font(text::title())
+            .hint_text(RichText::new(hint).font(text::title()).color(t.faint))
+            .desired_width(er.width())
+            .vertical_align(egui::Align::Center),
+    );
+    // Un clic en el ícono o el margen también lleva el cursor al campo.
+    if outer.clicked() || cleared {
+        edit.request_focus();
+    }
+    if outer.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+    }
+    edit
+}
+
+/// Ayuda bajo el campo, en los modos que piden un nombre.
+fn help(ui: &mut Ui, t: &Theme, s: &str) {
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(sp::S as i8, sp::S as i8)).show(ui, |ui| {
+        ui.label(RichText::new(s).font(text::small()).color(t.faint));
+    });
+}
+
+/// Pie: una línea fina con 4 px arriba y abajo y las teclas (glifos o tecla escrita, como «esc»)
+/// con su micro-etiqueta. Lo usan la paleta (↑↓ · ↵ · Esc) y la grabación de un atajo.
+fn footer(ui: &mut Ui, t: &Theme, w: f32, inset: f32, items: &[(&[&str], &str, &str)]) {
+    // Los 4 de arriba son el espacio entre ítems que deja la lista.
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let (sep, _) = ui.allocate_exact_size(vec2(w, stroke::HAIR + sp::XS), Sense::hover());
+    ui.painter().hline(sep.x_range(), sep.top().round() + 0.5, egui::Stroke::new(stroke::HAIR, t.border));
+    let (rect, _) = ui.allocate_exact_size(vec2(w, h::HEAD), Sense::hover());
+    let p = ui.painter();
+    let cy = rect.center().y;
+    let mut x = rect.left() + inset;
+    for (k, (glyphs, key, label)) in items.iter().enumerate() {
+        if k > 0 {
+            x += sp::L;
+        }
+        for g in glyphs.iter() {
+            x = p.text(pos2(x, cy), Align2::LEFT_CENTER, *g, design::icon_font(icon::S), t.faint).right();
+        }
+        if !key.is_empty() {
+            x = design::micro(p, pos2(x, cy), Align2::LEFT_CENTER, key, t.faint).right();
+        }
+        x = design::micro(p, pos2(x + sp::XS, cy), Align2::LEFT_CENTER, label, t.faint).right();
+    }
+}
+
+/// Lo escrito, resaltado en el nombre: cada palabra en acento y `strong`.
+fn highlight(label: &str, query: &str, t: &Theme, max_w: f32) -> LayoutJob {
+    super::theme::want_cjk(label);
+    let (key, map) = crate::index::store::search_key_with_map(label);
+    let mut marks = vec![false; label.len()];
+    for w in query.split_whitespace() {
+        if let Some(k) = key.find(w) {
+            marks[map[k]..map[k + w.len()]].fill(true);
+        }
+    }
+    let fmt = |on: bool| if on { TextFormat::simple(text::strong(), t.accent) } else { TextFormat::simple(text::body(), t.text) };
+    let mut job = LayoutJob::default();
+    let (mut start, mut on) = (0, false);
+    for (i, _) in label.char_indices() {
+        if marks[i] != on {
+            if i > start {
+                job.append(&label[start..i], 0.0, fmt(on));
+            }
+            (start, on) = (i, marks[i]);
+        }
+    }
+    if start < label.len() {
+        job.append(&label[start..], 0.0, fmt(on));
+    }
+    job.wrap = TextWrapping::truncate_at_width(max_w.max(0.0));
+    job
+}
+
+/// Una fila de la paleta (`NAV`, la fila de 4.1 sin margen): ícono en su columna, el nombre con
+/// lo escrito resaltado, la ruta (si hay) detrás en mono `dim` y el atajo a la derecha. La del
+/// cursor, con el tinte de selección.
+#[allow(clippy::too_many_arguments)]
+fn row(ui: &mut Ui, t: &Theme, k: usize, glyph: &str, label: &str, path: &str, keys: &str, query: &str, selected: bool) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h::NAV), Sense::hover());
+    let spec = Row {
+        trailing: if keys.is_empty() { Trailing::None } else { Trailing::Keys(keys) },
+        sel: if selected { Sel::Focused } else { Sel::None },
+        height: h::NAV,
+        ..Row::new(glyph, "")
+    };
+    let id = ui.id().with(("palette-row", k));
+    let resp = design::row_at(ui, t, rect, id, spec);
+    // El nombre aparte, para poder resaltar lo buscado.
+    let p = ui.painter();
+    let right = rect.right() - sp::S - if keys.is_empty() { 0.0 } else { design::text_width(p, keys, text::mono_s()) + sp::S };
+    let x = rect.left() + TEXT_X;
+    let g = p.layout_job(highlight(label, query, t, right - x));
+    let px = x + g.size().x + sp::S;
+    p.galley(pos2(x, rect.center().y - g.size().y / 2.0), g, t.text);
+    // La ruta, acortada por el medio en lo que queda.
+    if !path.is_empty() && right - px > 2.0 * h::NAV {
+        let s = design::elide_middle(p, path, text::mono(), right - px);
+        p.text(pos2(px, rect.center().y), Align2::LEFT_CENTER, s, text::mono(), t.dim);
     }
     resp
 }

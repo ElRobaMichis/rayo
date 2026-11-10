@@ -254,15 +254,22 @@ fn native_scaled(factory: &IWICImagingFactory, frame: &IWICBitmapFrameDecode, fw
 
 /// Miniatura o ícono grande del shell de Windows.
 pub fn shell_image(path: &str, size: i32, icon_only: bool) -> Option<Rgba> {
-    shell_image_with(path, size, icon_only, false)
+    shell_image_with(path, size, icon_only, false, false)
 }
 
 /// La miniatura que Windows ya tenga guardada en su caché (no genera nada: si no está, None).
 pub fn shell_cached(path: &str, size: i32) -> Option<Rgba> {
-    shell_image_with(path, size, false, true)
+    shell_image_with(path, size, false, true, false)
 }
 
-fn shell_image_with(path: &str, size: i32, icon_only: bool, cache_only: bool) -> Option<Rgba> {
+/// Solo una miniatura de verdad: si Windows no puede darla, None (no el ícono del tipo). Al
+/// arrancar, unos segundos, Windows contesta con el ícono en vez de la foto; aceptarlo dejaría
+/// ese ícono como miniatura para siempre.
+fn shell_thumb(path: &str, size: i32) -> Option<Rgba> {
+    shell_image_with(path, size, false, false, true)
+}
+
+fn shell_image_with(path: &str, size: i32, icon_only: bool, cache_only: bool, thumb_only: bool) -> Option<Rgba> {
     // Archivos solo en la nube: la miniatura que Windows ya tenga guardada, o el ícono (nunca descargar).
     let cloud = !icon_only && super::is_online_only(path);
     unsafe {
@@ -272,6 +279,8 @@ fn shell_image_with(path: &str, size: i32, icon_only: bool, cache_only: bool) ->
             SIIGBF_ICONONLY
         } else if cloud || cache_only {
             SIIGBF_RESIZETOFIT | SIIGBF_BIGGERSIZEOK | SIIGBF_INCACHEONLY
+        } else if thumb_only {
+            SIIGBF_RESIZETOFIT | SIIGBF_BIGGERSIZEOK | SIIGBF_THUMBNAILONLY
         } else {
             SIIGBF_RESIZETOFIT | SIIGBF_BIGGERSIZEOK
         };
@@ -464,7 +473,12 @@ fn load(key: &ThumbKey) -> Option<Rgba> {
                 None => system_icon(path, key.size),
             };
         }
-        return system_icon(path, key.size).or_else(|| shell_image(path, key.size as i32, true));
+        let small = system_icon(path, key.size);
+        // Si el chico es solo el grande achicado por Windows sin filtrar (escalera), Rayo lo achica bien.
+        if let Some(better) = small.as_ref().and_then(|s| reshrunk(path, s, key.size)) {
+            return Some(better);
+        }
+        return small.or_else(|| shell_image(path, key.size as i32, true));
     }
     if let Some(dir) = key.path.strip_prefix(PEEK_PREFIX) {
         return folder_peek(dir, key.size);
@@ -491,13 +505,122 @@ fn load(key: &ThumbKey) -> Option<Rgba> {
         return if key.size <= 512 {
             shell_cached(&path, key.size as i32)
                 .or_else(|| embedded_thumb(&path).filter(|t| t.w.max(t.h) as f32 >= key.size as f32 * 0.75))
-                .or_else(|| shell_image(&path, key.size as i32, false))
+                .or_else(|| shell_thumb(&path, key.size as i32))
                 .or_else(|| wic_load(&path, key.size))
         } else {
-            wic_load(&path, key.size).or_else(|| shell_image(&path, key.size as i32, false))
+            wic_load(&path, key.size).or_else(|| shell_thumb(&path, key.size as i32))
         };
     }
     shell_image(&path, key.size as i32, false)
+}
+
+/// Ícono chico mejor que el de Windows, cuando el ícono no trae dibujo chico (p. ej. accesos
+/// directos con un solo PNG de 256, como el de Arc): Windows lo fabrica achicando el grande sin
+/// filtrar y queda en escalera. Entonces Rayo achica el grande por área, al tamaño exacto. Nunca
+/// reemplaza un dibujo chico hecho por el autor: si `small` no es esa reducción, devuelve None.
+fn reshrunk(path: &str, small: &Rgba, size: u32) -> Option<Rgba> {
+    // Un chico con suavizado de verdad (bordes semitransparentes) ya está bien: no se mira más.
+    let covered = small.px.chunks_exact(4).filter(|p| p[3] > 0).count();
+    let soft = small.px.chunks_exact(4).filter(|p| (0x30..=0xD0).contains(&p[3])).count();
+    if covered == 0 || soft * 20 >= covered {
+        return None;
+    }
+    let big = shell_image(path, 256, true)?;
+    windows_shrunk(small, &big).then(|| shrink(&big, size))
+}
+
+/// Píxeles en premultiplicado y en `f32` (0-255).
+fn premul(img: &Rgba) -> Vec<f32> {
+    img.px
+        .chunks_exact(4)
+        .flat_map(|p| {
+            let a = p[3] as f32;
+            let k = if img.premultiplied { 1.0 } else { a / 255.0 };
+            [p[0] as f32 * k, p[1] as f32 * k, p[2] as f32 * k, a]
+        })
+        .collect()
+}
+
+/// Reducción por área (pesos fraccionarios: 256 → 20 es 12,8 a 1), separable. `src` es `sw`×`sw`.
+fn area_shrink(src: &[f32], sw: usize, n: usize) -> Vec<f32> {
+    let r = sw as f64 / n as f64;
+    // Pesos de cada píxel de salida sobre los de entrada (iguales en x y en y).
+    let weights: Vec<Vec<(usize, f32)>> = (0..n)
+        .map(|o| {
+            let (a, b) = (o as f64 * r, (o + 1) as f64 * r);
+            (a.floor() as usize..(b.ceil() as usize).min(sw))
+                .map(|i| (i, ((b.min(i as f64 + 1.0) - a.max(i as f64)) / r) as f32))
+                .filter(|(_, w)| *w > 0.0)
+                .collect()
+        })
+        .collect();
+    let mut tmp = vec![0f32; n * sw * 4];
+    for y in 0..sw {
+        for (x, ws) in weights.iter().enumerate() {
+            for &(i, w) in ws {
+                for c in 0..4 {
+                    tmp[(y * n + x) * 4 + c] += src[(y * sw + i) * 4 + c] * w;
+                }
+            }
+        }
+    }
+    let mut out = vec![0f32; n * n * 4];
+    for (y, ws) in weights.iter().enumerate() {
+        for x in 0..n {
+            for &(i, w) in ws {
+                for c in 0..4 {
+                    out[(y * n + x) * 4 + c] += tmp[(i * n + x) * 4 + c] * w;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Lo que hace Windows: muestreo bilineal sin prefiltro.
+fn bilinear_shrink(src: &[f32], sw: usize, n: usize) -> Vec<f32> {
+    let r = sw as f32 / n as f32;
+    let at = |x: usize, y: usize, c: usize| src[(y.min(sw - 1) * sw + x.min(sw - 1)) * 4 + c];
+    let mut out = vec![0f32; n * n * 4];
+    for y in 0..n {
+        let sy = ((y as f32 + 0.5) * r - 0.5).max(0.0);
+        let (y0, fy) = (sy.floor() as usize, sy.fract());
+        for x in 0..n {
+            let sx = ((x as f32 + 0.5) * r - 0.5).max(0.0);
+            let (x0, fx) = (sx.floor() as usize, sx.fract());
+            for c in 0..4 {
+                let top = at(x0, y0, c) * (1.0 - fx) + at(x0 + 1, y0, c) * fx;
+                let bottom = at(x0, y0 + 1, c) * (1.0 - fx) + at(x0 + 1, y0 + 1, c) * fx;
+                out[(y * n + x) * 4 + c] = top * (1.0 - fy) + bottom * fy;
+            }
+        }
+    }
+    out
+}
+
+/// ¿`small` es `big` achicado por Windows sin filtrar? Se mira donde las dos reducciones (bien y
+/// sin filtrar) difieren de verdad, los bordes: si ahí `small` coincide con la mala, es esa.
+fn windows_shrunk(small: &Rgba, big: &Rgba) -> bool {
+    let n = small.w as usize;
+    if small.w != small.h || big.w != big.h || big.w as usize <= 2 * n || n == 0 {
+        return false;
+    }
+    let (s, b) = (premul(small), premul(big));
+    let good = area_shrink(&b, big.w as usize, n);
+    let bad = bilinear_shrink(&b, big.w as usize, n);
+    let dist = |p: &[f32], q: &[f32], i: usize| (0..4).map(|c| (p[i * 4 + c] - q[i * 4 + c]).abs()).fold(0.0, f32::max);
+    let edges: Vec<usize> = (0..n * n).filter(|&i| dist(&bad, &good, i) > 24.0).collect();
+    if edges.len() < 8 {
+        return false;
+    }
+    let same = edges.iter().filter(|&&i| dist(&s, &bad, i) <= 6.0).count();
+    same * 5 >= edges.len() * 4
+}
+
+/// `big` achicado por área a `n`×`n` (premultiplicado, sin enfoque: devolvería el borde duro).
+fn shrink(big: &Rgba, n: u32) -> Rgba {
+    let px = area_shrink(&premul(big), big.w as usize, n as usize).into_iter().map(|v| v.round().clamp(0.0, 255.0) as u8).collect();
+    Rgba { w: n, h: n, px, premultiplied: true, orig: None, pages: None }
 }
 
 /// ¿Tiene el marco que Windows dibuja al agrandar un ícono chico? (todo el borde semitransparente)
@@ -567,6 +690,40 @@ pub fn exif_date(path: &str) -> Option<String> {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod reshrink_tests {
+    use super::*;
+
+    /// Un disco suavizado de 256 (como el ícono de un solo PNG grande).
+    fn disc() -> Rgba {
+        let mut px = vec![0u8; 256 * 256 * 4];
+        for y in 0..256 {
+            for x in 0..256 {
+                let d = (((x as f32 - 127.5).powi(2) + (y as f32 - 127.5).powi(2)).sqrt() - 100.0).clamp(-0.5, 0.5);
+                let a = ((0.5 - d) * 255.0) as u8;
+                px[(y * 256 + x) * 4..(y * 256 + x) * 4 + 4].copy_from_slice(&[220, 40, 60, a]);
+            }
+        }
+        Rgba { w: 256, h: 256, px, premultiplied: false, orig: None, pages: None }
+    }
+
+    fn to_rgba(v: Vec<f32>, n: u32) -> Rgba {
+        Rgba { w: n, h: n, px: v.into_iter().map(|x| x.round().clamp(0.0, 255.0) as u8).collect(), premultiplied: true, orig: None, pages: None }
+    }
+
+    #[test]
+    fn detects_windows_unfiltered_shrink() {
+        let big = disc();
+        let b = premul(&big);
+        let bad = to_rgba(bilinear_shrink(&b, 256, 16), 16);
+        let good = to_rgba(area_shrink(&b, 256, 16), 16);
+        assert!(windows_shrunk(&bad, &big), "el achicado sin filtrar se reconoce");
+        assert!(!windows_shrunk(&good, &big), "uno bien hecho se respeta");
+        let s = shrink(&big, 20);
+        assert_eq!((s.w, s.h, s.px.len()), (20, 20, 20 * 20 * 4));
     }
 }
 
@@ -657,9 +814,9 @@ mod icon_tests {
     }
 }
 
-/// El ícono como lo muestra el Explorador: el de la lista de imágenes del sistema, que trae
-/// cada tamaño estándar (16, 32, 48, 256) dibujado a mano en vez de reducido de uno grande.
-/// Devuelve el de la lista más cercana por arriba a `size`.
+/// El ícono como lo muestra el Explorador: el de la lista de imágenes del sistema, que trae cada
+/// tamaño estándar (16, 32, 48, 256) dibujado para ese tamaño si el ícono lo trae (si no, Windows
+/// lo achica del grande: ver `reshrunk`). Devuelve el de la lista más cercana por arriba a `size`.
 pub fn system_icon(path: &str, size: u32) -> Option<Rgba> {
     use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
     use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, GetSystemMetrics, ICONINFO, SM_CXSMICON};
@@ -693,7 +850,11 @@ pub fn system_icon(path: &str, size: u32) -> Option<Rgba> {
         let _ = DeleteObject(ii.hbmMask.into());
         let mut img = color?;
         // Los íconos de 32 bits traen transparencia propia (sin premultiplicar); los viejos, una máscara.
-        if img.premultiplied {
+        // Se decide por si hay transparencia, no por `premultiplied`: un ícono de 32 bits que
+        // `bitmap_pixels` reconoce como no premultiplicado (el de Arc) también trae la suya, y la
+        // máscara de 1 bit le dejaría los bordes en escalera con un halo blanco.
+        let own_alpha = img.px.chunks_exact(4).any(|p| p[3] != 255);
+        if own_alpha {
             img.premultiplied = false;
         } else if let Some(m) = mask.filter(|m| m.w == img.w && m.h >= img.h) {
             for (p, q) in img.px.chunks_exact_mut(4).zip(m.px.chunks_exact(4)) {

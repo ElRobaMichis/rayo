@@ -1,12 +1,11 @@
 //! Controles con el estilo de Rayo para los diálogos y herramientas: campo de texto,
-//! botón principal, botón de ícono y selector segmentado.
+//! botones, chips, selector segmentado y número con − / +. Los dibujan las piezas de
+//! `design.rs`; aquí quedan las firmas que usa el resto de la app.
 
-use super::theme::{self, Theme};
-use egui::{Align2, Color32, FontId, Id, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use super::design::{self, Chip, IconBtn, Kind, Sel, h, icon, radius, sp, stroke, text};
+use super::theme::Theme;
+use egui::{Align2, Id, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use egui_phosphor::regular as ic;
-
-/// Verde de "todo bien" (coincide, listo).
-pub const GOOD: Color32 = Color32::from_rgb(0x3F, 0xB9, 0x50);
 
 /// Cómo se pinta el borde de un campo.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -28,17 +27,21 @@ pub struct Field<'a> {
     pub trailing: Option<(&'static str, &'a str)>,
     /// Se puede soltar algo encima (se resalta mientras se arrastra).
     pub droppable: bool,
-    /// Alto (FIELD_H por defecto; más alto = letra más grande, como en la paleta de comandos).
+    /// Alto (`h::CTL` por defecto; `h::PALETTE` = campo de la paleta, con letra de título y sin borde).
     pub height: f32,
     /// Sin X para vaciarlo (campos chicos, como la extensión).
     pub no_clear: bool,
     /// Que Tab / ↑ ↓ no saquen el foco del campo.
     pub lock_focus: bool,
+    /// Contraseña: se muestran puntos.
+    pub password: bool,
+    /// Sin foco, la ruta se acorta por el medio (`design::elide_middle`); con foco, el texto real.
+    pub elide_middle: bool,
 }
 
 impl<'a> Field<'a> {
     pub fn new(id: impl std::hash::Hash + std::fmt::Debug, icon: &'static str, hint: &'a str) -> Self {
-        Field { id: Id::new(id), icon, hint, width: f32::INFINITY, mono: false, tone: Tone::Normal, trailing: None, droppable: false, height: FIELD_H, no_clear: false, lock_focus: false }
+        Field { id: Id::new(id), icon, hint, width: f32::INFINITY, mono: false, tone: Tone::Normal, trailing: None, droppable: false, height: FIELD_H, no_clear: false, lock_focus: false, password: false, elide_middle: false }
     }
 }
 
@@ -52,75 +55,98 @@ pub struct FieldOut {
     pub cleared: bool,
 }
 
-pub const FIELD_H: f32 = 34.0;
+/// Alto de un control (alias de `h::CTL`, lo usan otros archivos).
+pub const FIELD_H: f32 = h::CTL;
 
-/// Campo de texto: fondo hundido, ícono, borde que se ilumina con el foco (o en verde / rojo
-/// según `tone`), X para vaciarlo y, opcional, un botón al final.
+/// Campo de texto (4.6): relleno hundido, ícono, borde fino que pasa a acento con el foco (o a
+/// verde / rojo según `tone`), X para vaciarlo y, opcional, un botón al final.
 pub fn field(ui: &mut Ui, t: &Theme, buf: &mut String, f: Field) -> FieldOut {
     let w = f.width.min(ui.available_width());
     let (rect, outer) = ui.allocate_exact_size(vec2(w, f.height), Sense::click());
-    let big = f.height >= 40.0;
+    let big = f.height >= h::PALETTE;
     let focused = ui.memory(|m| m.has_focus(f.id));
     let dragging = f.droppable && egui::DragAndDrop::has_any_payload(ui.ctx());
     let drop_here = dragging && outer.contains_pointer();
     let p = ui.painter().clone();
+    p.rect_filled(rect, radius::M, if drop_here { t.accent_soft } else { t.sidebar });
+    // Borde: el de la paleta no lleva (salvo para soltar o con tono).
     let border = match f.tone {
-        _ if drop_here || focused && f.tone == Tone::Normal => t.accent,
-        Tone::Good => GOOD,
-        Tone::Bad => t.danger,
-        Tone::Normal if outer.hovered() || dragging => t.faint,
-        Tone::Normal => t.border,
+        _ if drop_here => Some(t.accent),
+        Tone::Good => Some(t.ok),
+        Tone::Bad => Some(t.danger),
+        Tone::Normal if big => None,
+        Tone::Normal if focused => Some(t.accent),
+        Tone::Normal if outer.hovered() || dragging => Some(t.faint),
+        Tone::Normal => Some(t.border_strong),
     };
-    let fill = if drop_here { t.accent.gamma_multiply(0.12) } else { t.bg };
-    p.rect_filled(rect, 8.0, fill);
-    p.rect_stroke(rect, 8.0, Stroke::new(if focused || drop_here { 1.5 } else { 1.0 }, border), StrokeKind::Inside);
-    // Anillo suave alrededor con el foco, como los campos de Windows 11.
-    if focused && f.tone == Tone::Normal {
-        p.rect_stroke(rect.expand(2.0), 10.0, Stroke::new(2.0, t.accent.gamma_multiply(0.25)), StrokeKind::Inside);
+    if let Some(b) = border {
+        let width = if focused || drop_here { stroke::FOCUS } else { stroke::HAIR };
+        p.rect_stroke(rect, radius::M, Stroke::new(width, b), StrokeKind::Inside);
     }
     let icon_color = match f.tone {
-        Tone::Good => GOOD,
+        Tone::Good => t.ok,
         Tone::Bad => t.danger,
-        Tone::Normal if focused || drop_here => t.accent,
+        Tone::Normal if drop_here => t.accent,
         Tone::Normal => t.dim,
     };
-    let icon_x = if big { 18.0 } else { 15.0 };
-    p.text(pos2(rect.left() + icon_x, rect.center().y), Align2::CENTER_CENTER, f.icon, theme::icon_font(if big { 17.0 } else { 15.0 }, false), icon_color);
+    let pad = if big { sp::M } else { sp::S };
+    p.text(pos2(rect.left() + pad + icon::M / 2.0, rect.center().y), Align2::CENTER_CENTER, f.icon, design::icon_font(icon::M), icon_color);
 
     // A la derecha: botón final y X para vaciar.
-    let mut right = rect.right() - 4.0;
+    let mut right = rect.right() - sp::XXS;
     let mut trailing_clicked = false;
-    if let Some((icon, tip)) = f.trailing {
-        let br = Rect::from_center_size(pos2(right - 13.0, rect.center().y), vec2(26.0, 26.0));
-        let r = icon_button_at(ui, t, br, f.id.with("trailing"), icon, false).on_hover_text(tip);
+    if let Some((glyph, tip)) = f.trailing {
+        let s = rect.height() - 2.0 * sp::XXS;
+        let br = Rect::from_min_size(pos2(right - s, rect.center().y - s / 2.0), vec2(s, s));
+        let r = design::icon_button_at(ui, t, br, f.id.with("trailing"), glyph, IconBtn::default());
+        let r = if tip.is_empty() { r } else { design::tip(r, t, tip) };
         trailing_clicked = r.clicked();
-        right = br.left() - 2.0;
+        right = br.left();
     }
     let mut cleared = false;
     if !buf.is_empty() && !f.no_clear {
-        let xr = Rect::from_center_size(pos2(right - 12.0, rect.center().y), vec2(22.0, 22.0));
-        let r = ui.interact(xr, f.id.with("clear"), Sense::click());
-        if r.hovered() {
-            p.rect_filled(xr, 5.0, t.hover);
-        }
-        p.text(xr.center(), Align2::CENTER_CENTER, ic::X, theme::icon_font(12.0, false), if r.hovered() { t.text } else { t.faint });
-        if r.clicked() {
+        let xr = Rect::from_min_size(pos2(right - sp::XXS - h::CHIP, rect.center().y - h::CHIP / 2.0), vec2(h::CHIP, h::CHIP));
+        if design::icon_button_at(ui, t, xr, f.id.with("clear"), ic::X, IconBtn::mini()).clicked() {
             buf.clear();
             cleared = true;
         }
-        right = xr.left() - 2.0;
+        right = xr.left();
     }
 
-    let edit_rect = Rect::from_min_max(pos2(rect.left() + if big { 38.0 } else { 32.0 }, rect.top() + 4.0), pos2(right - 2.0, rect.bottom() - 4.0));
+    let text_x = rect.left() + pad + icon::M + sp::S;
+    let edit_rect = Rect::from_min_max(pos2(text_x, rect.top() + sp::XXS), pos2(right - sp::XS, rect.bottom() - sp::XXS));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(edit_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    let font = if f.mono { FontId::monospace(12.5) } else { FontId::proportional(if big { 15.0 } else { 13.5 }) };
+    let font = if big {
+        text::title()
+    } else if f.mono {
+        text::mono()
+    } else {
+        text::body()
+    };
+    let hint_font = if big { text::title() } else { text::body() };
+    // Sin foco, la ruta acortada por el medio en lugar del `TextEdit` (con el mismo id: un clic o
+    // Tab le dan el foco y en el cuadro siguiente aparece el campo de verdad).
+    if f.elide_middle && !focused && !buf.is_empty() && !f.password {
+        let edit = child.interact(edit_rect, f.id, Sense::click());
+        let shown = design::elide_middle(&p, buf, font.clone(), edit_rect.width());
+        p.text(pos2(edit_rect.left(), rect.center().y), Align2::LEFT_CENTER, &shown, font, t.text);
+        if outer.clicked() || edit.clicked() || cleared {
+            edit.request_focus();
+        }
+        if (outer.hovered() || edit.hovered()) && !drop_here {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        }
+        let edit = if shown != *buf { design::tip(edit, t, buf) } else { edit };
+        return FieldOut { outer, edit, trailing_clicked, cleared };
+    }
     let edit = child.add(
         egui::TextEdit::singleline(buf)
             .id(f.id)
             .frame(egui::Frame::NONE)
             .font(font)
-            .hint_text(egui::RichText::new(f.hint).color(t.faint).size(if big { 15.0 } else { 13.0 }))
+            .hint_text(egui::RichText::new(f.hint).color(t.faint).font(hint_font))
             .lock_focus(f.lock_focus)
+            .password(f.password)
             .desired_width(edit_rect.width())
             .vertical_align(egui::Align::Center),
     );
@@ -134,99 +160,38 @@ pub fn field(ui: &mut Ui, t: &Theme, buf: &mut String, f: Field) -> FieldOut {
     FieldOut { outer, edit, trailing_clicked, cleared }
 }
 
-
-/// Igual, pero con un borde (para que se vea como botón aunque esté quieto).
-pub fn icon_button_outlined(ui: &mut Ui, t: &Theme, icon: &str, size: f32) -> Response {
-    let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
-    let id = ui.next_auto_id().with(icon);
-    icon_button_at(ui, t, rect, id, icon, true)
+/// Botón principal (relleno de acento). Desactivado: gris y sin respuesta.
+pub fn primary_button(ui: &mut Ui, t: &Theme, glyph: &str, label: &str, enabled: bool) -> Response {
+    design::button(ui, t, Kind::Primary, glyph, label, enabled)
 }
 
-fn icon_button_at(ui: &mut Ui, t: &Theme, rect: Rect, id: Id, icon: &str, outlined: bool) -> Response {
-    let r = ui.interact(rect, id, Sense::click());
-    let p = ui.painter();
-    if r.is_pointer_button_down_on() {
-        p.rect_filled(rect, 6.0, t.border);
-    } else if r.hovered() {
-        p.rect_filled(rect, 6.0, t.hover);
-    }
-    if outlined {
-        p.rect_stroke(rect, 6.0, Stroke::new(1.0, t.border), StrokeKind::Inside);
-    }
-    p.text(rect.center(), Align2::CENTER_CENTER, icon, theme::icon_font(14.0, false), if r.hovered() { t.text } else { t.dim });
-    r
+/// Botón secundario: transparente con borde fino.
+pub fn secondary_button(ui: &mut Ui, t: &Theme, glyph: &str, label: &str) -> Response {
+    design::button(ui, t, Kind::Secondary, glyph, label, true)
 }
 
-/// Botón principal (color de acento). Desactivado: gris y sin respuesta.
-pub fn primary_button(ui: &mut Ui, t: &Theme, icon: &str, text: &str, enabled: bool) -> Response {
-    let font = theme::semibold(13.0);
-    let g = ui.painter().layout_no_wrap(text.to_string(), font.clone(), t.accent_text);
-    let icon_w = if icon.is_empty() { 0.0 } else { 22.0 };
-    let (rect, r) = ui.allocate_exact_size(vec2(g.size().x + icon_w + 28.0, FIELD_H), if enabled { Sense::click() } else { Sense::hover() });
-    let p = ui.painter();
-    let fill = if !enabled {
-        t.hover
-    } else if r.is_pointer_button_down_on() {
-        t.sel
-    } else if r.hovered() {
-        t.accent.gamma_multiply(1.12)
-    } else {
-        t.accent
-    };
-    p.rect_filled(rect, 8.0, fill);
-    let fg = if enabled { t.accent_text } else { t.faint };
-    let mut x = rect.left() + 14.0;
-    if !icon.is_empty() {
-        p.text(pos2(x + 8.0, rect.center().y), Align2::CENTER_CENTER, icon, theme::icon_font(14.0, false), fg);
-        x += icon_w;
-    }
-    p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, text, font, fg);
-    if enabled && r.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    r
-}
-
-/// Botón secundario: borde fino, mismo alto que los campos.
-pub fn secondary_button(ui: &mut Ui, t: &Theme, icon: &str, text: &str) -> Response {
-    let font = FontId::proportional(13.0);
-    let g = ui.painter().layout_no_wrap(text.to_string(), font.clone(), t.text);
-    let icon_w = if icon.is_empty() { 0.0 } else { 22.0 };
-    let (rect, r) = ui.allocate_exact_size(vec2(g.size().x + icon_w + 26.0, FIELD_H), Sense::click());
-    let p = ui.painter();
-    p.rect_filled(rect, 8.0, if r.is_pointer_button_down_on() { t.border } else if r.hovered() { t.hover } else { Color32::TRANSPARENT });
-    p.rect_stroke(rect, 8.0, Stroke::new(1.0, t.border), StrokeKind::Inside);
-    let mut x = rect.left() + 13.0;
-    if !icon.is_empty() {
-        p.text(pos2(x + 8.0, rect.center().y), Align2::CENTER_CENTER, icon, theme::icon_font(14.0, false), t.dim);
-        x += icon_w;
-    }
-    p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, text, font, t.text);
-    r
-}
-
-/// Selector de opciones excluyentes, como pastillas pegadas. Devuelve si cambió.
+/// Selector de opciones excluyentes (4.6): contenedor hundido, la activa con la capa de
+/// seleccionado. Devuelve si cambió.
 pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, t: &Theme, value: &mut T, options: &[(T, &str, &str)]) -> bool {
-    let font = FontId::proportional(12.5);
-    let widths: Vec<f32> = options.iter().map(|(_, l, _)| ui.painter().layout_no_wrap(l.to_string(), font.clone(), t.text).size().x + 24.0).collect();
-    let total: f32 = widths.iter().sum::<f32>() + 6.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(total, 30.0), Sense::hover());
+    let font = text::body();
+    let widths: Vec<f32> = options.iter().map(|(_, l, _)| design::text_width(ui.painter(), l, font.clone()) + 2.0 * sp::M).collect();
+    let total: f32 = widths.iter().sum::<f32>() + 2.0 * sp::XXS;
+    let (rect, _) = ui.allocate_exact_size(vec2(total, h::CTL), Sense::hover());
     let p = ui.painter().clone();
-    p.rect_filled(rect, 8.0, t.bg);
-    p.rect_stroke(rect, 8.0, Stroke::new(1.0, t.border), StrokeKind::Inside);
-    let mut x = rect.left() + 3.0;
+    p.rect_filled(rect, radius::M, t.sidebar);
+    p.rect_stroke(rect, radius::M, Stroke::new(stroke::HAIR, t.border), StrokeKind::Inside);
+    let mut x = rect.left() + sp::XXS;
     let mut changed = false;
     for (k, (v, label, tip)) in options.iter().enumerate() {
-        let r = Rect::from_min_size(pos2(x, rect.top() + 3.0), vec2(widths[k], rect.height() - 6.0));
-        let resp = ui.interact(r, ui.id().with(("seg", label)), Sense::click()).on_hover_text(*tip);
+        let r = Rect::from_min_size(pos2(x, rect.top() + sp::XXS), vec2(widths[k], rect.height() - 2.0 * sp::XXS));
+        let id = ui.id().with(("seg", label));
+        let resp = ui.interact(r, id, Sense::click());
+        // Sin ayuda no se muestra un tooltip vacío.
+        let resp = if tip.is_empty() { resp } else { design::tip(resp, t, tip) };
         let on = *value == *v;
-        if on {
-            p.rect_filled(r, 6.0, t.sel_inactive);
-            p.rect_stroke(r, 6.0, Stroke::new(1.0, t.accent.gamma_multiply(0.55)), StrokeKind::Inside);
-        } else if resp.hovered() {
-            p.rect_filled(r, 6.0, t.hover);
-        }
-        p.text(r.center(), Align2::CENTER_CENTER, *label, font.clone(), if on { t.text } else { t.dim });
+        let hov = if on { 0.0 } else { design::hover_amount(ui.ctx(), id, resp.hovered()) };
+        design::state_fill(&p, t, r, radius::S, hov, !on && resp.is_pointer_button_down_on(), if on { Sel::Unfocused } else { Sel::None });
+        p.text(r.center(), Align2::CENTER_CENTER, *label, font.clone(), if on || resp.hovered() { t.text } else { t.dim });
         if resp.clicked() && !on {
             *value = *v;
             changed = true;
@@ -237,8 +202,8 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, t: &Theme, value: &mut T, opt
 }
 
 /// Rótulo chico encima de un campo.
-pub fn caption(ui: &mut Ui, t: &Theme, text: &str) {
-    ui.label(egui::RichText::new(text).size(11.5).color(t.dim));
+pub fn caption(ui: &mut Ui, t: &Theme, label: &str) {
+    ui.label(egui::RichText::new(label).font(text::small()).color(t.dim));
 }
 
 /// Inserta `text` donde está el cursor del campo `id` (o al final) y deja el cursor después.
@@ -254,63 +219,35 @@ pub fn insert_at_cursor(ctx: &egui::Context, id: Id, buf: &mut String, text: &st
     ctx.memory_mut(|m| m.request_focus(id));
 }
 
-/// Pastilla chica clicable (p. ej. para insertar `{n}` en una plantilla).
-pub fn chip(ui: &mut Ui, t: &Theme, text: &str, mono: bool) -> Response {
-    let font = if mono { FontId::monospace(11.5) } else { FontId::proportional(12.0) };
-    let g = ui.painter().layout_no_wrap(text.to_string(), font.clone(), t.text);
-    let (rect, r) = ui.allocate_exact_size(vec2(g.size().x + 16.0, 24.0), Sense::click());
-    let p = ui.painter();
-    p.rect_filled(rect, 6.0, if r.is_pointer_button_down_on() { t.border } else if r.hovered() { t.hover } else { t.bg });
-    p.rect_stroke(rect, 6.0, Stroke::new(1.0, if r.hovered() { t.faint } else { t.border }), StrokeKind::Inside);
-    p.text(rect.center(), Align2::CENTER_CENTER, text, font, if r.hovered() { t.text } else { t.dim });
-    r
-}
-
-/// Interruptor como pastilla (encendido = acento). Devuelve si cambió.
-pub fn toggle_chip(ui: &mut Ui, t: &Theme, on: &mut bool, icon: &str, text: &str) -> Response {
-    let font = FontId::proportional(12.5);
-    let g = ui.painter().layout_no_wrap(text.to_string(), font.clone(), t.text);
-    let icon_w = if icon.is_empty() { 0.0 } else { 20.0 };
-    let (rect, mut r) = ui.allocate_exact_size(vec2(g.size().x + icon_w + 22.0, FIELD_H), Sense::click());
-    if r.clicked() {
-        *on ^= true;
-        r.mark_changed();
-    }
-    let p = ui.painter();
-    let (fill, stroke, fg) = if *on {
-        (t.accent.gamma_multiply(0.18), t.accent.gamma_multiply(0.7), t.text)
-    } else if r.hovered() {
-        (t.hover, t.faint, t.text)
-    } else {
-        (t.bg, t.border, t.dim)
-    };
-    p.rect_filled(rect, 8.0, fill);
-    p.rect_stroke(rect, 8.0, Stroke::new(1.0, stroke), StrokeKind::Inside);
-    let mut x = rect.left() + 11.0;
-    if !icon.is_empty() {
-        p.text(pos2(x + 7.0, rect.center().y), Align2::CENTER_CENTER, icon, theme::icon_font(13.0, false), if *on { t.accent } else { fg });
-        x += icon_w;
-    }
-    p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, text, font, fg);
-    r
+/// Chip neutro clicable (p. ej. para insertar `{n}` en una plantilla).
+pub fn chip(ui: &mut Ui, t: &Theme, label: &str, mono: bool) -> Response {
+    design::chip(ui, t, Chip { text: label, mono, tone: design::Tone::Neutral, interactive: true, ..Default::default() }).response
 }
 
 /// Número con − y + a los lados (y la rueda del mouse encima). Devuelve si cambió.
 pub fn stepper(ui: &mut Ui, t: &Theme, value: &mut u32, min: u32, max: u32, width: f32) -> bool {
-    let (rect, r) = ui.allocate_exact_size(vec2(width, FIELD_H), Sense::hover());
+    let (rect, r) = ui.allocate_exact_size(vec2(width, h::CTL), Sense::hover());
     let p = ui.painter().clone();
-    p.rect_filled(rect, 8.0, t.bg);
-    p.rect_stroke(rect, 8.0, Stroke::new(1.0, if r.hovered() { t.faint } else { t.border }), StrokeKind::Inside);
+    p.rect_filled(rect, radius::M, t.sidebar);
+    p.rect_stroke(rect, radius::M, Stroke::new(stroke::HAIR, if r.hovered() { t.faint } else { t.border_strong }), StrokeKind::Inside);
     let before = *value;
-    let minus = Rect::from_min_size(rect.min + vec2(3.0, 4.0), vec2(26.0, rect.height() - 8.0));
-    let plus = Rect::from_min_size(pos2(rect.right() - 29.0, rect.top() + 4.0), vec2(26.0, rect.height() - 8.0));
-    for (br, icon, delta) in [(minus, ic::MINUS, -1i64), (plus, ic::PLUS, 1i64)] {
-        let b = ui.interact(br, ui.id().with(("stepper", rect.min.x as i32, rect.min.y as i32, delta)), Sense::click());
+    let s = h::CTL - 2.0 * sp::XXS;
+    let minus = Rect::from_min_size(rect.min + vec2(sp::XXS, sp::XXS), vec2(s, s));
+    let plus = Rect::from_min_size(pos2(rect.right() - sp::XXS - s, rect.top() + sp::XXS), vec2(s, s));
+    for (br, glyph, delta) in [(minus, ic::MINUS, -1i64), (plus, ic::PLUS, 1i64)] {
+        let id = ui.id().with(("stepper", rect.min.x as i32, rect.min.y as i32, delta));
+        let b = ui.interact(br, id, Sense::click());
         let can = if delta < 0 { *value > min } else { *value < max };
-        if b.hovered() && can {
-            p.rect_filled(br, 6.0, t.hover);
-        }
-        p.text(br.center(), Align2::CENTER_CENTER, icon, theme::icon_font(12.0, false), if can { t.dim } else { t.faint.gamma_multiply(0.5) });
+        let hov = if can { design::hover_amount(ui.ctx(), id, b.hovered()) } else { 0.0 };
+        design::state_fill(&p, t, br, radius::S, hov, can && b.is_pointer_button_down_on(), Sel::None);
+        let color = if !can {
+            t.disabled
+        } else if b.hovered() {
+            t.text
+        } else {
+            t.dim
+        };
+        p.text(br.center(), Align2::CENTER_CENTER, glyph, design::icon_font(icon::S), color);
         if b.clicked() && can {
             *value = (*value as i64 + delta).clamp(min as i64, max as i64) as u32;
         }
@@ -323,6 +260,16 @@ pub fn stepper(ui: &mut Ui, t: &Theme, value: &mut u32, min: u32, max: u32, widt
             *value -= 1;
         }
     }
-    p.text(rect.center(), Align2::CENTER_CENTER, value.to_string(), FontId::proportional(13.5), t.text);
+    p.text(rect.center(), Align2::CENTER_CENTER, value.to_string(), text::mono(), t.text);
     *value != before
+}
+
+/// Casilla (4.6): ver `design::check_icon`.
+pub fn check_icon(p: &egui::Painter, t: &Theme, rect: Rect, on: bool) {
+    design::check_icon(p, t, rect, on);
+}
+
+/// Casilla con texto: ver `design::checkbox`.
+pub fn checkbox(ui: &mut Ui, t: &Theme, on: &mut bool, label: &str) -> Response {
+    design::checkbox(ui, t, on, label)
 }

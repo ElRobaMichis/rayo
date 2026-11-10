@@ -10,18 +10,19 @@
 
 use super::actions::Action;
 use super::commands::{self, Target};
-use super::theme::{self, Theme};
+use super::design::{self, Sel, h, icon, radius, sp, text};
+use super::theme::Theme;
 use crate::fsx::ctxmenu::{ShellItem, ShellMenu};
 use crate::fsx::thumbs::Rgba;
 use crate::index::store::search_key;
-use egui::{Align2, Color32, FontId, Id, Rect, Sense, Ui, pos2, vec2};
+use egui::{Align2, Color32, Id, Rect, Sense, Ui, pos2, vec2};
 use egui_phosphor::regular as ic;
 use std::sync::Arc;
 
 pub enum Icon {
     Glyph(&'static str),
-    /// Un círculo de color (etiquetas).
-    Color([u8; 3]),
+    /// Un círculo de color (etiqueta `i`).
+    Color(usize),
     Image(Arc<Rgba>, String),
     None,
 }
@@ -48,11 +49,13 @@ pub struct Entry {
     pub hideable: bool,
     /// Está oculta (solo se ve si se pidió ver las ocultas).
     pub hidden: bool,
+    /// Marcada (etiqueta ya puesta): check de 12 en acento a la derecha.
+    pub checked: bool,
 }
 
 impl Entry {
     fn blank() -> Entry {
-        Entry { key: String::new(), icon: Icon::None, label: String::new(), keys: String::new(), run: None, children: Vec::new(), disabled: false, separator: false, hideable: false, hidden: false }
+        Entry { key: String::new(), icon: Icon::None, label: String::new(), keys: String::new(), run: None, children: Vec::new(), disabled: false, separator: false, hideable: false, hidden: false, checked: false }
     }
 
     pub fn sep() -> Entry {
@@ -249,10 +252,8 @@ fn item_entries(paths: &[String], is_dir: bool, dir: &str, reveal: Option<&str>,
     let mut tags: Vec<Entry> = (0..7)
         .map(|i| {
             let mut e = Entry::act("", "", super::views::tag_label(i), Action::ToggleTag(paths.to_vec(), i));
-            e.icon = Icon::Color(crate::fsx::tags::COLORS[i].1);
-            if paths.iter().all(|p| crate::fsx::tags::get(p) & (1 << i) != 0) {
-                e.keys = "✓".into();
-            }
+            e.icon = Icon::Color(i);
+            e.checked = paths.iter().all(|p| crate::fsx::tags::get(p) & (1 << i) != 0);
             e
         })
         .collect();
@@ -358,11 +359,11 @@ pub fn has_open_with(menu: &ShellMenu) -> bool {
     menu.items.iter().any(|i| !i.children.is_empty() && i.children.iter().any(|c| c.verb.eq_ignore_ascii_case("openas")))
 }
 
-/// Ícono para las opciones de Windows que no traen uno.
-fn fallback_icon(item: &ShellItem) -> &'static str {
+/// Ícono para las opciones de Windows que no traen uno (None: la columna queda vacía).
+fn fallback_icon(item: &ShellItem) -> Option<&'static str> {
     let v = item.verb.to_ascii_lowercase();
     let t = item.text.to_lowercase();
-    if t.contains("7-zip") || v.starts_with("sevenzip") {
+    Some(if t.contains("7-zip") || v.starts_with("sevenzip") {
         ic::FILE_ZIP
     } else if v == "extract" || t.contains("extra") {
         ic::ARCHIVE
@@ -389,8 +390,8 @@ fn fallback_icon(item: &ShellItem) -> &'static str {
     } else if !item.children.is_empty() {
         ic::DOTS_THREE_CIRCLE
     } else {
-        ic::DOT_OUTLINE
-    }
+        return None;
+    })
 }
 
 /// Las opciones de Windows, ya filtradas, como entradas del menú. Las ocultas se saltan
@@ -421,7 +422,7 @@ fn native_entries(menu: &ShellMenu, hidden: &[String], show_hidden: bool, hidden
             }
             let icon = match &it.icon {
                 Some(img) => Icon::Image(img.clone(), format!("shell-icon:{token}:{path}")),
-                None => Icon::Glyph(fallback_icon(it)),
+                None => fallback_icon(it).map_or(Icon::None, Icon::Glyph),
             };
             let mut e = Entry { key, icon, label: it.text.clone(), disabled: it.disabled, hideable: true, hidden: is_hidden, ..Entry::blank() };
             if !it.children.is_empty() {
@@ -451,12 +452,29 @@ pub enum Row<'e> {
     Nothing,
 }
 
-const ROW_H: f32 = 26.0;
-const GAP: f32 = 1.0;
-const SEP_H: f32 = 7.0;
-const SEARCH_H: f32 = 33.0;
+// Medidas de las filas: `measure` y el dibujo usan exactamente estas (y las mismas fuentes), así
+// cada ventana se abre del tamaño justo.
+const ROW_H: f32 = h::ROW;
+/// Separador: el de `design::menu_sep` (4 + 1 + 4).
+const SEP_H: f32 = sp::S + 1.0;
+/// Búsqueda: campo de 28 y 4 de aire debajo.
+const SEARCH_H: f32 = h::CTL + sp::XS;
 /// Margen interior de cada ventana del menú.
-pub const PAD: f32 = 5.0;
+pub const PAD: f32 = sp::XS;
+/// Ancho mínimo y máximo de las filas.
+const MIN_W: f32 = 230.0;
+const MAX_W: f32 = 440.0;
+/// Columna del texto: `[8][ícono 16][8]`.
+const TEXT_X: f32 = sp::S + icon::M + sp::S;
+/// Botón mini (estrella, ojo) y lo que ocupa con su separación.
+const BTN: f32 = h::CHIP;
+const BTN_STEP: f32 = BTN + sp::XXS;
+
+/// El marco de cada ventana del menú: el de los popovers, sin radio (las esquinas las pone DWM)
+/// ni sombra (también la pone Windows).
+pub fn frame(t: &Theme) -> egui::Frame {
+    design::popover_frame(t).corner_radius(egui::CornerRadius::ZERO).shadow(egui::Shadow::NONE).inner_margin(PAD)
+}
 
 fn flatten<'e>(entries: &'e [Entry], parent: &str, out: &mut Vec<(String, &'e Entry)>) {
     for e in entries {
@@ -524,22 +542,54 @@ pub fn sub_rows<'e>(children: &'e [Entry], pins: &[String]) -> Vec<Row<'e>> {
 
 /// Tamaño de una ventana del menú (en puntos), para abrirla ya del tamaño justo.
 pub fn measure(ctx: &egui::Context, rows: &[Row], search: bool) -> egui::Vec2 {
-    let text_w = |s: &str, size: f32| ctx.fonts_mut(|f| f.layout_no_wrap(s.to_string(), FontId::proportional(size), Color32::WHITE).size().x);
-    let mut w: f32 = 230.0;
+    let text_w = |s: &str, font: egui::FontId| ctx.fonts_mut(|f| f.layout_no_wrap(s.to_string(), font, Color32::WHITE).size().x);
+    let mut w: f32 = MIN_W;
     let mut h = if search { SEARCH_H } else { 0.0 };
     for r in rows {
         match r {
             Row::Item { e, label, .. } => {
-                let keys = if e.keys.is_empty() { 0.0 } else { text_w(&e.keys, 11.0) + 16.0 };
-                w = w.max(32.0 + text_w(label.as_deref().unwrap_or(&e.label), 13.0) + 12.0 + keys + 54.0);
-                h += ROW_H + GAP;
+                let keys_w = if e.keys.is_empty() { 0.0 } else { text_w(&e.keys, text::mono_s()) };
+                // + 1 por el redondeo: que el texto no se corte por una fracción.
+                w = w.max(TEXT_X + text_w(label.as_deref().unwrap_or(&e.label), text::body()) + trailing_w(e, keys_w) + 1.0);
+                h += ROW_H;
             }
             Row::Sep => h += SEP_H,
-            _ => h += ROW_H + GAP,
+            _ => h += ROW_H,
         }
     }
     // + el borde de 1 px de cada lado (y uno de margen por el redondeo a píxeles).
-    vec2(w.min(440.0) + PAD * 2.0 + 2.0, h + PAD * 2.0 + 3.0)
+    vec2(w.min(MAX_W) + PAD * 2.0 + 2.0, h + PAD * 2.0 + 3.0)
+}
+
+/// Lleva estrella (se puede fijar arriba).
+fn has_star(e: &Entry) -> bool {
+    e.children.is_empty() && !e.key.is_empty() && !e.disabled && !e.hidden
+}
+
+/// Lleva ojo (se puede ocultar).
+fn has_eye(e: &Entry) -> bool {
+    e.hideable && !e.key.is_empty()
+}
+
+/// Lo que ocupa a la derecha del texto: atajo, estrella, ojo, marca, flecha y el margen de 8.
+fn trailing_w(e: &Entry, keys_w: f32) -> f32 {
+    let mut w = sp::S;
+    if !e.children.is_empty() {
+        w += icon::S + sp::S;
+    }
+    if e.checked {
+        w += icon::S + sp::S;
+    }
+    if has_eye(e) {
+        w += BTN_STEP;
+    }
+    if has_star(e) {
+        w += BTN_STEP;
+    }
+    if keys_w > 0.0 {
+        w += keys_w + sp::S;
+    }
+    w
 }
 
 // ---------------------------------------------------------------- dibujo
@@ -560,34 +610,34 @@ pub struct LevelOut {
 /// Dibuja las filas de una ventana del menú. `open_sub`: la fila cuyo submenú está abierto.
 pub fn draw_rows(ui: &mut Ui, t: &Theme, rows: &[Row], open_sub: Option<usize>, enter: bool) -> LevelOut {
     let mut out = LevelOut::default();
-    ui.spacing_mut().item_spacing.y = GAP;
+    ui.spacing_mut().item_spacing.y = 0.0;
     let w = ui.available_width();
     for (k, r) in rows.iter().enumerate() {
         match r {
-            Row::Sep => {
-                let (rr, _) = ui.allocate_exact_size(vec2(w, SEP_H - GAP), Sense::hover());
-                ui.painter().line_segment([pos2(rr.left() + 6.0, rr.center().y), pos2(rr.right() - 6.0, rr.center().y)], egui::Stroke::new(1.0, t.border));
-            }
+            Row::Sep => design::menu_sep(ui, t),
             Row::Loading => {
                 let (rr, _) = ui.allocate_exact_size(vec2(w, ROW_H), Sense::hover());
-                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rr.shrink2(vec2(10.0, 4.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
-                child.spinner();
-                child.label(egui::RichText::new(t!("menu.opciones_windows")).size(12.0).color(t.faint));
+                // Medidor que recorre en la columna del ícono: 3 puntos (13 px) centrados en los 16.
+                let mr = Rect::from_center_size(pos2(rr.left() + sp::S + icon::M / 2.0, rr.center().y), vec2(3.0 * 5.0 - 2.0, 3.0));
+                design::dot_meter_busy(ui.painter(), t, mr);
+                ui.painter().text(pos2(rr.left() + TEXT_X, rr.center().y), Align2::LEFT_CENTER, t!("menu.opciones_windows"), text::small(), t.faint);
             }
             Row::Nothing => {
                 let (rr, _) = ui.allocate_exact_size(vec2(w, ROW_H), Sense::hover());
-                ui.painter().text(pos2(rr.left() + 12.0, rr.center().y), Align2::LEFT_CENTER, t!("menu.nada_coincide"), FontId::proportional(13.0), t.faint);
+                ui.painter().text(pos2(rr.left() + TEXT_X, rr.center().y), Align2::LEFT_CENTER, t!("menu.nada_coincide"), text::small(), t.faint);
             }
             Row::HiddenFooter(n, showing) => {
                 let (rr, resp) = ui.allocate_exact_size(vec2(w, ROW_H), Sense::click());
+                let pill = rr.shrink2(vec2(0.0, 1.0));
+                let hov = design::hover_amount(ui.ctx(), resp.id, resp.hovered());
+                design::state_fill(ui.painter(), t, pill, radius::M, hov, resp.is_pointer_button_down_on(), Sel::None);
                 if resp.hovered() {
-                    ui.painter().rect_filled(rr, 5.0, t.hover);
                     out.hover_leaf = true;
                 }
                 let glyph = if *showing { ic::EYE_SLASH } else { ic::EYE };
-                ui.painter().text(pos2(rr.left() + 14.0, rr.center().y), Align2::CENTER_CENTER, glyph, theme::icon_font(14.0, false), t.faint);
-                let text = if *showing { t!("menu.esconder_otra_vez_ocultas").to_string() } else if *n == 1 { t!("menu.1_opcion_oculta_mostrar").to_string() } else { tf!("menu.opciones_ocultas_mostrar", n = n) };
-                ui.painter().text(pos2(rr.left() + 32.0, rr.center().y), Align2::LEFT_CENTER, text, FontId::proportional(12.5), t.faint);
+                ui.painter().text(pos2(rr.left() + sp::S + icon::M / 2.0, rr.center().y), Align2::CENTER_CENTER, glyph, design::icon_font(icon::M), t.faint);
+                let label = if *showing { t!("menu.esconder_otra_vez_ocultas").to_string() } else if *n == 1 { t!("menu.1_opcion_oculta_mostrar").to_string() } else { tf!("menu.opciones_ocultas_mostrar", n = n) };
+                ui.painter().text(pos2(rr.left() + TEXT_X, rr.center().y), Align2::LEFT_CENTER, label, text::small(), t.faint);
                 if resp.clicked() {
                     out.toggle_show_hidden = true;
                 }
@@ -616,20 +666,30 @@ pub fn draw_rows(ui: &mut Ui, t: &Theme, rows: &[Row], open_sub: Option<usize>, 
     out
 }
 
-/// La búsqueda de arriba del menú principal. Devuelve si se apretó Enter.
+/// La búsqueda de arriba del menú principal: campo de 28 sin borde, a ras del marco. Devuelve si
+/// se apretó Enter.
 pub fn search_box(ui: &mut Ui, t: &Theme, query: &mut String, focus: bool) -> bool {
     // Alto exacto (SEARCH_H): sin el espacio entre elementos, la ventana mide justo lo que `measure` calcula.
     ui.spacing_mut().item_spacing.y = 0.0;
     let w = ui.available_width();
-    let (sr, _) = ui.allocate_exact_size(vec2(w, SEARCH_H - 3.0), Sense::hover());
-    ui.painter().rect_filled(sr.shrink2(vec2(1.0, 2.0)), 6.0, t.bg);
-    ui.painter().text(pos2(sr.left() + 14.0, sr.center().y), Align2::CENTER_CENTER, ic::MAGNIFYING_GLASS, theme::icon_font(13.0, false), t.faint);
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(pos2(sr.left() + 28.0, sr.top() + 5.0), pos2(sr.right() - 8.0, sr.bottom() - 5.0))));
-    let edit = child.add(egui::TextEdit::singleline(query).id(Id::new("menu-busqueda")).frame(egui::Frame::NONE).hint_text(egui::RichText::new(t!("menu.buscar_opcion")).color(t.faint)).desired_width(w - 40.0));
+    let (sr, _) = ui.allocate_exact_size(vec2(w, h::CTL), Sense::hover());
+    ui.painter().rect_filled(sr, radius::M, t.sidebar);
+    ui.painter().text(pos2(sr.left() + sp::S + icon::M / 2.0, sr.center().y), Align2::CENTER_CENTER, ic::MAGNIFYING_GLASS, design::icon_font(icon::M), t.dim);
+    let er = Rect::from_min_max(pos2(sr.left() + TEXT_X, sr.top()), pos2(sr.right() - sp::S, sr.bottom()));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(er).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let edit = child.add(
+        egui::TextEdit::singleline(query)
+            .id(Id::new("menu-busqueda"))
+            .frame(egui::Frame::NONE)
+            .font(text::body())
+            .hint_text(egui::RichText::new(t!("menu.buscar_opcion")).font(text::body()).color(t.faint))
+            .desired_width(er.width())
+            .vertical_align(egui::Align::Center),
+    );
     if focus || !edit.has_focus() {
         edit.request_focus();
     }
-    ui.add_space(3.0);
+    ui.add_space(SEARCH_H - h::CTL);
     ui.input(|i| i.key_pressed(egui::Key::Enter))
 }
 
@@ -641,7 +701,23 @@ struct RowOut {
     hide: bool,
 }
 
-/// Una fila: ícono, texto, atajo, estrella y (si es de Windows) ojo para ocultarla.
+/// Botón mini (estrella, ojo) pintado en `vis`, que responde en toda la franja `hit`. Se pinta
+/// solo si `show`; el clic vale siempre.
+#[allow(clippy::too_many_arguments)]
+fn mini_btn(ui: &Ui, t: &Theme, hit: Rect, vis: Rect, id: Id, show: bool, glyph: &str, filled: bool, color: Option<Color32>) -> bool {
+    let r = ui.interact(hit, id, Sense::click());
+    if show {
+        let p = ui.painter();
+        let hov = design::hover_amount(ui.ctx(), id, r.hovered());
+        design::state_fill(p, t, vis, radius::S, hov, r.is_pointer_button_down_on(), Sel::None);
+        let font = if filled { design::icon_fill(icon::S) } else { design::icon_font(icon::S) };
+        p.text(vis.center(), Align2::CENTER_CENTER, glyph, font, color.unwrap_or(if r.hovered() { t.text } else { t.faint }));
+    }
+    r.clicked()
+}
+
+/// Una fila (4.1, sin margen de pill): ícono 16 en x=8, texto en x=32 y, a la derecha, atajo,
+/// estrella, ojo (los dos solo con hover) y flecha de submenú.
 fn row(ui: &mut Ui, t: &Theme, e: &Entry, label: Option<&str>, pinned: bool, highlight: bool, w: f32) -> RowOut {
     let sense = if e.disabled { Sense::hover() } else { Sense::click() };
     let (r, resp) = ui.allocate_exact_size(vec2(w, ROW_H), sense);
@@ -651,19 +727,29 @@ fn row(ui: &mut Ui, t: &Theme, e: &Entry, label: Option<&str>, pinned: bool, hig
     // aparecer en cada cuadro (parpadeo, y el clic casi nunca llegaba). Igual que la X de las pestañas.
     let inside = ui.rect_contains_pointer(r);
     let hovered = inside || highlight;
-    if hovered && !e.disabled {
-        p.rect_filled(r, 5.0, t.hover);
+    if !e.disabled {
+        // Con el cursor de teclado o con el submenú abierto: capa de seleccionado; con el puntero, hover.
+        let hov = design::hover_amount(ui.ctx(), resp.id, inside);
+        design::state_fill(&p, t, r.shrink2(vec2(0.0, 1.0)), radius::M, hov, resp.is_pointer_button_down_on(), if highlight { Sel::Unfocused } else { Sel::None });
     }
-    let dim = e.disabled || e.hidden;
-    let fg = if dim { t.faint } else { t.text };
-    let ic_pos = pos2(r.left() + 14.0, r.center().y);
+    // Acción irreversible: texto e ícono en `danger`.
+    let danger = e.key == "cmd:delete";
+    let (fg, ic_c) = if e.disabled {
+        (t.disabled, t.disabled)
+    } else if e.hidden {
+        (t.faint, t.faint)
+    } else if danger {
+        (t.danger, t.danger)
+    } else {
+        (t.text, t.dim)
+    };
+    let cy = r.center().y;
+    let ic_pos = pos2(r.left() + sp::S + icon::M / 2.0, cy);
     match &e.icon {
         Icon::Glyph(g) => {
-            p.text(ic_pos, Align2::CENTER_CENTER, *g, theme::icon_font(14.0, false), if dim { t.faint } else { t.dim });
+            p.text(ic_pos, Align2::CENTER_CENTER, *g, design::icon_font(icon::M), ic_c);
         }
-        Icon::Color(c) => {
-            p.circle_filled(ic_pos, 5.5, egui::Color32::from_rgb(c[0], c[1], c[2]));
-        }
+        Icon::Color(i) => design::tag_dot(&p, t, ic_pos, t.tags[(*i).min(6)]),
         Icon::Image(img, key) => {
             let id = Id::new(key);
             let tex = ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(id)).unwrap_or_else(|| {
@@ -676,63 +762,52 @@ fn row(ui: &mut Ui, t: &Theme, e: &Entry, label: Option<&str>, pinned: bool, hig
                 ui.ctx().data_mut(|d| d.insert_temp(id, tex.clone()));
                 tex
             });
-            let ir = Rect::from_center_size(ic_pos, vec2(16.0, 16.0));
-            let tint = if dim { Color32::from_white_alpha(110) } else { Color32::WHITE };
+            let ir = Rect::from_center_size(ic_pos, vec2(icon::M, icon::M));
+            let tint = if e.disabled || e.hidden { Color32::WHITE.gamma_multiply(0.5) } else { Color32::WHITE };
             p.image(tex.id(), ir, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
         }
         Icon::None => {}
     }
-    let mut right = r.right() - 6.0;
+    // De derecha a izquierda, con las mismas medidas que `trailing_w`.
+    let mut right = r.right() - sp::S;
     let mut star = false;
     let mut hide = false;
     if !e.children.is_empty() {
-        p.text(pos2(right - 8.0, r.center().y), Align2::CENTER_CENTER, ic::CARET_RIGHT, theme::icon_font(11.0, false), t.faint);
-        right -= 20.0;
+        p.text(pos2(right, cy), Align2::RIGHT_CENTER, ic::CARET_RIGHT, design::icon_font(icon::S), t.faint);
+        right -= icon::S + sp::S;
     }
+    // Etiqueta puesta: check de 12 en acento.
+    if e.checked {
+        p.text(pos2(right, cy), Align2::RIGHT_CENTER, ic::CHECK, design::icon_font(icon::S), if e.disabled { t.disabled } else { t.accent });
+        right -= icon::S + sp::S;
+    }
+    // Franja que responde al clic y botón visible (20×20) de cada botón mini.
+    let btn = |right: f32| {
+        let hit = Rect::from_min_max(pos2(right - BTN_STEP, r.top()), pos2(right, r.bottom()));
+        let vis = Rect::from_min_max(pos2(right - BTN, cy - BTN / 2.0), pos2(right, cy + BTN / 2.0));
+        (hit, vis)
+    };
     // Ocultar / volver a mostrar (de Rayo o de Windows): se ve al pasar por encima.
-    if e.hideable && !e.key.is_empty() {
-        let hit = Rect::from_min_max(pos2(right - 22.0, r.top()), pos2(right + 4.0, r.bottom()));
-        let hr = Rect::from_center_size(pos2(right - 9.0, r.center().y), vec2(20.0, 20.0));
-        let hresp = ui.interact(hit, resp.id.with("hide"), Sense::click());
-        if hovered || e.hidden {
-            if hresp.hovered() {
-                p.rect_filled(hr, 4.0, t.border);
-            }
-            let glyph = if e.hidden { ic::EYE } else { ic::EYE_SLASH };
-            p.text(hr.center(), Align2::CENTER_CENTER, glyph, theme::icon_font(12.5, false), t.faint);
-        }
-        hide = hresp.clicked();
-        right -= 22.0;
+    if has_eye(e) {
+        let (hit, vis) = btn(right);
+        let glyph = if e.hidden { ic::EYE } else { ic::EYE_SLASH };
+        hide = mini_btn(ui, t, hit, vis, resp.id.with("hide"), hovered || e.hidden, glyph, false, None);
+        right -= BTN_STEP;
     }
     // La estrella: se ve al pasar por encima (o siempre, si está fijada).
-    if e.children.is_empty() && !e.key.is_empty() && !e.disabled && !e.hidden {
-        let hit = Rect::from_min_max(pos2(right - 24.0, r.top()), pos2(right + 4.0, r.bottom()));
-        let sr = Rect::from_center_size(pos2(right - 9.0, r.center().y), vec2(20.0, 20.0));
-        let sresp = ui.interact(hit, resp.id.with("star"), Sense::click());
-        if hovered || pinned {
-            if sresp.hovered() {
-                p.rect_filled(sr, 4.0, t.border);
-            }
-            let (glyph, font, color) = if pinned {
-                (egui_phosphor::fill::STAR, theme::icon_font(12.5, true), t.accent)
-            } else {
-                (ic::STAR, theme::icon_font(12.5, false), t.faint)
-            };
-            p.text(sr.center(), Align2::CENTER_CENTER, glyph, font, color);
-        }
-        star = sresp.clicked();
-        right -= 22.0;
+    if has_star(e) {
+        let (hit, vis) = btn(right);
+        // Fijada: rellena en `text` (fijar no es «ahora»: el acento no).
+        let (glyph, color) = if pinned { (egui_phosphor::fill::STAR, Some(t.text)) } else { (ic::STAR, None) };
+        star = mini_btn(ui, t, hit, vis, resp.id.with("star"), hovered || pinned, glyph, pinned, color);
+        right -= BTN_STEP;
     }
-    // Atajo de teclado, como una pastilla.
+    // Atajo: mono chica, sin caja.
     if !e.keys.is_empty() {
-        let g = p.layout_no_wrap(e.keys.clone(), FontId::proportional(11.0), t.faint);
-        let cr = Rect::from_min_max(pos2(right - g.size().x - 10.0, r.center().y - 9.0), pos2(right, r.center().y + 9.0));
-        p.rect_stroke(cr, 4.0, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-        p.galley(pos2(cr.left() + 5.0, cr.center().y - g.size().y / 2.0), g, t.faint);
-        right = cr.left() - 6.0;
+        right = design::keys_text(&p, t, pos2(right, cy), &e.keys).left() - sp::S;
     }
-    let text = label.unwrap_or(&e.label);
-    let g = super::views::elided(&p, text, FontId::proportional(13.0), fg, (right - (r.left() + 32.0)).max(20.0));
-    p.galley(pos2(r.left() + 32.0, r.center().y - g.size().y / 2.0), g, fg);
+    let x = r.left() + TEXT_X;
+    let g = super::views::elided(&p, label.unwrap_or(&e.label), text::body(), fg, right - x);
+    p.galley(pos2(x, cy - g.size().y / 2.0), g, fg);
     RowOut { resp, hovered: inside, star, hide }
 }
