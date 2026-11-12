@@ -148,6 +148,7 @@ pub const ALL: &[Command] = &[
     cmd!("preview", ic::SIDEBAR_SIMPLE, "Ctrl+P", Nothing),
     cmd!("hidden", ic::EYE, "Ctrl+H", Nothing),
     cmd!("space_bars", ic::CHART_PIE_SLICE, "", Nothing),
+    cmd!("ql_autoplay", ic::PLAY, "", Nothing),
     cmd!("theme", ic::MOON, "", Nothing),
     cmd!("language", ic::TRANSLATE, "", Nothing),
     cmd!("new_tab", ic::PLUS, "Ctrl+T", Nothing),

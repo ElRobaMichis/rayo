@@ -77,7 +77,10 @@ pub struct App {
     tex: Textures,
     drives: Arc<Mutex<Vec<Drive>>>,
     places: Vec<Place>,
-    quicklook: bool,
+    /// Vista rápida (barra espaciadora), en su propia ventana.
+    ql: super::ql::QuickLook,
+    /// Texto de lo que muestra la Vista rápida (más largo que el del panel): (ruta, texto).
+    ql_text: Option<(String, Option<String>)>,
     rename: Option<Rename>,
     group_edit: Option<(usize, String)>,
     toast: Option<ToastMsg>,
@@ -120,6 +123,8 @@ pub struct App {
     extracted: Arc<Mutex<std::collections::HashMap<String, Option<Option<String>>>>>,
     /// Visores de vista previa de Windows (Word, Excel…) en el panel.
     prevhost: Option<super::prevhost::PreviewHost>,
+    /// Audio y video de la Vista rápida.
+    player: Option<fsx::media::Player>,
     /// "¿Quién lo está usando?"
     locks: Option<super::tools::LocksDialog>,
     /// Lo que quedó sin borrar porque otro programa lo tiene abierto: (rutas, definitivo).
@@ -171,8 +176,6 @@ pub struct App {
     menu: Option<MenuWin>,
     /// Copias / movimientos en curso, por si fallan por permisos: (trabajo, origen, destino, mover).
     admin_watch: Vec<(u64, Vec<String>, String, bool)>,
-    /// Página del PDF en la vista rápida (y de qué archivo).
-    ql_page: (String, u32),
     /// Diálogo "Seleccionar por patrón": (patrón, sumar a la selección, primer cuadro).
     pattern: Option<(String, bool, bool)>,
     hash: Option<super::tools::HashDialog>,
@@ -288,6 +291,7 @@ impl App {
         fsx::props::set_wake(wake.clone());
         fsx::dirsize::set_wake(wake.clone());
         fsx::git::set_wake(wake.clone());
+        fsx::assoc::set_wake(wake.clone());
         // Ctrl+G en un diálogo de Abrir / Guardar lo lleva a la carpeta de Rayo.
         crate::quickswitch::start();
         if let Some(h) = hwnd {
@@ -304,6 +308,7 @@ impl App {
             host.set_background([t.sidebar.r(), t.sidebar.g(), t.sidebar.b()]);
             host
         });
+        let player = hwnd.map(|h| fsx::media::Player::new(h, wake.clone()));
         let mgr = IndexManager::new(&ntfs_fixed_volumes());
         *mgr.wake.write() = Some(wake.clone());
         mgr.start();
@@ -388,7 +393,8 @@ impl App {
             tex,
             drives,
             places,
-            quicklook: false,
+            ql: Default::default(),
+            ql_text: None,
             rename: None,
             group_edit: None,
             toast: None,
@@ -416,6 +422,7 @@ impl App {
             drag_out: None,
             extracted: Default::default(),
             prevhost,
+            player,
             locks: None,
             lock_report: Default::default(),
             follow_moves: Vec::new(),
@@ -442,7 +449,6 @@ impl App {
             admin_watch: Vec::new(),
             shell_menus,
             menu: None,
-            ql_page: (String::new(), 0),
             pattern: None,
             hash: None,
         };
@@ -540,14 +546,26 @@ impl App {
         self.toast_ok(ctx, if mv { tp!(n, "app.moviendo_a", destino = fsx::file_name(&dest)) } else { tp!(n, "app.copiando_a", destino = fsx::file_name(&dest)) });
     }
 
+    /// Antes de borrar, mover o renombrar: que ningún visor (Office, PDF) ni el reproductor de
+    /// la Vista rápida tenga tomado el archivo.
+    fn release_previews(&self, paths: &[String]) {
+        if let Some(h) = &self.prevhost {
+            h.release(paths);
+        }
+        if let Some(p) = &self.player {
+            p.release(paths);
+        }
+        for p in paths {
+            fsx::pdf::forget(p);
+        }
+    }
+
     /// Lo común a pegar, arrastrar y enviar al otro panel: suelta la vista previa de lo que se
     /// mueve, hace que las pestañas abiertas en una carpeta movida la sigan, ofrece repetir como
     /// administrador si Windows no deja, y recarga el destino.
     fn enqueue_transfer(&mut self, ctx: &egui::Context, paths: Vec<String>, dest: &str, mv: bool) {
         if mv {
-            if let Some(h) = &self.prevhost {
-                h.release(&paths);
-            }
+            self.release_previews(&paths);
             let now = ctx.input(|i| i.time);
             for p in &paths {
                 let to = fsx::join(dest, &fsx::file_name(p));
@@ -990,8 +1008,8 @@ impl App {
                 }
             }
             if consume(Modifiers::NONE, Key::Escape) {
-                if self.quicklook {
-                    self.quicklook = false;
+                if self.ql.open {
+                    self.ql.close();
                 } else {
                     let s = &mut self.tabs[self.cur].search;
                     s.text.clear();
@@ -1002,22 +1020,28 @@ impl App {
         if typing {
             return;
         }
-        if self.quicklook && self.ql_page.0.to_lowercase().ends_with(".pdf") {
-            if consume(Modifiers::NONE, Key::ArrowRight) {
-                self.ql_page.1 += 1;
-            }
-            if consume(Modifiers::NONE, Key::ArrowLeft) {
-                self.ql_page.1 = self.ql_page.1.saturating_sub(1);
+        // Con la Vista rápida abierta, ← → RePág AvPág F11 son primero de ella (otro archivo de
+        // la selección, página del PDF, 5 s de audio o video, maximizar); si no los usa, siguen
+        // siendo de la lista.
+        if self.ql.open {
+            let grid = !search_active && self.cfg.view == ViewMode::Grid;
+            for k in [Key::ArrowLeft, Key::ArrowRight, Key::PageUp, Key::PageDown, Key::F11] {
+                let pressed = ctx.input(|i| i.modifiers.is_none() && i.key_pressed(k));
+                if pressed && self.ql.key(k, grid) {
+                    consume(Modifiers::NONE, k);
+                    ctx.request_repaint();
+                }
             }
         }
         if search_active {
             if consume(Modifiers::NONE, Key::Space) {
-                self.quicklook ^= true;
+                self.ql.toggle();
             }
-            // Escribir con la lista enfocada sigue editando la búsqueda.
+            // Escribir con la lista enfocada sigue editando la búsqueda (la Vista rápida sigue
+            // al resultado enfocado).
             let typed: String = ctx.input(|i| i.events.iter().filter_map(|e| if let egui::Event::Text(t) = e { Some(t.clone()) } else { None }).collect());
             let typed = typed.replace(' ', "");
-            if !typed.is_empty() && !self.quicklook {
+            if !typed.is_empty() {
                 let s = &mut self.tabs[self.cur].search;
                 s.text.push_str(&typed);
                 s.focus = true;
@@ -1031,12 +1055,13 @@ impl App {
         }
 
         let columns = self.cfg.view == ViewMode::Columns;
-        if consume(Modifiers::NONE, Key::Space) {
-            self.quicklook ^= true;
+        // Con un filtro a medio escribir, el espacio es una letra más.
+        if self.tabs[self.cur].filter.is_empty() && consume(Modifiers::NONE, Key::Space) {
+            self.ql.toggle();
         }
         if consume(Modifiers::NONE, Key::Escape) {
-            if self.quicklook {
-                self.quicklook = false;
+            if self.ql.open {
+                self.ql.close();
             } else if !self.tab().filter.is_empty() {
                 self.tab().filter.clear();
             } else if self.tab().flat && self.tabs[self.cur].active_col().selected().is_empty() {
@@ -1224,8 +1249,8 @@ impl App {
         // El espacio abre la vista rápida; solo cuenta dentro de un filtro ya empezado.
         let typed = if self.tabs[self.cur].filter.is_empty() { typed.trim_start().to_string() } else { typed };
         if !typed.is_empty() {
+            // La Vista rápida no se cierra: sigue al primer resultado.
             self.tab().filter.push_str(&typed);
-            self.quicklook = false;
         }
         // Si lo enfocado quedó fuera del filtro, enfocar el primer resultado.
         if !self.tabs[self.cur].filter.is_empty() {
@@ -1805,6 +1830,10 @@ impl App {
                 }
             }
             Action::Open { path, is_dir } => {
+                // Abrir un archivo cierra la Vista rápida; entrar en una carpeta, no.
+                if !is_dir && !fsx::archive::is_dir(&path) {
+                    self.ql.close();
+                }
                 // Un comprimido (o una carpeta de adentro) se abre como carpeta.
                 if is_dir || fsx::archive::is_dir(&path) {
                     let tab = self.tab();
@@ -1825,7 +1854,11 @@ impl App {
             Action::OpenWith(p) => {
                 shell::open_with(&p);
             }
-            Action::QuickLook => self.quicklook = true,
+            Action::QuickLook => {
+                if !self.ql.open {
+                    self.ql.toggle();
+                }
+            }
             Action::StartRename(dir, _) if self.read_only(ctx, &dir) => {}
             Action::Delete(paths, _) if paths.first().is_some_and(|p| fsx::archive::is_inside(p)) => {
                 self.toast(ctx, t!("app.comprimidos_son_solo_lectura_extrae"));
@@ -1868,9 +1901,7 @@ impl App {
                             Some(i) => format!("{}\\{new}", &r.old[..i]),
                             None => new.clone(),
                         };
-                        if let Some(h) = &self.prevhost {
-                            h.release(std::slice::from_ref(&old_path));
-                        }
+                        self.release_previews(std::slice::from_ref(&old_path));
                         match shell::rename(&old_path, &new) {
                             Ok(new_path) => {
                                 fsx::tags::moved(&old_path, &new_path);
@@ -1942,9 +1973,7 @@ impl App {
             }
             Action::Delete(paths, _) => {
                 self.push_undo(Undo::Recycle(paths.clone(), shell::filetime_now()));
-                if let Some(h) = &self.prevhost {
-                    h.release(&paths);
-                }
+                self.release_previews(&paths);
                 let dirs: Vec<String> = paths.iter().filter_map(|p| fsx::parent_of(p)).collect();
                 let mgr = self.mgr.clone();
                 let (report, admin_report) = (self.lock_report.clone(), self.admin_report.clone());
@@ -2046,6 +2075,9 @@ impl App {
             Action::Unblock(paths) => {
                 let n = fsx::props::unblock_all(&paths);
                 // El visor (PDF, Office) se vuelve a abrir, ahora sin el bloqueo.
+                if let Some(p) = &self.player {
+                    p.release(&paths);
+                }
                 if let Some(h) = &self.prevhost {
                     h.release(&paths);
                     let mut st = h.status.lock();
@@ -2417,6 +2449,11 @@ impl App {
                 self.save_cfg();
                 return;
             }
+            "ql_autoplay" => {
+                self.cfg.quicklook.autoplay ^= true;
+                self.save_cfg();
+                return;
+            }
             "theme" => Action::ToggleTheme,
             "new_tab" => Action::NewTab(None),
             "close_tab" => Action::CloseTab(self.cur),
@@ -2729,9 +2766,7 @@ impl App {
         }
         if go {
             self.confirm_delete = None;
-            if let Some(h) = &self.prevhost {
-                h.release(&paths);
-            }
+            self.release_previews(&paths);
             let id = self.xfer.enqueue_delete(paths.clone());
             self.deleting.push((id, paths));
         } else if close {
@@ -3483,7 +3518,11 @@ impl App {
     /// abrir Rayo (acceso directo, Win+R, el ícono de la bandeja) la muestra al instante.
     fn go_background(&mut self) {
         self.save_cfg();
-        self.quicklook = false;
+        // La Vista rápida se va con la ventana (y se calla).
+        self.ql.close();
+        if let Some(p) = &self.player {
+            p.close();
+        }
         self.palette.open = false;
         self.rename = None;
         self.batch = None;
@@ -3889,6 +3928,48 @@ impl App {
         self.text_cache.as_ref().and_then(|(_, t)| t.clone())
     }
 
+    /// Texto para la Vista rápida: hasta `ql::TEXT_MAX` (el panel lee menos).
+    fn ql_text_for(&mut self, item: Option<&PreviewItem>) -> Option<String> {
+        let item = item?;
+        if !preview::wants_text(&item.entry) {
+            return None;
+        }
+        if self.ql_text.as_ref().is_none_or(|(p, _)| p != item.source()) {
+            let local = self.mgr.slot_for(item.source()).is_some();
+            let txt = if local { preview::read_text_snippet(item.source(), super::ql::TEXT_MAX) } else { None };
+            self.ql_text = Some((item.source().to_string(), txt));
+        }
+        self.ql_text.as_ref().and_then(|(_, t)| t.clone())
+    }
+
+    /// Lo que recorre la Vista rápida con varios seleccionados (rutas en el orden de la lista;
+    /// vacío si hay uno solo) y si es un resultado de búsqueda o de la vista plana.
+    fn ql_group(&mut self) -> (Vec<String>, bool) {
+        let tab = &self.tabs[self.cur];
+        if tab.tool.is_some() {
+            return (Vec::new(), false);
+        }
+        let from_search = tab.search.active() || tab.flat;
+        let col = tab.active_col();
+        if tab.search.active() || col.multi.len() < 2 {
+            return (Vec::new(), from_search);
+        }
+        let (path, names) = (col.path.clone(), col.multi.clone());
+        let list = self.view_of(&path);
+        (list.iter().filter(|e| names.contains(&e.name)).map(|e| fsx::join(&path, &e.name)).collect(), from_search)
+    }
+
+    /// Un elemento de la carpeta abierta, para la Vista rápida (el que se recorre de una
+    /// selección múltiple).
+    fn item_at(&mut self, path: &str) -> Option<PreviewItem> {
+        let dir = self.tabs[self.cur].active_col().path.clone();
+        let name = path.strip_prefix(dir.as_str()).map(|r| r.trim_start_matches('\\').to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| fsx::file_name(path));
+        let entry = self.entry_in(&dir, &name)?;
+        let children = if entry.is_dir { self.dirs.state(path).and_then(|s| s.raw.as_ref().map(|r| r.iter().filter(|e| self.cfg.show_hidden || !e.hidden).count())) } else { None };
+        let real = if entry.is_dir { None } else { self.extracted_copy(path, entry.size) };
+        Some(PreviewItem { path: path.to_string(), real, entry, children })
+    }
+
     /// Barra de estado: (izquierda, git: rama y cambios, derecha, indexando).
     fn status(&mut self) -> (String, Option<(String, usize)>, String, bool) {
         let tab = &self.tabs[self.cur];
@@ -3960,6 +4041,8 @@ impl eframe::App for App {
     /// Capturando: la entrada simulada (clics en menús, texto en campos; ver `capture`).
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         super::capture::inject(raw_input);
+        // «Desplazar ventanas inactivas» apagado: la rueda sobre la Vista rápida llega aquí.
+        super::ql::take_wheel(raw_input, self.ql.open);
     }
 
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
@@ -4363,21 +4446,33 @@ impl eframe::App for App {
             }
         }
 
-        // ---- Quick Look
-        if self.quicklook {
-            match &item {
-                Some(it) => {
-                    if self.ql_page.0 != it.path {
-                        self.ql_page = (it.path.clone(), 0);
+        // ---- Vista rápida: su ventana sigue a la selección (o al archivo que se recorre de una
+        // selección múltiple); sin nada enfocado muestra «Sin selección», no se cierra.
+        // Rayo minimizado: se cierra.
+        if self.ql.open && ctx.input(|i| i.viewport().minimized == Some(true)) {
+            self.ql.close();
+        }
+        {
+            let (group, from_search) = if self.ql.open { self.ql_group() } else { (Vec::new(), false) };
+            let focused = item.as_ref().map(|i| i.path.clone());
+            let other = self.ql.pick(focused.as_deref(), &group).filter(|p| Some(p) != focused.as_ref());
+            let other_item = other.and_then(|p| self.item_at(&p));
+            let ql_item = if other_item.is_some() { other_item.as_ref() } else { item.as_ref() };
+            let ql_text = if self.ql.open { self.ql_text_for(ql_item) } else { None };
+            let env = super::ql::Env { t: &t, tex: &mut self.tex, host: self.prevhost.as_ref(), player: self.player.as_ref(), cfg: &mut self.cfg.quicklook, main: self.hwnd };
+            let model = super::ql::Model { item: ql_item, text: ql_text.as_deref(), group: &group, from_search };
+            for e in self.ql.show(&ctx, env, model) {
+                match e {
+                    super::ql::Event::Close => self.ql.close(),
+                    super::ql::Event::Open { path, is_dir } => actions.push(Action::Open { path, is_dir }),
+                    super::ql::Event::OpenWith(p) => {
+                        self.ql.close();
+                        actions.push(Action::OpenWith(p));
                     }
-                    let (open, want) = preview::quicklook(&ctx, &t, it, &mut self.tex, text.as_deref(), &mut self.ql_page.1, self.prevhost.as_ref(), &mut actions);
-                    if !open {
-                        self.quicklook = false;
-                    }
-                    // Con la vista rápida abierta, el visor va en ella (no en el panel).
-                    want_handler = want;
+                    super::ql::Event::Reveal(p) => actions.push(Action::Reveal(p)),
+                    super::ql::Event::Unblock(p) => actions.push(Action::Unblock(vec![p])),
+                    super::ql::Event::SaveCfg => self.save_cfg(),
                 }
-                None => self.quicklook = false,
             }
         }
 
@@ -4484,7 +4579,8 @@ impl eframe::App for App {
         }
 
         // ---- visor de Windows: se coloca donde se pidió; se oculta si algo queda encima
-        if let Some(host) = &self.prevhost {
+        // (mientras está en la ventana de la Vista rápida, es de ella)
+        if let Some(host) = self.prevhost.as_ref().filter(|_| !self.ql.holds_host()) {
             let covered = egui::Popup::is_any_open(&ctx)
                 || self.palette.open
                 || self.batch.is_some()

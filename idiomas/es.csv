@@ -822,3 +822,30 @@ app.contrasena_olvidada,Contraseña olvidada,,
 app.conectando,Conectando con «{nombre}»…,,{nombre} = el nombre de una conexión
 app.modo_copiar,Copiar,,modo al arrastrar con Ctrl
 app.modo_mover,Mover,,modo al arrastrar con Mayús
+rapida.abrir_con,Abrir con {app},,Botón del encabezado de la Vista rápida · {app} = el nombre de un programa («Fotos»)
+rapida.abrir_con_otro,Abrir con…,,Botón del encabezado de la Vista rápida cuando no hay programa predeterminado
+rapida.anterior,Anterior,,Tooltip: archivo anterior de la selección
+rapida.siguiente,Siguiente,,Tooltip: archivo siguiente de la selección
+rapida.maximizar,Maximizar,,Tooltip de la Vista rápida
+rapida.restaurar,Restaurar,,Tooltip de la Vista rápida
+rapida.miniaturas,Miniaturas,,Tooltip: mostrar u ocultar la tira de páginas del PDF
+rapida.encajar,Encajar,,Tooltip: volver a ver la imagen entera
+rapida.pagina_anterior,Página anterior,,Tooltip del paginador del PDF
+rapida.pagina_siguiente,Página siguiente,,Tooltip del paginador del PDF
+rapida.sin_seleccion,Sin selección,,Micro-etiqueta (se muestra en mayúsculas)
+rapida.cargando,Cargando,,Micro-etiqueta (se muestra en mayúsculas)
+rapida.solo_nube,Solo en la nube,,Subtítulo del encabezado (se muestra en mayúsculas)
+rapida.fotogramas_n.uno,{n} fotograma,,Cuando la cantidad es 1 · subtítulo de un GIF (se muestra en mayúsculas) · {n} = un número
+rapida.fotogramas_n.varios,{n} fotogramas,,Cuando la cantidad no es 1 · subtítulo de un GIF (se muestra en mayúsculas) · {n} = un número
+rapida.paginas_n.uno,{n} página,,Cuando la cantidad es 1 · subtítulo de un PDF (se muestra en mayúsculas) · {n} = un número
+rapida.paginas_n.varios,{n} páginas,,Cuando la cantidad no es 1 · subtítulo de un PDF (se muestra en mayúsculas) · {n} = un número
+rapida.reproducir,Reproducir,,"Tooltip de audio, video y GIF"
+rapida.pausar,Pausar,,"Tooltip de audio, video y GIF"
+rapida.silenciar,Silenciar,,Tooltip del botón de volumen
+rapida.activar_sonido,Activar sonido,,Tooltip del botón de volumen en silencio
+rapida.volumen,Volumen,,Tooltip del medidor de volumen
+rapida.no_reproduce,Windows no puede reproducir este formato,,Línea de estado sobre el póster de un video o audio
+rapida.pdf_no_abre,No se pudo abrir este PDF,,Línea de estado: PDF protegido o dañado
+rapida.primeros_kb,Se muestran los primeros {n} KB,,Micro-etiqueta al final de un texto largo (se muestra en mayúsculas) · {n} = un número
+cmd.ql_autoplay,Vista rápida: reproducir al abrir,,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.ql_autoplay.buscar,sonido audio video musica automatico autoplay,,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"

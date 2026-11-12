@@ -19,7 +19,7 @@ const DRIVE_METER_Y: f32 = 29.0;
 
 /// Botón de ícono de 28×28 (barra de herramientas, pie de la barra lateral, terminal).
 pub fn icon_btn(ui: &mut Ui, t: &Theme, icon: &str, enabled: bool, on: bool, tip: &str) -> Response {
-    let resp = design::icon_button(ui, t, icon, IconBtn { mini: false, on, enabled });
+    let resp = design::icon_button(ui, t, icon, IconBtn { mini: false, on, enabled, nav: false });
     design::tip(resp, t, tip)
 }
 

@@ -385,6 +385,8 @@ pub struct ThumbLoader {
 /// Hilos para miniaturas (además del de la vista previa): leer una foto de cámara cuesta
 /// ~90 ms aunque se decodifique reducida, así que conviene repartir.
 const WORKERS: usize = 3;
+/// Cuadros sin pedirse tras los que se olvida un pedido urgente.
+const URGENT_FRAMES: u64 = 60;
 
 impl ThumbLoader {
     pub fn new(wake: Arc<dyn Fn() + Send + Sync>) -> Arc<Self> {
@@ -404,10 +406,17 @@ impl ThumbLoader {
                             let (lock, cv) = &*queue;
                             let mut q = lock.lock();
                             loop {
-                                // Olvidar lo que hace unos cuadros que no se pide.
+                                // Olvidar lo que hace unos cuadros que no se pide (lo urgente, tras
+                                // un segundo: las páginas de un PDF que se pasaron de largo).
                                 let now = frame.load(std::sync::atomic::Ordering::Relaxed);
-                                q.wanted.retain(|_, w| w.urgent || w.frame + 2 >= now);
-                                let pick = q.wanted.iter().filter(|(_, w)| !urgent_only || w.urgent).min_by_key(|(_, w)| (!w.urgent, w.first)).map(|(k, _)| k.clone());
+                                q.wanted.retain(|_, w| w.frame + if w.urgent { URGENT_FRAMES } else { 2 } >= now);
+                                // Primero lo urgente, y lo que se sigue pidiendo antes que lo que se pidió hace rato.
+                                let pick = q
+                                    .wanted
+                                    .iter()
+                                    .filter(|(_, w)| !urgent_only || w.urgent)
+                                    .min_by_key(|(_, w)| (!w.urgent, std::cmp::Reverse(w.frame), w.first))
+                                    .map(|(k, _)| k.clone());
                                 if let Some(k) = pick {
                                     q.wanted.remove(&k);
                                     q.busy.insert(k.clone());
@@ -801,6 +810,7 @@ mod icon_tests {
     /// transparencia (para los íconos de las listas).
     #[test]
     fn shell_gives_icons() {
+        let _shell = crate::shell_test_lock();
         super::super::shell::com_init();
         let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
         let exe = shell_image(&format!(r"{windir}\notepad.exe"), 32, true).expect("ícono de notepad.exe");

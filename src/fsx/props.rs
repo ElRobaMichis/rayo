@@ -39,6 +39,10 @@ pub struct Info {
     pub comment: String,
     /// Calificación de Windows (0, 1, 25, 50, 75 o 99 = 0 a 5 estrellas).
     pub rating: u32,
+    /// Audio: muestras por segundo (Hz) y calidad en bits por segundo, como números (la Vista
+    /// rápida los escribe a su modo: «48 kHz · 1411 kbps»).
+    pub sample_rate: Option<u64>,
+    pub bitrate: Option<u64>,
 }
 
 /// Tipos en los que Windows guarda título, comentarios y calificación dentro del archivo.
@@ -201,6 +205,7 @@ fn read(path: &str) -> Info {
     let mut dims = None;
     let editable = EDITABLE.contains(&ext.as_str());
     let (mut title, mut comment, mut rating) = (String::new(), String::new(), 0u32);
+    let (mut sample_rate, mut bitrate) = (None, None);
     if editable {
         if let Some(store) = Store::open(path) {
             title = store.text("System.Title").unwrap_or_default();
@@ -247,10 +252,12 @@ fn read(path: &str) -> Info {
                 rows.extend(store.get("System.Music.Artist").or_else(|| store.get("System.Music.AlbumArtist")).map(|a| (Field::Artist, a)));
                 rows.extend(store.get("System.Music.AlbumTitle").map(|a| (Field::Album, a)));
                 rows.extend(store.get("System.Audio.EncodingBitrate").map(|b| (Field::Bitrate, b)));
+                sample_rate = store.number("System.Audio.SampleRate");
+                bitrate = store.number("System.Audio.EncodingBitrate");
             }
         }
     }
-    Info { rows, blocked, dims, editable, title, comment, rating }
+    Info { rows, blocked, dims, editable, title, comment, rating, sample_rate, bitrate }
 }
 
 struct Store(windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore);
@@ -324,6 +331,7 @@ mod tests {
     /// Un archivo con la marca de Internet se reconoce y se desbloquea (también dentro de carpetas).
     #[test]
     fn unblocks_downloaded_files() {
+        let _shell = crate::shell_test_lock();
         let d = std::env::temp_dir().join(format!("rayo-props-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("sub")).unwrap();
@@ -346,6 +354,7 @@ mod tests {
     /// Windows sabe la duración de un sonido del sistema.
     #[test]
     fn reads_audio_duration() {
+        let _shell = crate::shell_test_lock();
         let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
         let wav = format!(r"{windir}\Media\Windows Notify System Generic.wav");
         if !std::path::Path::new(&wav).exists() {
@@ -360,6 +369,7 @@ mod tests {
     /// Título, comentario y calificación se escriben en el archivo y se vuelven a leer.
     #[test]
     fn writes_title_comment_and_rating() {
+        let _shell = crate::shell_test_lock();
         super::super::shell::com_init();
         let p = std::env::temp_dir().join(format!("rayo-meta-{}.jpg", std::process::id()));
         std::fs::write(&p, include_bytes!("testdata/foto.jpg")).unwrap();

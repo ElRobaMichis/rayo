@@ -28,6 +28,14 @@ macro_rules! tp {
     }};
 }
 
+/// Pruebas que usan la shell de Windows (íconos del sistema, propiedades, asociaciones): esas
+/// partes comparten estado por proceso y fallan a veces si dos pruebas las usan a la vez.
+#[cfg(test)]
+pub(crate) fn shell_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub mod admin;
 pub mod diag;
 pub mod fsx;

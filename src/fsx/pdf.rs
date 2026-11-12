@@ -2,6 +2,9 @@
 //! (`Windows.Data.Pdf`, el mismo de Edge): sin programas externos.
 
 use super::thumbs::Rgba;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use windows::Data::Pdf::PdfDocument;
 
 /// Separador entre la ruta y el número de página en las claves de miniatura
 /// (`C:\doc.pdf|3`). `|` no puede aparecer en una ruta de Windows.
@@ -12,28 +15,114 @@ pub fn page_key(path: &str, page: u32) -> String {
     if page == 0 { path.to_string() } else { format!("{path}{PAGE_SEP}{page}") }
 }
 
+/// Sin uso por este tiempo, el documento abierto se suelta solo.
+const IDLE: Duration = Duration::from_secs(10);
+
+/// El último documento abierto: la Vista rápida pide decenas de páginas del mismo (tira de
+/// miniaturas, páginas continuas) y abrirlo cada vez cuesta. Mientras está abierto, Windows puede
+/// no dejar borrar el archivo: `forget` antes de borrar, mover o renombrar.
+struct Session {
+    path: String,
+    doc: PdfDocument,
+    used: Instant,
+}
+
+static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+
+fn session() -> std::sync::MutexGuard<'static, Option<Session>> {
+    SESSION.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Suelta el documento si es ese (al cerrar la Vista rápida, al pasar a otro archivo, antes de
+/// borrarlo).
+pub fn forget(path: &str) {
+    let old = {
+        let mut s = session();
+        if s.as_ref().is_some_and(|s| s.path == path) { s.take() } else { None }
+    };
+    drop(old);
+}
+
+/// El documento abierto (de la sesión, o lo abre y lo deja en ella). En un hilo multihilo de COM.
+fn document(path: &str) -> Option<PdfDocument> {
+    use windows::Storage::StorageFile;
+    use windows::core::HSTRING;
+    if let Some(s) = session().as_mut().filter(|s| s.path == path) {
+        s.used = Instant::now();
+        return Some(s.doc.clone());
+    }
+    let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path)).ok()?.join().ok()?;
+    let doc = PdfDocument::LoadFromFileAsync(&file).ok()?.join().ok()?;
+    let old = session().replace(Session { path: path.to_string(), doc: doc.clone(), used: Instant::now() });
+    drop(old);
+    janitor();
+    Some(doc)
+}
+
+/// Un hilo que suelta el documento tras `IDLE` sin uso.
+fn janitor() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = std::thread::Builder::new().name("pdf-sesion".into()).spawn(|| {
+            mta();
+            loop {
+                std::thread::sleep(Duration::from_secs(2));
+                let old = {
+                    let mut s = session();
+                    if s.as_ref().is_some_and(|s| s.used.elapsed() > IDLE) { s.take() } else { None }
+                };
+                drop(old);
+            }
+        });
+    });
+}
+
+fn mta() {
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
+}
+
+/// WinRT con espera bloqueante: en un hilo propio del modelo multihilo de COM.
+fn in_mta<T: Send>(f: impl FnOnce() -> Option<T> + Send) -> Option<T> {
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            mta();
+            f()
+        })
+        .join()
+        .ok()
+        .flatten()
+    })
+}
+
+/// Ancho y alto de cada página (en DIP, como `Rgba::orig`). Para el diseño continuo: el alto de
+/// cada página antes de dibujarla. Puede tardar con cientos de páginas: en segundo plano.
+pub fn sizes(path: &str) -> Option<Vec<(f32, f32)>> {
+    if super::is_online_only(path) {
+        return None;
+    }
+    in_mta(|| {
+        let doc = document(path)?;
+        let n = doc.PageCount().ok()?;
+        (0..n).map(|i| doc.GetPage(i).ok()?.Size().ok().map(|s| (s.Width, s.Height))).collect()
+    })
+}
+
 /// Dibuja una página (desde 0) con su lado mayor de `max_side` píxeles.
 /// Devuelve la imagen y la cantidad de páginas.
 pub fn render(path: &str, page: u32, max_side: u32) -> Option<(Rgba, u32)> {
     if super::is_online_only(path) {
         return None;
     }
-    // WinRT con espera bloqueante: en un hilo propio del modelo multihilo de COM.
-    let path = path.to_string();
-    std::thread::scope(|s| s.spawn(move || render_mta(&path, page, max_side)).join().ok().flatten())
+    in_mta(|| render_mta(path, page, max_side))
 }
 
 fn render_mta(path: &str, page: u32, max_side: u32) -> Option<(Rgba, u32)> {
-    use windows::Data::Pdf::{PdfDocument, PdfPageRenderOptions};
-    use windows::Storage::StorageFile;
+    use windows::Data::Pdf::PdfPageRenderOptions;
     use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
-    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
-    use windows::core::HSTRING;
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-    }
-    let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path)).ok()?.join().ok()?;
-    let doc = PdfDocument::LoadFromFileAsync(&file).ok()?.join().ok()?;
+    let doc = document(path)?;
     let pages = doc.PageCount().ok()?;
     if pages == 0 {
         return None;
@@ -108,6 +197,23 @@ pub mod tests {
         // Hay texto negro sobre blanco.
         assert!(img.px.chunks_exact(4).any(|p| p[0] < 80));
         assert!(img.px.chunks_exact(4).filter(|p| p[0] > 240).count() > img.px.len() / 8);
+        super::forget(&p);
         let _ = std::fs::remove_file(path);
+    }
+
+    /// Medidas de todas las páginas desde la sesión, y `forget` suelta el archivo.
+    #[test]
+    fn sizes_and_forget() {
+        let path = std::env::temp_dir().join(format!("rayo-pdf-sizes-{}.pdf", std::process::id()));
+        std::fs::write(&path, tiny_pdf(4)).unwrap();
+        let p = path.to_string_lossy().into_owned();
+        let s = super::sizes(&p).expect("medidas");
+        assert_eq!(s.len(), 4);
+        // En DIP (96 por pulgada): A4 vertical, 595 × 842 puntos.
+        assert!(s.iter().all(|&(w, h)| (w - 595.0 * 96.0 / 72.0).abs() < 1.0 && (h / w - 842.0 / 595.0).abs() < 0.01), "{s:?}");
+        // La sesión sigue abierta: otra página sale del mismo documento.
+        assert_eq!(super::render(&p, 3, 200).map(|(_, n)| n), Some(4));
+        super::forget(&p);
+        std::fs::remove_file(&path).expect("tras forget el archivo se puede borrar");
     }
 }

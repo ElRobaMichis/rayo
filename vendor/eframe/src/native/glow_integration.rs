@@ -104,6 +104,8 @@ struct GlutinWindowContext {
     egui_ctx: egui::Context,
 
     swap_interval: glutin::surface::SwapInterval,
+    /// Rayo: el intervalo que se le dio al driver la última vez (ver `apply_swap_interval`).
+    applied_swap_interval: Option<glutin::surface::SwapInterval>,
     gl_config: glutin::config::Config,
 
     max_texture_side: Option<usize>,
@@ -761,10 +763,12 @@ impl GlowWinitRunning<'_> {
 
         glutin.remove_viewports_not_in(&viewport_output);
 
+        let swap_interval = swap_interval_for(glutin.swap_interval, viewport_id);
         let GlutinWindowContext {
             viewports,
             current_gl_context,
             not_current_gl_context,
+            applied_swap_interval,
             ..
         } = &mut *glutin;
 
@@ -849,6 +853,7 @@ impl GlowWinitRunning<'_> {
                     )
                 })?;
 
+                apply_swap_interval(gl_surface, context, swap_interval, applied_swap_interval);
                 // Rayo: si Windows rechaza el cambio de búfer, se pierde este cuadro, no la app.
                 if let Err(err) = gl_surface.swap_buffers(context) {
                     log::error!("swap_buffers failed: {err}");
@@ -1042,6 +1047,39 @@ fn change_gl_context(
     *current_gl_context = Some(not_current.make_current(gl_surface).unwrap());
 }
 
+/// Rayo: le da al driver el intervalo de esta ventana si no es el último que recibió. En WGL
+/// unos drivers lo guardan por ventana y otros por contexto (y todas las ventanas comparten
+/// uno): reaplicarlo al cambiar de ventana sirve en los dos casos y cuesta una llamada.
+fn apply_swap_interval(
+    gl_surface: &glutin::surface::Surface<glutin::surface::WindowSurface>,
+    context: &glutin::context::PossiblyCurrentContext,
+    want: glutin::surface::SwapInterval,
+    applied: &mut Option<glutin::surface::SwapInterval>,
+) {
+    use glutin::prelude::*;
+    if *applied == Some(want) {
+        return;
+    }
+    if let Err(err) = gl_surface.set_swap_interval(context, want) {
+        log::warn!("Failed to set swap interval due to error: {err}");
+    }
+    // Aunque falle: no se reintenta en cada cuadro.
+    *applied = Some(want);
+}
+
+/// Rayo: solo la ventana raíz espera al monitor. Con vsync en dos ventanas (la principal y la
+/// Vista rápida, o un menú) cada cuadro esperaría dos veces y todo iría a la mitad.
+fn swap_interval_for(
+    root: glutin::surface::SwapInterval,
+    viewport_id: ViewportId,
+) -> glutin::surface::SwapInterval {
+    if viewport_id == ViewportId::ROOT {
+        root
+    } else {
+        glutin::surface::SwapInterval::DontWait
+    }
+}
+
 impl GlutinWindowContext {
     #[expect(unsafe_code)]
     unsafe fn new(
@@ -1220,6 +1258,7 @@ impl GlutinWindowContext {
         let mut slf = Self {
             egui_ctx: egui_ctx.clone(),
             swap_interval,
+            applied_swap_interval: None,
             gl_config,
             current_gl_context: None,
             not_current_gl_context,
@@ -1366,10 +1405,9 @@ impl GlutinWindowContext {
 
             // try setting swap interval. but its not absolutely necessary, so don't panic on failure.
             log::trace!("made context current. setting swap interval for surface");
-            if let Err(err) = gl_surface.set_swap_interval(&current_gl_context, self.swap_interval)
-            {
-                log::warn!("Failed to set swap interval due to error: {err}");
-            }
+            let interval = swap_interval_for(self.swap_interval, viewport_id);
+            self.applied_swap_interval = None;
+            apply_swap_interval(&gl_surface, &current_gl_context, interval, &mut self.applied_swap_interval);
 
             // we will reach this point only once in most platforms except android.
             // create window/surface/make context current once and just use them forever.
@@ -1686,10 +1724,12 @@ fn render_immediate_viewport(
 
     let mut glutin = glutin.borrow_mut();
 
+    let swap_interval = swap_interval_for(glutin.swap_interval, viewport_id);
     let GlutinWindowContext {
         current_gl_context,
         not_current_gl_context,
         viewports,
+        applied_swap_interval,
         ..
     } = &mut *glutin;
 
@@ -1738,6 +1778,7 @@ fn render_immediate_viewport(
 
     {
         profiling::scope!("swap_buffers");
+        apply_swap_interval(gl_surface, current_gl_context, swap_interval, applied_swap_interval);
         if let Err(err) = gl_surface.swap_buffers(current_gl_context) {
             log::error!("swap_buffers failed: {err}");
         }

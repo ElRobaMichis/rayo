@@ -529,17 +529,25 @@ pub struct IconBtn {
     /// Encendido: capa gris e ícono en acento.
     pub on: bool,
     pub enabled: bool,
+    /// Navegación (‹ › de la Vista rápida, paginador del PDF): mini, pero `dim` en reposo y glifo
+    /// de 14 (`faint` a 12 se leía como deshabilitado al lado de los botones de 28).
+    pub nav: bool,
 }
 
 impl Default for IconBtn {
     fn default() -> Self {
-        IconBtn { mini: false, on: false, enabled: true }
+        IconBtn { mini: false, on: false, enabled: true, nav: false }
     }
 }
 
 impl IconBtn {
     pub fn mini() -> Self {
         IconBtn { mini: true, ..Default::default() }
+    }
+
+    /// Mini de navegación (ver `nav`).
+    pub fn nav(enabled: bool) -> Self {
+        IconBtn { mini: true, nav: true, enabled, ..Default::default() }
     }
 }
 
@@ -563,12 +571,19 @@ pub fn icon_button_at(ui: &mut Ui, t: &Theme, rect: Rect, id: Id, icon_glyph: &s
         t.accent
     } else if r.hovered() {
         t.text
-    } else if o.mini {
+    } else if o.mini && !o.nav {
         t.faint
     } else {
         t.dim
     };
-    p.text(rect.center(), Align2::CENTER_CENTER, icon_glyph, icon_font(if o.mini { icon::S } else { icon::M }), color);
+    let size = if o.nav {
+        icon::CAPTION
+    } else if o.mini {
+        icon::S
+    } else {
+        icon::M
+    };
+    p.text(rect.center(), Align2::CENTER_CENTER, icon_glyph, icon_font(size), color);
     r
 }
 
@@ -1150,11 +1165,25 @@ pub fn tip(resp: Response, t: &Theme, text: &str) -> Response {
 
 /// Tooltip con el atajo como tecla en línea al final («Ctrl 2»).
 pub fn tip_keys(resp: Response, t: &Theme, text: &str, keys: &str) -> Response {
+    tip_keys_at(resp, t, text, keys, None)
+}
+
+/// Como `tip_keys`, pero siempre a un costado del control (`RectAlign::LEFT` o `RIGHT`), sin
+/// probar otros lados: para cuando arriba y abajo hay una ventana nativa que lo taparía (video
+/// o visor de Windows en la Vista rápida).
+pub fn tip_keys_beside(resp: Response, t: &Theme, text: &str, keys: &str, side: egui::RectAlign) -> Response {
+    tip_keys_at(resp, t, text, keys, Some(side))
+}
+
+fn tip_keys_at(resp: Response, t: &Theme, text: &str, keys: &str, side: Option<egui::RectAlign>) -> Response {
     if text.is_empty() && keys.is_empty() {
         return resp;
     }
     let mut tt = egui::Tooltip::for_enabled(&resp);
     tt.popup = tt.popup.frame(tooltip_frame(t));
+    if let Some(a) = side {
+        tt.popup = tt.popup.align(a).align_alternatives(&[]).gap(sp::XS);
+    }
     tt.show(|ui| {
         let p = ui.painter().clone();
         let gap = if text.is_empty() || keys.is_empty() { 0.0 } else { sp::S };

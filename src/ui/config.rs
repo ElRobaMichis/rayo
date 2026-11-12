@@ -144,6 +144,29 @@ pub struct Config {
     pub active_bottom_left: usize,
     pub tabs_bottom_right: Vec<String>,
     pub active_bottom_right: usize,
+    /// Vista rápida: lugar, tira de páginas y sonido.
+    pub quicklook: QuickLookCfg,
+}
+
+/// Lo que la Vista rápida recuerda.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QuickLookCfg {
+    /// Rectángulo exterior sin maximizar, en píxeles de pantalla (x, y, ancho, alto). None = nunca se abrió.
+    pub rect: Option<[i32; 4]>,
+    /// Tira de miniaturas del PDF.
+    pub strip: bool,
+    /// Volumen de audio y video (0 a 1).
+    pub volume: f32,
+    pub muted: bool,
+    /// Audio y video empiezan a sonar solos al abrir.
+    pub autoplay: bool,
+}
+
+impl Default for QuickLookCfg {
+    fn default() -> Self {
+        QuickLookCfg { rect: None, strip: true, volume: 0.6, muted: false, autoplay: true }
+    }
 }
 
 fn spanish_before_languages() -> Option<String> {
@@ -199,6 +222,7 @@ impl Default for Config {
             active_bottom_left: 0,
             tabs_bottom_right: Vec::new(),
             active_bottom_right: 0,
+            quicklook: QuickLookCfg::default(),
         }
     }
 }
@@ -281,6 +305,7 @@ mod tests {
         assert_eq!(c.folder_views.len(), 1);
         assert_eq!(c.columns.date, 210.0);
         assert_eq!(c.lang.as_deref(), Some("es"));
+        assert_eq!(c.quicklook, QuickLookCfg::default());
     }
 
     /// Un ajuste que no se entiende vuelve a su valor original; lo demás se conserva.

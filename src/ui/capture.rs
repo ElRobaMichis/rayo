@@ -127,6 +127,28 @@ pub fn inline_menus() -> bool {
     target().is_some()
 }
 
+/// La Vista rápida también va en su propia ventana: capturando, se dibuja dentro de la principal.
+pub fn inline_windows() -> bool {
+    target().is_some()
+}
+
+static QL_RECT: parking_lot::Mutex<Option<egui::Rect>> = parking_lot::Mutex::new(None);
+
+/// Otro lugar para la Vista rápida en esta captura (p. ej. angosta).
+pub fn set_ql_rect(r: egui::Rect) {
+    *QL_RECT.lock() = Some(r);
+}
+
+/// Dónde va la Vista rápida en la captura (`RAYO_CAPTURA_QL="x,y,ancho,alto"`, en puntos).
+pub fn ql_rect() -> Option<egui::Rect> {
+    if let Some(r) = *QL_RECT.lock() {
+        return Some(r);
+    }
+    let v = std::env::var("RAYO_CAPTURA_QL").ok()?;
+    let n: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    (n.len() == 4 && n[2] > 0.0 && n[3] > 0.0).then(|| egui::Rect::from_min_size(egui::pos2(n[0], n[1]), egui::vec2(n[2], n[3])))
+}
+
 /// Una vez por cuadro.
 pub fn tick(ctx: &egui::Context) {
     let Some((path, wait)) = target() else { return };

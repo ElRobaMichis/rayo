@@ -181,7 +181,34 @@ impl App {
             "nueva-carpeta" => self.apply(ctx, Action::NewFolder(folder.clone())),
             "descarga" => self.cap_select(ctx, &["mapa-kioto.pdf.crdownload"]),
             // ---- vista previa
-            "vistarapida" => self.quicklook = true,
+            "vistarapida" => {
+                if !self.ql.open {
+                    self.ql.toggle();
+                }
+            }
+            // La Vista rápida con cada tipo (los archivos que no son de siempre los arma el script).
+            "ql-imagen" | "ql-gif" | "ql-pdf" | "ql-audio" | "ql-video" | "ql-texto" | "ql-carpeta" | "ql-varios" | "ql-angosta" => {
+                let names: &[&str] = match step {
+                    "ql-gif" => &["sakura.gif"],
+                    "ql-pdf" => &["reservas-hoteles.pdf"],
+                    "ql-audio" => &["campanas-kioto.wav"],
+                    "ql-video" => &["atardecer-osaka.mp4"],
+                    "ql-texto" => &["itinerario.md"],
+                    "ql-carpeta" => &["Kioto"],
+                    "ql-varios" => &["arashiyama-bambu.jpg", "itinerario.md", "torii-fushimi.jpg"],
+                    _ => &["torii-fushimi.jpg"],
+                };
+                self.cap_select(ctx, names);
+                if step == "ql-angosta" {
+                    // Por debajo de 540: «Abrir con» solo ícono.
+                    let screen = ctx.content_rect();
+                    let size = vec2(440.0, 380.0);
+                    capture::set_ql_rect(egui::Rect::from_min_size(screen.max - size - vec2(24.0, 48.0), size));
+                }
+                if !self.ql.open {
+                    self.ql.toggle();
+                }
+            }
             "markdown" => self.cap_select(ctx, &["itinerario.md"]),
             "pdf" => self.cap_select(ctx, &["reservas-hoteles.pdf"]),
             "red" => {

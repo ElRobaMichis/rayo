@@ -828,3 +828,30 @@ app.contrasena_olvidada,Password forgotten,Contraseña olvidada,
 app.conectando,Connecting to “{nombre}”…,Conectando con «{nombre}»…,{nombre} = el nombre de una conexión
 app.modo_copiar,Copy,Copiar,modo al arrastrar con Ctrl
 app.modo_mover,Move,Mover,modo al arrastrar con Mayús
+rapida.abrir_con,Open with {app},Abrir con {app},Botón del encabezado de la Vista rápida · {app} = el nombre de un programa («Fotos»)
+rapida.abrir_con_otro,Open with…,Abrir con…,Botón del encabezado de la Vista rápida cuando no hay programa predeterminado
+rapida.anterior,Previous,Anterior,Tooltip: archivo anterior de la selección
+rapida.siguiente,Next,Siguiente,Tooltip: archivo siguiente de la selección
+rapida.maximizar,Maximize,Maximizar,Tooltip de la Vista rápida
+rapida.restaurar,Restore,Restaurar,Tooltip de la Vista rápida
+rapida.miniaturas,Thumbnails,Miniaturas,Tooltip: mostrar u ocultar la tira de páginas del PDF
+rapida.encajar,Fit,Encajar,Tooltip: volver a ver la imagen entera
+rapida.pagina_anterior,Previous page,Página anterior,Tooltip del paginador del PDF
+rapida.pagina_siguiente,Next page,Página siguiente,Tooltip del paginador del PDF
+rapida.sin_seleccion,No selection,Sin selección,Micro-etiqueta (se muestra en mayúsculas)
+rapida.cargando,Loading,Cargando,Micro-etiqueta (se muestra en mayúsculas)
+rapida.solo_nube,Online only,Solo en la nube,Subtítulo del encabezado (se muestra en mayúsculas)
+rapida.fotogramas_n.uno,{n} frame,{n} fotograma,Cuando la cantidad es 1 · subtítulo de un GIF (se muestra en mayúsculas) · {n} = un número
+rapida.fotogramas_n.varios,{n} frames,{n} fotogramas,Cuando la cantidad no es 1 · subtítulo de un GIF (se muestra en mayúsculas) · {n} = un número
+rapida.paginas_n.uno,{n} page,{n} página,Cuando la cantidad es 1 · subtítulo de un PDF (se muestra en mayúsculas) · {n} = un número
+rapida.paginas_n.varios,{n} pages,{n} páginas,Cuando la cantidad no es 1 · subtítulo de un PDF (se muestra en mayúsculas) · {n} = un número
+rapida.reproducir,Play,Reproducir,"Tooltip de audio, video y GIF"
+rapida.pausar,Pause,Pausar,"Tooltip de audio, video y GIF"
+rapida.silenciar,Mute,Silenciar,Tooltip del botón de volumen
+rapida.activar_sonido,Unmute,Activar sonido,Tooltip del botón de volumen en silencio
+rapida.volumen,Volume,Volumen,Tooltip del medidor de volumen
+rapida.no_reproduce,Windows can't play this format,Windows no puede reproducir este formato,Línea de estado sobre el póster de un video o audio
+rapida.pdf_no_abre,This PDF couldn't be opened,No se pudo abrir este PDF,Línea de estado: PDF protegido o dañado
+rapida.primeros_kb,Showing the first {n} KB,Se muestran los primeros {n} KB,Micro-etiqueta al final de un texto largo (se muestra en mayúsculas) · {n} = un número
+cmd.ql_autoplay,Quick look: play on open,Vista rápida: reproducir al abrir,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.ql_autoplay.buscar,sound audio video music autoplay automatic,sonido audio video musica automatico autoplay,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"

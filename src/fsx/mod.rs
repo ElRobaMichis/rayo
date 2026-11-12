@@ -23,6 +23,9 @@ pub mod locks;
 pub mod props;
 pub mod tags;
 pub mod ctxmenu;
+pub mod anim;
+pub mod media;
+pub mod assoc;
 
 use crate::index::store::filetime_to_unix;
 use crate::index::walk::wide;

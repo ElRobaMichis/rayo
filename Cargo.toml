@@ -86,6 +86,7 @@ features = [
     "Win32_Graphics_Imaging",
     "Win32_Graphics_Dwm",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_Media_MediaFoundation",
     "Data_Pdf",
     "Storage",
     "Storage_Streams",

@@ -144,6 +144,76 @@ if (Pide "red") {
     $env:RAYO_CAPTURA_RED = $red
 }
 
+# ---- Vista rápida (pasos ql-*): un GIF, un PDF de varias páginas, un audio, un video, un Markdown
+if (Pide "ql-pdf") {
+    # Tres páginas (la tira de miniaturas y el paginador necesitan más de una).
+    $enc = [Text.Encoding]::GetEncoding(1252)
+    $titulos = @("Tokio - Hotel Shinjuku", "Hakone - Ryokan Fuji-ya", "Kioto - Gion Machiya")
+    $objs = @("<< /Type /Catalog /Pages 2 0 R >>", "")
+    $kids = @()
+    for ($i = 0; $i -lt $titulos.Count; $i++) {
+        $page = 3 + $i * 2
+        $kids += "$page 0 R"
+        $c = "0.16 0.38 0.85 rg 0 752 595 90 re f`n1 1 1 rg BT /F1 26 Tf 50 790 Td (Reserva $($i + 1) de 3) Tj ET`n" +
+            "0.1 0.1 0.1 rg BT /F1 18 Tf 50 700 Td ($($titulos[$i])) Tj ET`n" +
+            "0.3 0.3 0.3 rg BT /F2 12 Tf 50 670 Td (Check-in desde las 15:00. Desayuno incluido.) Tj ET`n" +
+            "0.9 0.9 0.9 rg 50 420 495 200 re f`n"
+        $objs += "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 $(3 + $titulos.Count * 2) 0 R /F2 $(4 + $titulos.Count * 2) 0 R >> >> /Contents $($page + 1) 0 R >>"
+        $objs += "<< /Length $($enc.GetByteCount($c)) >>`nstream`n$c" + "endstream"
+    }
+    $objs[1] = "<< /Type /Pages /Kids [$($kids -join ' ')] /Count $($titulos.Count) >>"
+    $objs += "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"
+    $objs += "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+    $pdf = "%PDF-1.4`n"
+    $offs = @()
+    for ($i = 0; $i -lt $objs.Count; $i++) {
+        $offs += $enc.GetByteCount($pdf)
+        $pdf += "$($i + 1) 0 obj`n$($objs[$i])`nendobj`n"
+    }
+    $xref = $enc.GetByteCount($pdf)
+    $pdf += "xref`n0 $($objs.Count + 1)`n0000000000 65535 f `n"
+    foreach ($o in $offs) { $pdf += ('{0:D10} 00000 n ' -f $o) + "`n" }
+    $pdf += "trailer`n<< /Size $($objs.Count + 1) /Root 1 0 R >>`nstartxref`n$xref`n%%EOF`n"
+    [IO.File]::WriteAllBytes((Join-Path $folder "reservas-hoteles.pdf"), $enc.GetBytes($pdf))
+}
+if (Pide "ql-audio") {
+    # Tres segundos de campanas (dos senos que se apagan), WAV de 16 bits.
+    $rate = 22050; $n = $rate * 3
+    $ms = New-Object IO.MemoryStream
+    $bw = New-Object IO.BinaryWriter $ms
+    $bw.Write([Text.Encoding]::ASCII.GetBytes("RIFF")); $bw.Write([int](36 + $n * 2)); $bw.Write([Text.Encoding]::ASCII.GetBytes("WAVEfmt "))
+    $bw.Write([int]16); $bw.Write([int16]1); $bw.Write([int16]1); $bw.Write([int]$rate); $bw.Write([int]($rate * 2)); $bw.Write([int16]2); $bw.Write([int16]16)
+    $bw.Write([Text.Encoding]::ASCII.GetBytes("data")); $bw.Write([int]($n * 2))
+    for ($i = 0; $i -lt $n; $i++) {
+        $t = $i / $rate
+        $v = [Math]::Exp(-1.2 * ($t % 1.5)) * (0.5 * [Math]::Sin(2 * [Math]::PI * 523.25 * $t) + 0.3 * [Math]::Sin(2 * [Math]::PI * 784 * $t))
+        $bw.Write([int16]($v * 9000))
+    }
+    $bw.Flush()
+    [IO.File]::WriteAllBytes((Join-Path $folder "campanas-kioto.wav"), $ms.ToArray())
+}
+$ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
+if ((Pide "ql-gif") -or (Pide "ql-video")) {
+    # Con ffmpeg (si está): un GIF animado y un video corto. Sin él, archivos que no se pueden
+    # reproducir (se ve el caso «sin vista previa» / «Windows no puede reproducir»).
+    $gif = Join-Path $folder "sakura.gif"
+    $mp4 = Join-Path $folder "atardecer-osaka.mp4"
+    if ($ffmpeg) {
+        if (Pide "ql-gif") { & $ffmpeg.Source -loglevel error -y -f lavfi -i "gradients=s=480x270:d=2:speed=0.03:c0=0xf8bbd0:c1=0x9cc7e8:c2=0xe9a9c4,fps=12" -loop 0 $gif 2>&1 | Out-Null }
+        if (Pide "ql-video") { & $ffmpeg.Source -loglevel error -y -f lavfi -i "gradients=s=1280x720:d=8:speed=0.01:c0=0x27214f:c1=0x7b2d5b:c2=0x0b1026" -f lavfi -i "sine=f=330:d=8" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest $mp4 2>&1 | Out-Null }
+    }
+    if ((Pide "ql-gif") -and -not (Test-Path $gif)) { Copy-Item $foto $gif }
+    if ((Pide "ql-video") -and -not (Test-Path $mp4)) { Set-Content -Path $mp4 -Value ("x" * 200000) }
+}
+if (Pide "ql-texto") {
+    $md = "# Japón 2026`n`nDoce noches entre **Tokio**, *Hakone* y Kioto.`n`n## Itinerario`n`n" +
+        "1. Día 1: llegada a Tokio, Shibuya de noche`n2. Día 3: Hakone, ryokan con onsen`n3. Día 4: Kioto, Fushimi Inari al amanecer`n`n" +
+        "## Pendientes`n`n- [x] Pasaportes`n- [ ] JR Pass (``7 días``)`n- [ ] Adaptador tipo A`n`n" +
+        "> Reservar el tren bala con tiempo en temporada de sakura.`n`n" +
+        "| Ciudad | Noches | Hotel |`n|---|---|---|`n| Tokio | 4 | Shinjuku |`n| Hakone | 2 | Ryokan |`n| Kioto | 6 | Gion |`n"
+    Escribe (Join-Path $folder "itinerario.md") $md
+}
+
 $cfg = Get-Content "$PSScriptRoot\..\src\ui\testdata\config-0.2.4.json" -Raw | ConvertFrom-Json
 # Asignar aunque la configuración de prueba no traiga esa propiedad.
 function Pon($name, $value) { $cfg | Add-Member -NotePropertyName $name -NotePropertyValue $value -Force }

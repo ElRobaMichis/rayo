@@ -1,14 +1,14 @@
 //! Panel de vista previa y Quick Look (barra espaciadora).
 
 use super::actions::Action;
-use super::design::{self, IconBtn, h, icon, radius, sp, stroke};
+use super::design::{self, h, icon, radius, sp, stroke};
 use super::icons;
 use super::theme::Theme;
 use crate::fsx::thumbs::{Rgba, ThumbKey, ThumbLoader, is_image_ext};
 use crate::fsx::{self, FileEntry};
-use egui::{Align2, Color32, ColorImage, CornerRadius, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, pos2, vec2};
+use egui::{Align2, Color32, ColorImage, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, pos2, vec2};
 use egui_phosphor::regular as ic;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct TexEntry {
@@ -23,6 +23,10 @@ pub struct TexEntry {
     /// El ícono del tipo que da Windows cuando no tiene la miniatura: un dibujo chico centrado en
     /// un lienzo vacío (un 48 en 256). En una foto no es su miniatura: ver `get_photo`.
     pub icon: bool,
+    /// Bytes que cuenta para el tope (solo las grandes); cuándo se usó por última vez; orden de llegada.
+    bytes: usize,
+    used: u64,
+    seq: u64,
 }
 
 /// Cómo es una imagen recibida: (opaca, ícono en un lienzo vacío). Mira una muestra de ~64×64
@@ -52,23 +56,31 @@ fn shape(img: &Rgba) -> (bool, bool) {
     (opaque, icon)
 }
 
-/// Texturas de miniaturas con desalojo por antigüedad.
+/// Texturas de miniaturas. Se desaloja lo que hace más que no se usa: por cantidad (`MAX_TEX`) y,
+/// las grandes (más de `BIG_SIDE` de lado: vista previa, páginas de PDF), por bytes (`BIG_BYTES`),
+/// así un PDF de 300 páginas recorrido con la ventana maximizada no se come la memoria de video.
 pub struct Textures {
     pub loader: Arc<ThumbLoader>,
     map: HashMap<ThumbKey, TexEntry>,
-    order: VecDeque<ThumbKey>,
+    /// Cuadro actual (para saber qué se usó hace poco) y orden de llegada.
+    frame: u64,
+    seq: u64,
 }
 
 const MAX_TEX: usize = 240;
+/// Lado desde el que una textura cuenta para el tope en bytes.
+const BIG_SIDE: u32 = 512;
+const BIG_BYTES: usize = 192 * 1024 * 1024;
 
 impl Textures {
     pub fn new(loader: Arc<ThumbLoader>) -> Self {
         super::shellicons::init(loader.clone());
-        Textures { loader, map: HashMap::new(), order: VecDeque::new() }
+        Textures { loader, map: HashMap::new(), frame: 0, seq: 0 }
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) {
         self.loader.next_frame();
+        self.frame += 1;
         // Subir texturas tiene su costo: se suben las que entren en ~3 ms por cuadro y el resto en
         // el siguiente, así una carpeta llena de fotos no traba el movimiento.
         let t0 = std::time::Instant::now();
@@ -89,6 +101,8 @@ impl Textures {
             // Si ya se veía otra versión del mismo archivo, la nueva la reemplaza sin fundido.
             let replaces = self.map.iter().any(|(k, e)| k.path == r.key.path && e.tex.is_some());
             let at = if replaces { f64::MIN } else { now };
+            self.seq += 1;
+            let (used, seq) = (self.frame, self.seq);
             let entry = match r.img {
                 Some(img) => {
                     let size = [img.w as usize, img.h as usize];
@@ -99,16 +113,38 @@ impl Textures {
                     };
                     let (opaque, icon) = shape(&img);
                     let tex = ctx.load_texture(&r.key.path, ci, TextureOptions::LINEAR);
-                    TexEntry { tex: Some(tex), orig: img.orig, pages: img.pages, at, opaque, icon }
+                    let big = img.w.max(img.h) > BIG_SIDE;
+                    TexEntry { tex: Some(tex), orig: img.orig, pages: img.pages, at, opaque, icon, bytes: if big { img.w as usize * img.h as usize * 4 } else { 0 }, used, seq }
                 }
-                None => TexEntry { tex: None, orig: None, pages: None, at, opaque: false, icon: false },
+                None => TexEntry { tex: None, orig: None, pages: None, at, opaque: false, icon: false, bytes: 0, used, seq },
             };
-            self.order.push_back(r.key.clone());
+            let key = r.key.clone();
             self.map.insert(r.key, entry);
-            while self.order.len() > MAX_TEX {
-                if let Some(k) = self.order.pop_front() {
+            self.evict(&key);
+        }
+    }
+
+    /// Desaloja lo menos usado hasta volver a los topes. Nunca lo usado en los dos últimos cuadros
+    /// (lo que está en pantalla) ni lo recién llegado.
+    fn evict(&mut self, keep: &ThumbKey) {
+        loop {
+            let count = self.map.len() > MAX_TEX;
+            let bytes = !count && self.map.values().map(|e| e.bytes).sum::<usize>() > BIG_BYTES;
+            if !count && !bytes {
+                return;
+            }
+            let frame = self.frame;
+            let victim = self
+                .map
+                .iter()
+                .filter(|(k, e)| *k != keep && e.used + 2 < frame && (count || e.bytes > 0))
+                .min_by_key(|(_, e)| (e.used, e.seq))
+                .map(|(k, _)| k.clone());
+            match victim {
+                Some(k) => {
                     self.map.remove(&k);
                 }
+                None => return,
             }
         }
     }
@@ -125,13 +161,24 @@ impl Textures {
 
     fn get_with(&mut self, path: &str, size: u32, urgent: bool) -> Option<&TexEntry> {
         let key = ThumbKey { path: path.to_string(), size };
+        let frame = self.frame;
         if !self.map.contains_key(&key) {
             self.loader.request(key.clone(), urgent);
-            // Mientras tanto, cualquier versión ya cargada del mismo archivo.
-            let alt = self.map.keys().find(|k| k.path == path).cloned()?;
-            return self.map.get(&alt);
+            // Mientras tanto, la versión más grande ya cargada del mismo archivo.
+            let alt = self.map.iter().filter(|(k, _)| k.path == path).max_by_key(|(k, e)| (e.tex.is_some(), k.size)).map(|(k, _)| k.clone())?;
+            let e = self.map.get_mut(&alt)?;
+            e.used = frame;
+            return Some(e);
         }
-        self.map.get(&key)
+        let e = self.map.get_mut(&key)?;
+        e.used = frame;
+        Some(e)
+    }
+
+    /// Lo que ya haya de un archivo (la versión más grande), sin pedir nada: para el subtítulo
+    /// de la Vista rápida (medidas, páginas).
+    pub fn peek(&self, path: &str) -> Option<&TexEntry> {
+        self.map.iter().filter(|(k, _)| k.path == path).max_by_key(|(k, e)| (e.tex.is_some(), k.size)).map(|(_, e)| e)
     }
 
     /// La imagen de una foto (vista previa, vista rápida). Si Windows dio el ícono del tipo en vez
@@ -146,7 +193,6 @@ impl Textures {
 
     pub fn clear(&mut self) {
         self.map.clear();
-        self.order.clear();
     }
 }
 
@@ -256,7 +302,7 @@ fn scrolls_sideways(ext: &str) -> bool {
 
 /// El texto de `text_view` en `rect`, con su barra (solo vertical, salvo el código). Devuelve el
 /// alto del contenido.
-fn text_scroll(ui: &mut Ui, t: &Theme, rect: Rect, id: impl std::hash::Hash + std::fmt::Debug, text: &str, ext: &str, large: bool) -> f32 {
+pub(super) fn text_scroll(ui: &mut Ui, t: &Theme, rect: Rect, id: impl std::hash::Hash + std::fmt::Debug, text: &str, ext: &str, large: bool) -> f32 {
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
     let area = if scrolls_sideways(ext) { egui::ScrollArea::both() } else { egui::ScrollArea::vertical() };
     let out = area.id_salt(id).auto_shrink([false, false]).show(&mut child, |ui| {
@@ -267,17 +313,16 @@ fn text_scroll(ui: &mut Ui, t: &Theme, rect: Rect, id: impl std::hash::Hash + st
     out.content_size.y
 }
 
-/// Ícono de contenido (no de interfaz) del panel y de Vista rápida.
+/// Ícono de contenido (no de interfaz) del panel.
 const PANE_ICON: f32 = 84.0;
-const QL_ICON: f32 = 120.0;
 
 /// El ícono grande del archivo, relleno y a color, sin marco. Una descarga en curso: la flecha.
-fn big_icon(p: &egui::Painter, t: &Theme, center: egui::Pos2, e: &FileEntry, size: f32) {
+pub(super) fn big_icon(p: &egui::Painter, t: &Theme, center: egui::Pos2, e: &FileEntry, size: f32) {
     let (glyph, color) = if !e.is_dir && fsx::downloading(&e.name).is_some() { (ic::DOWNLOAD_SIMPLE, t.accent) } else { icons::for_entry(t, e.is_dir, &e.ext) };
     p.text(center, Align2::CENTER_CENTER, glyph, design::icon_fill(size), color);
 }
 
-fn fit(tex_size: egui::Vec2, area: Rect) -> Rect {
+pub(super) fn fit(tex_size: egui::Vec2, area: Rect) -> Rect {
     let s = (area.width() / tex_size.x).min(area.height() / tex_size.y).min(1.0 * 4.0);
     let size = tex_size * s;
     Rect::from_center_size(area.center(), size)
@@ -293,7 +338,7 @@ fn framed_image(p: &egui::Painter, t: &Theme, tex: egui::TextureId, r: Rect) {
 
 /// Una imagen recibida: con marco si es opaca (foto, página); si tiene transparencia (ícono,
 /// PNG recortado), suelta sobre el fondo.
-fn picture(p: &egui::Painter, t: &Theme, te: &TexEntry, tx: &TextureHandle, r: Rect) {
+pub(super) fn picture(p: &egui::Painter, t: &Theme, te: &TexEntry, tx: &TextureHandle, r: Rect) {
     if te.opaque {
         framed_image(p, t, tx.id(), r);
     } else {
@@ -504,6 +549,20 @@ pub fn preview_pane(
                 }
                 drew = true;
             }
+            // El visor de Windows es uno solo: mientras lo tiene la Vista rápida, el panel muestra
+            // la miniatura (o el ícono) en el mismo pozo, del mismo alto (los metadatos no saltan).
+            Kind::Handler if host.is_some_and(|h| !h.is_home()) => {
+                design::dot_grid(&p, t, area.shrink(sp::XS));
+                let ppp = ui.ctx().pixels_per_point();
+                let size = ((w.max(h) * ppp).min(768.0) as u32).next_multiple_of(128);
+                if let Some(te) = tex.get_now(item.source(), size)
+                    && let Some(tx) = te.tex.as_ref().filter(|_| !te.icon)
+                {
+                    let air = if w >= 240.0 { sp::XL } else { sp::L };
+                    picture(&p, t, te, tx, fit(tx.size_vec2() / ppp, area.shrink(air)));
+                    drew = true;
+                }
+            }
             Kind::Handler => {
                 design::micro(&p, area.center(), Align2::CENTER_CENTER, t!("previa.cargando_vista_previa"), t.faint);
                 let visible = area.intersect(clip);
@@ -659,126 +718,4 @@ pub fn preview_pane(
         ui.ctx().request_repaint();
     }
     want
-}
-
-/// Ventana de Quick Look sobre todo lo demás. Devuelve si sigue abierta y, si el
-/// archivo usa un visor de Windows, dónde ponerlo. `page`: página del PDF.
-#[allow(clippy::too_many_arguments)]
-pub fn quicklook(
-    ctx: &egui::Context,
-    t: &Theme,
-    item: &PreviewItem,
-    tex: &mut Textures,
-    text: Option<&str>,
-    page: &mut u32,
-    host: Option<&super::prevhost::PreviewHost>,
-    actions: &mut Vec<Action>,
-) -> (bool, Option<(String, Rect)>) {
-    let screen = ctx.content_rect();
-    let mut open = true;
-    let mut want = None;
-    let mut kind = kind(item, text.is_some());
-    if kind == Kind::Handler && host.and_then(|h| h.status_of(item.source())) == Some(super::prevhost::Status::Failed) {
-        kind = Kind::Picture;
-    }
-    egui::Area::new(egui::Id::new("quicklook")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
-        let (full, bg) = ui.allocate_exact_size(screen.size(), Sense::click());
-        let p = ui.painter().clone();
-        p.rect_filled(full, CornerRadius::ZERO, t.overlay);
-        let card = Rect::from_center_size(full.center(), vec2((full.width() * 0.82).min(1400.0), (full.height() * 0.86).min(1000.0)));
-        let card_resp = ui.interact(card, egui::Id::new("ql-card"), Sense::click());
-        // Tarjeta de diálogo: `raised`, radio XL, sombra de diálogo.
-        p.add(design::dialog_shadow(t).as_shape(card, radius::XL));
-        p.rect_filled(card, radius::XL, t.raised);
-        p.rect_stroke(card, radius::XL, Stroke::new(stroke::HAIR, t.border_strong), StrokeKind::Inside);
-        let e = &item.entry;
-        // Encabezado: ícono, nombre, tipo y tamaño; a la derecha «Abrir» y cerrar.
-        let head = Rect::from_min_size(card.min, vec2(card.width(), h::TOOLBAR));
-        // El ícono real del archivo, el mismo de la lista.
-        super::views::file_icon(&p, t, pos2(head.left() + sp::L + icon::M / 2.0, head.center().y), icon::M, icon::M, &item.path, e.is_dir, &e.ext, 1.0);
-        let mut sub = fsx::kind_label(e);
-        if let Some(s) = e.display_size() {
-            sub.push_str(&format!(" · {}", fsx::human_size(s)));
-        }
-        let title_x = head.left() + sp::L + icon::M + sp::S;
-        let title = super::views::elided(&p, &e.name, design::text::title(), t.text, head.width() - 360.0);
-        let tw = title.size().x;
-        p.galley(pos2(title_x, head.center().y - title.size().y / 2.0), title, t.text);
-        design::micro(&p, pos2(title_x + tw + sp::M, head.center().y), Align2::LEFT_CENTER, &sub, t.dim);
-        let close = Rect::from_center_size(pos2(head.right() - sp::S - h::CTL / 2.0, head.center().y), vec2(h::CTL, h::CTL));
-        let cresp = design::icon_button_at(ui, t, close, egui::Id::new("ql-close"), ic::X, IconBtn::default());
-        let actions_rect = Rect::from_min_max(head.min, pos2(close.left() - sp::S, head.bottom()));
-        let mut bui = ui.new_child(egui::UiBuilder::new().id_salt("ql-open").max_rect(actions_rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
-        if design::button(&mut bui, t, design::Kind::Primary, "", t!("comun.abrir"), true).clicked() {
-            actions.push(Action::Open { path: item.path.clone(), is_dir: e.is_dir });
-            open = false;
-        }
-        if cresp.clicked() {
-            open = false;
-        }
-        p.line_segment([head.left_bottom(), head.right_bottom()], Stroke::new(stroke::HAIR, t.border));
-        let body = Rect::from_min_max(pos2(card.left() + sp::L, head.bottom() + sp::L), card.max - vec2(sp::L, sp::L));
-        let mut drew = false;
-        if kind == Kind::Picture {
-            let ppp = ctx.pixels_per_point();
-            let side = ((body.width().max(body.height()) * ppp) as u32).clamp(256, 4096).next_multiple_of(256);
-            let pdf = e.ext == "pdf";
-            let size = if is_image_ext(&e.ext) || pdf { side } else { side.min(1024) };
-            let key = if pdf { fsx::pdf::page_key(item.source(), *page) } else { item.source().to_string() };
-            let mut footer = None;
-            let photo = is_image_ext(&e.ext);
-            let got = if photo { tex.get_photo(&key, size) } else { tex.get_now(&key, size) };
-            if let Some(te) = got {
-                // Foto que llegó como el ícono del tipo: el ícono grande mientras llega la de verdad.
-                if let Some(tx) = te.tex.as_ref().filter(|_| !(te.icon && photo)) {
-                    // Foto o página con radio `S` y borde fino: en claro, la página blanca no se
-                    // funde con la tarjeta.
-                    let r = fit(tx.size_vec2() / ppp, body.shrink2(vec2(0.0, if pdf { 18.0 } else { 0.0 })));
-                    picture(&p, t, te, tx, r);
-                    drew = true;
-                    if let Some(n) = te.pages {
-                        *page = (*page).min(n.saturating_sub(1));
-                        footer = Some(n);
-                    } else if let Some((w, h)) = te.orig {
-                        p.text(pos2(card.right() - sp::L, card.bottom() - sp::S), Align2::RIGHT_BOTTOM, format!("{w} × {h}"), design::text::mono_s(), t.faint);
-                    }
-                }
-            }
-            // PDF: «3 / 12» en mono entre dos botones mini (también ← →).
-            if let Some(n) = footer.filter(|&n| n > 1) {
-                let y = card.bottom() - sp::L;
-                let label = format!("{} / {n}", *page + 1);
-                let half = design::text_width(&p, &label, design::text::mono()) / 2.0 + sp::S + h::CHIP / 2.0;
-                p.text(pos2(card.center().x, y), Align2::CENTER_CENTER, label, design::text::mono(), t.dim);
-                for (dx, glyph, d) in [(-half, ic::CARET_LEFT, -1i32), (half, ic::CARET_RIGHT, 1)] {
-                    let r = Rect::from_center_size(pos2(card.center().x + dx, y), vec2(h::CHIP, h::CHIP));
-                    if design::icon_button_at(ui, t, r, egui::Id::new(("ql-page", d)), glyph, IconBtn::mini()).clicked() {
-                        *page = (*page as i32 + d).clamp(0, n as i32 - 1) as u32;
-                    }
-                }
-            }
-        }
-        if kind == Kind::Handler {
-            design::micro(&p, body.center(), Align2::CENTER_CENTER, t!("previa.cargando_vista_previa"), t.faint);
-            want = Some((item.source().to_string(), body));
-            drew = true;
-        }
-        if let Some(txt) = text {
-            text_scroll(ui, t, body, "ql-text", txt, &e.ext, true);
-            drew = true;
-        }
-        if !drew {
-            big_icon(&p, t, body.center() - vec2(0.0, 30.0), e, QL_ICON);
-            let mut lines = vec![fsx::kind_label(e)];
-            if let Some(n) = item.children {
-                lines.push(tp!(n, "comun.elementos_n", n = fsx::thousands(n)));
-            }
-            lines.push(tf!("previa.modificado", fecha = fsx::fmt_date(e.mtime)));
-            p.text(body.center() + vec2(0.0, 60.0), Align2::CENTER_TOP, lines.join(" · "), design::text::body(), t.dim);
-        }
-        if bg.clicked() && !card_resp.hovered() {
-            open = false;
-        }
-    });
-    (open, want)
 }

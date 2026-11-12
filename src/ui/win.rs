@@ -81,12 +81,12 @@ pub fn max_hovered() -> bool {
     MAX_HOVER.load(Ordering::Relaxed)
 }
 
-fn inside(r: &RECT, x: i32, y: i32) -> bool {
+pub(super) fn inside(r: &RECT, x: i32, y: i32) -> bool {
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
 
 /// Grosor del borde para redimensionar (el mismo que usa Windows para esta pantalla).
-fn frame_thickness(hwnd: HWND) -> i32 {
+pub(super) fn frame_thickness(hwnd: HWND) -> i32 {
     use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
     unsafe {
         let dpi = GetDpiForWindow(hwnd).max(96);
