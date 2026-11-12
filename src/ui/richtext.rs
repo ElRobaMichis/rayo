@@ -822,8 +822,12 @@ mod tests {
             let (steady, _) = frame(&ctx, &t, text, ext, None);
             eprintln!("{ext}: alto {size:.0}, peor cuadro {worst:?}, cuadro quieto {steady:?}");
             assert!(size > 50_000.0, "{ext}: el documento entero cuenta para la barra");
-            assert!(worst < std::time::Duration::from_millis(6), "{ext}: el peor cuadro tarda {worst:?}");
-            assert!(steady < std::time::Duration::from_millis(4), "{ext}: un cuadro quieto tarda {steady:?}");
+            // Los servidores de CI son lentos y compartidos: ahí el tope es 4 veces más holgado,
+            // que igual atrapa el error de fondo (armar el documento entero: 60–80 ms por cuadro).
+            let slack = if std::env::var_os("CI").is_some() { 4 } else { 1 };
+            let ms = |n: u64| std::time::Duration::from_millis(n * slack);
+            assert!(worst < ms(6), "{ext}: el peor cuadro tarda {worst:?}");
+            assert!(steady < ms(4), "{ext}: un cuadro quieto tarda {steady:?}");
         }
     }
 
