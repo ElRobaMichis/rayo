@@ -1,6 +1,6 @@
 [package]
 name = "rayo"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 # egui / eframe 0.36 piden Rust 1.95 o más nuevo.
 rust-version = "1.95"
