@@ -352,7 +352,83 @@ pub struct ThumbKey {
 
 pub struct ThumbResult {
     pub key: ThumbKey,
+    /// Medidas, páginas y forma (sus píxeles ya pasaron a `bands`).
     pub img: Option<Rgba>,
+    /// La imagen lista para subir a la GPU, en franjas (una sola si es chica). Se arma en el hilo
+    /// de carga: convertir una foto de varios megapíxeles en el hilo de la interfaz se comía
+    /// varios cuadros seguidos, y subirla entera de una vez (una foto de 4096 son 48 MB) también.
+    pub bands: Vec<Band>,
+    /// (opaca, ícono en un lienzo vacío): ver `Rgba::shape`.
+    pub shape: (bool, bool),
+}
+
+/// Una franja horizontal de una imagen grande: sus filas (`rows`) más `GUTTER` filas de las
+/// vecinas arriba y abajo, para que al dibujarla filtrada la unión no se note. `top` es la fila
+/// de la imagen con la que empieza la textura.
+pub struct Band {
+    pub img: egui::ColorImage,
+    pub rows: std::ops::Range<usize>,
+    pub top: usize,
+}
+
+/// Bytes por franja: subir 4 MB a la GPU cuesta ~0,5 ms (una foto entera, 6 ms).
+pub const BAND_BYTES: usize = 4 << 20;
+/// Una imagen de hasta esto va en una sola textura.
+const SINGLE_BYTES: usize = 6 << 20;
+/// Filas de más en cada lado de una franja.
+pub const GUTTER: usize = 2;
+
+impl Rgba {
+    /// Cómo es: (opaca, ícono en un lienzo vacío). Mira una muestra de ~64×64 píxeles, así
+    /// cuesta lo mismo una miniatura que una página de 4096. El ícono que da Windows en lugar de
+    /// la miniatura es uno de 48 centrado en 256, a veces con un marco semitransparente en el
+    /// borde: cuenta solo lo bien opaco (α ≥ 128).
+    pub fn shape(&self) -> (bool, bool) {
+        let (w, h) = (self.w as usize, self.h as usize);
+        if w == 0 || h == 0 || self.px.len() < w * h * 4 {
+            return (false, false);
+        }
+        let step = (w.max(h) / 64).max(1);
+        let mut opaque = true;
+        let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+        for y in (step / 2..h).step_by(step) {
+            for x in (step / 2..w).step_by(step) {
+                let a = self.px[(y * w + x) * 4 + 3];
+                opaque &= a == 255;
+                if a >= 128 {
+                    (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+                }
+            }
+        }
+        // El borde también cuenta para «opaca» (el marco de Windows es semitransparente).
+        opaque &= self.px[3] == 255 && self.px[(w * h - 1) * 4 + 3] == 255;
+        let icon = !opaque && w.max(h) >= 96 && x1 >= x0 && (x1 - x0 + step) * 2 <= w && (y1 - y0 + step) * 2 <= h;
+        (opaque, icon)
+    }
+
+    /// La imagen en franjas de ~`BAND_BYTES` (o entera, si es chica).
+    pub fn to_bands(&self) -> Vec<Band> {
+        let (w, h) = (self.w as usize, self.h as usize);
+        let color = |a: usize, b: usize| {
+            let px = &self.px[a * w * 4..b * w * 4];
+            let size = [w, b - a];
+            if self.premultiplied { egui::ColorImage::from_rgba_premultiplied(size, px) } else { egui::ColorImage::from_rgba_unmultiplied(size, px) }
+        };
+        if w == 0 || h == 0 || self.px.len() < w * h * 4 || w * h * 4 <= SINGLE_BYTES {
+            let size = [w, h];
+            let img = if self.px.len() >= w * h * 4 { color(0, h) } else { egui::ColorImage::filled(size, egui::Color32::TRANSPARENT) };
+            return vec![Band { img, rows: 0..h, top: 0 }];
+        }
+        let step = (BAND_BYTES / (w * 4)).max(64);
+        (0..h)
+            .step_by(step)
+            .map(|a| {
+                let b = (a + step).min(h);
+                let (top, bottom) = (a.saturating_sub(GUTTER), (b + GUTTER).min(h));
+                Band { img: color(top, bottom), rows: a..b, top }
+            })
+            .collect()
+    }
 }
 
 /// Lo que se quiere cargar: en qué orden se pidió, en qué cuadro se pidió por última vez
@@ -425,9 +501,15 @@ impl ThumbLoader {
                                 cv.wait_for(&mut q, std::time::Duration::from_millis(500));
                             }
                         };
-                        let img = load(&key);
+                        let mut img = load(&key);
+                        let shape = img.as_ref().map_or((false, false), |i| i.shape());
+                        let bands = img.as_mut().map_or_else(Vec::new, |i| {
+                            let b = i.to_bands();
+                            i.px = Vec::new();
+                            b
+                        });
                         queue.0.lock().busy.remove(&key);
-                        let _ = res_tx.send(ThumbResult { key, img });
+                        let _ = res_tx.send(ThumbResult { key, img, bands, shape });
                         wake();
                     }
                 })
@@ -775,6 +857,34 @@ mod bench {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Una imagen grande va en franjas que cubren todas sus filas una sola vez, con `GUTTER`
+    /// filas de las vecinas en cada lado; cada franja con los píxeles de sus filas.
+    #[test]
+    fn big_images_go_in_bands() {
+        let (w, h) = (3000u32, 2001u32);
+        let px: Vec<u8> = (0..w * h).flat_map(|i| [(i / w % 256) as u8, 7, 9, 255]).collect();
+        let img = Rgba { w, h, px, premultiplied: true, orig: None, pages: None };
+        let bands = img.to_bands();
+        assert!(bands.len() > 1);
+        let mut next = 0;
+        for b in &bands {
+            assert_eq!(b.rows.start, next);
+            assert!(b.img.pixels.len() * 4 <= BAND_BYTES + 2 * GUTTER * w as usize * 4);
+            assert_eq!(b.top, b.rows.start.saturating_sub(GUTTER));
+            assert_eq!(b.img.size, [w as usize, (b.rows.end + GUTTER).min(h as usize) - b.top]);
+            // La primera fila de la textura es la fila `top` de la imagen.
+            assert_eq!(b.img.pixels[0].r(), (b.top % 256) as u8);
+            next = b.rows.end;
+        }
+        assert_eq!(next, h as usize);
+        // Una chica, entera.
+        let small = Rgba { w: 64, h: 64, px: vec![255; 64 * 64 * 4], premultiplied: true, orig: None, pages: None };
+        let b = small.to_bands();
+        assert_eq!(b.len(), 1);
+        assert_eq!((b[0].rows.clone(), b[0].top, b[0].img.size), (0..64, 0, [64, 64]));
+        assert_eq!(small.shape(), (true, false));
+    }
 
     /// Una miniatura 4:3 con franjas negras arriba y abajo queda solo con la foto.
     #[test]

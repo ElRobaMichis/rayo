@@ -130,7 +130,7 @@ pub fn body(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Te
             let ppp = ui.ctx().pixels_per_point();
             let side = ((well.width().max(well.height()) * ppp) as u32).clamp(256, 1024).next_multiple_of(256);
             // Solo un cuadro de verdad (opaco): sin miniatura, Windows da el ícono del programa.
-            let poster = tex.get_now(path, side).and_then(|te| te.tex.as_ref().filter(|_| te.opaque && !te.icon).cloned());
+            let poster = tex.get_now(path, side).and_then(|te| te.pic.as_ref().filter(|_| te.opaque && !te.icon).cloned());
             // El cuadro encajado, sin aire: con la medida del video si ya se sabe, si no la del póster.
             let aspect = s.video.filter(|_| mine).map(|(w, h)| vec2(w as f32, h as f32)).or(poster.as_ref().map(|tx| tx.size_vec2())).unwrap_or(vec2(16.0, 9.0));
             let k = (well.width() / aspect.x).min(well.height() / aspect.y);
@@ -138,9 +138,7 @@ pub fn body(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Te
             // Píxeles enteros: la ventana nativa no tiene medio píxel.
             let frame = Rect::from_min_max((frame.min.to_vec2() * ppp).round().to_pos2() / ppp, (frame.max.to_vec2() * ppp).round().to_pos2() / ppp);
             match &poster {
-                Some(tx) => {
-                    p.image(tx.id(), frame, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-                }
+                Some(pic) => pic.paint(&p, frame, None, Color32::WHITE),
                 None => {
                     p.text(frame.center(), Align2::CENTER_CENTER, ic::FILM_STRIP, design::icon_font(56.0), t.kinds[1]);
                 }

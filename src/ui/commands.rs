@@ -74,6 +74,8 @@ pub fn keys_label(keys: &str) -> String {
             "Space" => t!("tecla.espacio"),
             "MiddleClick" => t!("tecla.clic_central"),
             "Enter" => t!("tecla.enter"),
+            "PageUp" => t!("tecla.repag"),
+            "PageDown" => t!("tecla.avpag"),
             other => other,
         })
         .collect::<Vec<_>>()
@@ -153,6 +155,9 @@ pub const ALL: &[Command] = &[
     cmd!("language", ic::TRANSLATE, "", Nothing),
     cmd!("new_tab", ic::PLUS, "Ctrl+T", Nothing),
     cmd!("close_tab", ic::X, "Ctrl+W", Nothing),
+    cmd!("move_tab_left", ic::ARROW_LINE_LEFT, "Ctrl+Shift+PageUp", Nothing),
+    cmd!("move_tab_right", ic::ARROW_LINE_RIGHT, "Ctrl+Shift+PageDown", Nothing),
+    cmd!("move_tab_other", ic::SQUARE_SPLIT_HORIZONTAL, "", Split),
     cmd!("refresh", ic::ARROW_CLOCKWISE, "F5", Nothing),
     cmd!("search", ic::MAGNIFYING_GLASS, "Ctrl+F", Nothing),
     cmd!("quit", ic::POWER, "Ctrl+Q", Nothing),

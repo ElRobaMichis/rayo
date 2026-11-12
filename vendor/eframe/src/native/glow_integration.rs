@@ -586,6 +586,7 @@ impl GlowWinitRunning<'_> {
 
         let mut frame_timer = crate::stopwatch::Stopwatch::new();
         frame_timer.start();
+        let frame_start = std::time::Instant::now();
 
         {
             let glutin = self.glutin.borrow();
@@ -734,9 +735,16 @@ impl GlowWinitRunning<'_> {
         // The update function, which could call immediate viewports,
         // so make sure we don't hold any locks here required by the immediate viewports rendeer.
 
+        // Rayo: tiempos del cuadro, solo si alguien los pide (`crate::FRAME_HOOK`).
+        let hook = crate::FRAME_HOOK.get().copied();
+        let mut times = hook.map(|_| crate::FrameTimes { viewport: viewport_id, update: 0.0, tessellate: 0.0, paint: 0.0, swap: 0.0, switch: 0.0, total: 0.0 });
+        let lap = std::time::Instant::now();
         let full_output =
             self.integration
                 .update(self.app.as_mut(), viewport_ui_cb.as_deref(), raw_input);
+        if let Some(t) = times.as_mut() {
+            t.update = lap.elapsed().as_secs_f32();
+        }
 
         // ------------------------------------------------------------
 
@@ -784,12 +792,20 @@ impl GlowWinitRunning<'_> {
         egui_winit.handle_platform_output_with_event_loop(&window, event_loop, platform_output);
 
         if is_visible {
+            let lap = std::time::Instant::now();
             let clipped_primitives = integration.egui_ctx.tessellate(shapes, pixels_per_point);
+            if let Some(t) = times.as_mut() {
+                t.tessellate = lap.elapsed().as_secs_f32();
+            }
 
             {
                 // We may need to switch contexts again, because of immediate viewports:
                 frame_timer.pause();
+                let lap = std::time::Instant::now();
                 change_gl_context(current_gl_context, not_current_gl_context, gl_surface);
+                if let Some(t) = times.as_mut() {
+                    t.switch = lap.elapsed().as_secs_f32();
+                }
                 frame_timer.resume();
             }
 
@@ -799,12 +815,16 @@ impl GlowWinitRunning<'_> {
                 painter.clear(screen_size_in_pixels, clear_color);
             }
 
+            let lap = std::time::Instant::now();
             painter.paint_and_update_textures(
                 screen_size_in_pixels,
                 pixels_per_point,
                 &clipped_primitives,
                 pending_deltas,
             );
+            if let Some(t) = times.as_mut() {
+                t.paint = lap.elapsed().as_secs_f32();
+            }
 
             {
                 for action in viewport.actions_requested.drain(..) {
@@ -853,10 +873,14 @@ impl GlowWinitRunning<'_> {
                     )
                 })?;
 
+                let lap = std::time::Instant::now();
                 apply_swap_interval(gl_surface, context, swap_interval, applied_swap_interval);
                 // Rayo: si Windows rechaza el cambio de búfer, se pierde este cuadro, no la app.
                 if let Err(err) = gl_surface.swap_buffers(context) {
                     log::error!("swap_buffers failed: {err}");
+                }
+                if let Some(t) = times.as_mut() {
+                    t.swap = lap.elapsed().as_secs_f32();
                 }
                 frame_timer.resume();
             }
@@ -871,6 +895,11 @@ impl GlowWinitRunning<'_> {
         }
 
         glutin.handle_viewport_output(event_loop, &integration.egui_ctx, &viewport_output);
+
+        if let (Some(hook), Some(mut t)) = (hook, times) {
+            t.total = frame_start.elapsed().as_secs_f32();
+            hook(t);
+        }
 
         integration.report_frame_time(frame_timer.total_time_sec()); // don't count auto-save time as part of regular frame time
 
@@ -1708,6 +1737,11 @@ fn render_immediate_viewport(
     // Call the user ui-code, which could re-entrantly call this function again!
     // No locks may be hold while calling this function.
 
+    // Rayo: tiempos del cuadro, solo si alguien los pide (`crate::FRAME_HOOK`).
+    let hook = crate::FRAME_HOOK.get().copied();
+    let frame_start = std::time::Instant::now();
+    let mut times = hook.map(|_| crate::FrameTimes { viewport: viewport_id, update: 0.0, tessellate: 0.0, paint: 0.0, swap: 0.0, switch: 0.0, total: 0.0 });
+    let lap = std::time::Instant::now();
     let egui::FullOutput {
         platform_output,
         textures_delta,
@@ -1717,10 +1751,17 @@ fn render_immediate_viewport(
     } = egui_ctx.run_ui(input, |ui| {
         viewport_ui_cb(ui);
     });
+    if let Some(t) = times.as_mut() {
+        t.update = lap.elapsed().as_secs_f32();
+    }
 
     // ---------------------------------------------------
 
+    let lap = std::time::Instant::now();
     let clipped_primitives = egui_ctx.tessellate(shapes, pixels_per_point);
+    if let Some(t) = times.as_mut() {
+        t.tessellate = lap.elapsed().as_secs_f32();
+    }
 
     let mut glutin = glutin.borrow_mut();
 
@@ -1751,6 +1792,7 @@ fn render_immediate_viewport(
 
     let screen_size_in_pixels: [u32; 2] = window.inner_size().into();
 
+    let lap = std::time::Instant::now();
     change_gl_context(current_gl_context, not_current_gl_context, gl_surface);
 
     let current_gl_context = current_gl_context.as_ref().unwrap();
@@ -1768,20 +1810,35 @@ fn render_immediate_viewport(
         screen_size_in_pixels,
         [0.0, 0.0, 0.0, 0.0],
     );
+    if let Some(t) = times.as_mut() {
+        t.switch = lap.elapsed().as_secs_f32();
+    }
 
+    let lap = std::time::Instant::now();
     painter.borrow_mut().paint_and_update_textures(
         screen_size_in_pixels,
         pixels_per_point,
         &clipped_primitives,
         &mut viewport.pending_delta,
     );
+    if let Some(t) = times.as_mut() {
+        t.paint = lap.elapsed().as_secs_f32();
+    }
 
     {
         profiling::scope!("swap_buffers");
+        let lap = std::time::Instant::now();
         apply_swap_interval(gl_surface, current_gl_context, swap_interval, applied_swap_interval);
         if let Err(err) = gl_surface.swap_buffers(current_gl_context) {
             log::error!("swap_buffers failed: {err}");
         }
+        if let Some(t) = times.as_mut() {
+            t.swap = lap.elapsed().as_secs_f32();
+        }
+    }
+    if let (Some(hook), Some(mut t)) = (hook, times) {
+        t.total = frame_start.elapsed().as_secs_f32();
+        hook(t);
     }
 
     egui_winit.handle_platform_output(window, platform_output);

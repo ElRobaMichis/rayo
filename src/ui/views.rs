@@ -936,6 +936,7 @@ fn tree_depth(name: &str) -> usize {
 }
 
 pub fn column(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, active: bool, data: ColumnData) {
+    let _p = super::perf::scope("lista.columna");
     let rect = ui.max_rect();
     let bg = ui.interact(rect, Id::new(("colbg", cx.tab_id, ci)), Sense::click_and_drag());
     background_click(cx, &bg, ci);
@@ -1143,6 +1144,7 @@ fn age_pill(p: &Painter, t: &Theme, x_right: f32, cy: f32, mtime: u32, now: u32,
 }
 
 pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, data: ColumnData, sort: (SortKey, bool)) {
+    let _p = super::perf::scope("lista.detalles");
     let t = *cx.t;
     // Encabezado: micro-etiquetas; la columna ordenada en `text` con su flecha en acento.
     let (hrect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h::HEAD), Sense::hover());
@@ -1355,6 +1357,7 @@ fn search_columns(r: Rect) -> (f32, f32, f32, f32) {
 
 #[allow(clippy::too_many_arguments)]
 pub fn search_results(ui: &mut Ui, cx: &mut Cx, res: Option<&Results>, cursor: &mut usize, scroll: &mut bool, indexing: Option<String>, query: &str, sort: (ResultSort, bool)) {
+    let _p = super::perf::scope("lista.búsqueda");
     let t = *cx.t;
     let Some(res) = res else {
         match indexing.as_deref() {
@@ -1630,6 +1633,7 @@ pub fn grid_columns(ctx: &egui::Context, tab_id: u64) -> usize {
 
 #[allow(clippy::too_many_arguments)]
 pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, data: ColumnData, tex: &mut super::preview::Textures) {
+    let _p = super::perf::scope("lista.cuadrícula");
     let t = *cx.t;
     let rest = ui.available_rect_before_wrap();
     let bg = ui.interact(rest, Id::new(("gridbg", cx.tab_id)), Sense::click_and_drag());

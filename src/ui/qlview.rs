@@ -7,14 +7,14 @@
 use super::config::QuickLookCfg;
 use super::design::{self, IconBtn, Tone, h, icon, radius, sp, stroke};
 use super::motion;
-use super::preview::{self, Kind, PreviewItem, Textures};
+use super::preview::{self, Kind, Pic, PreviewItem, Textures};
 use super::prevhost::Status;
 use super::ql::{FOLDER_CARD_W, HERO_GLYPH, HERO_ICON, LOADING_AFTER, MD_MAX, NOTICE_W, OPEN_DELAY, PDF_MAX, QL_NARROW, STRIP_THUMB, STRIP_W, ZOOM_MAX, ZOOM_STEP};
 use super::theme::Theme;
 use super::views;
 use crate::fsx::{self, anim, pdf, thumbs::is_image_ext};
 use crossbeam_channel::{Receiver, bounded, unbounded};
-use egui::{Align2, Color32, ColorImage, CornerRadius, Key, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureId, TextureOptions, Ui, Vec2, pos2, vec2};
+use egui::{Align2, Color32, ColorImage, CornerRadius, Key, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2};
 use egui_phosphor::regular as ic;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -82,6 +82,7 @@ pub fn body(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, text: Option
         st.hover_at = now;
     }
     let e = &item.entry;
+    let _p = super::perf::scope("ql.cuerpo");
     match preview::kind(item, text.is_some()) {
         Kind::Text => text_body(ui, t, rect, item, text.unwrap_or("")),
         Kind::Icon if e.is_dir => folder(ui, t, rect, item, st),
@@ -96,6 +97,7 @@ pub fn body(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, text: Option
 /// Micro-etiqueta del encabezado: tipo · lo propio del contenido · tamaño
 /// («PDF · 12 PÁGINAS · 318 KB»).
 pub fn subtitle(item: &PreviewItem, tex: &mut Textures, st: &ViewState) -> String {
+    let _p = super::perf::scope("ql.subtítulo");
     let e = &item.entry;
     let mine = st.path == item.path;
     let download = if e.is_dir { None } else { fsx::downloading(&e.name) };
@@ -176,16 +178,19 @@ pub fn key(st: &mut ViewState, item: &PreviewItem, key: Key) -> bool {
 
 /// Al cambiar de archivo: encajada, página 1, sin animación (la que había se corta).
 pub fn reset(st: &mut ViewState) {
-    *st = ViewState::default();
+    let old = std::mem::take(st);
+    // Los fotogramas de un GIF: cientos de MB que soltar, en otro hilo.
+    if let Some(a) = old.anim {
+        preview::drop_later(a);
+    }
 }
 
 // ---------------------------------------------------------------- piezas
 
-const UV: Rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-
 /// Esquinas de abajo redondeadas (izquierda, derecha) con radio `r`.
 /// El pozo: `sunken`, con la trama de puntos si es para mirar (no para leer).
 fn well(p: &Painter, t: &Theme, rect: Rect, cr: CornerRadius, grid: bool) {
+    let _p = super::perf::scope("ql.pozo");
     p.rect_filled(rect, cr, t.sidebar);
     if grid {
         design::dot_grid(p, t, rect.shrink(sp::XS));
@@ -200,13 +205,13 @@ fn pill(p: &Painter, t: &Theme, r: Rect) {
 }
 
 /// Imagen con radio `S` y borde fino si es opaca (foto, página); suelta si tiene transparencia.
-fn image(p: &Painter, t: &Theme, id: TextureId, opaque: bool, r: Rect, a: f32) {
+fn image(p: &Painter, t: &Theme, pic: &Pic, opaque: bool, r: Rect, a: f32) {
     let tint = Color32::WHITE.gamma_multiply(a);
     if opaque {
-        p.add(egui::epaint::RectShape::filled(r, radius::S, tint).with_texture(id, UV));
+        pic.paint(p, r, Some(radius::S.into()), tint);
         p.rect_stroke(r, radius::S, Stroke::new(stroke::HAIR, t.border.gamma_multiply(a)), StrokeKind::Outside);
     } else {
-        p.image(id, r, UV, tint);
+        pic.paint(p, r, None, tint);
     }
 }
 
@@ -393,6 +398,7 @@ fn handler(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, st: &mut View
 /// Texto, Markdown o código sobre `bg`, margen 16 × 20; Markdown en una columna de 680 como
 /// máximo. Si el archivo es más largo que lo leído, lo dice al final.
 fn text_body(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, text: &str) {
+    let _p = super::perf::scope("ql.texto");
     let e = &item.entry;
     ui.painter().rect_filled(rect, CornerRadius::ZERO, t.bg);
     // Lo leído: el archivo pesa más (un BOM quitado son 3 bytes; lo inválido solo alarga el texto).
@@ -436,6 +442,7 @@ fn text_body(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, text: &str)
 
 /// Foto (con zoom), GIF animado o miniatura de Windows, encajada con 16 de aire.
 fn picture(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Textures, st: &mut ViewState, now: f64) {
+    let _p = super::perf::scope("ql.imagen");
     let e = &item.entry;
     let src = item.source();
     let photo = is_image_ext(&e.ext);
@@ -450,7 +457,7 @@ fn picture(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Tex
     // su original (`orig`): la miniatura del shell que ya hubiera (panel, cuadrícula; ≤ 512, sin
     // `orig`) no es la foto, y tomarla por natural dejaba la foto en la miniatura estirada.
     let size_of = |o: (u32, u32)| vec2(o.0 as f32, o.1 as f32);
-    let natural = |te: &preview::TexEntry| te.orig.map(size_of).or(te.tex.as_ref().map(|x| x.size_vec2()));
+    let natural = |te: &preview::TexEntry| te.orig.map(size_of).or(te.pic.as_ref().map(|x| x.size_vec2()));
     let orig = tex.peek(src).and_then(|te| te.orig).map(size_of);
     let known = if photo { orig } else { tex.peek(src).and_then(natural) };
     let fit_of = |n: Vec2| (area.width() * ppp / n.x).min(area.height() * ppp / n.y).min(4.0);
@@ -474,7 +481,7 @@ fn picture(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Tex
         waiting(ui, &p, t, rect, st, now, t!("rapida.cargando"));
         return;
     };
-    let (Some(tx), false) = (te.tex.as_ref(), te.icon) else {
+    let (Some(tx), false) = (te.pic.as_ref(), te.icon) else {
         // Windows dio el ícono del tipo: en una foto, todavía no llegó la de verdad.
         if te.icon && photo {
             well(&p, t, rect, CornerRadius::ZERO, true);
@@ -489,13 +496,13 @@ fn picture(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Tex
         no_preview(ui, t, rect, item, st, file_status(item));
         return;
     }
-    let (mut id, opaque, at) = (tx.id(), te.opaque, te.at);
+    let (mut pic, opaque, at) = (tx.clone(), te.opaque, te.at);
     // El original si se sabe; la textura solo mientras llega.
-    let nat = te.orig.map(size_of).or(orig).or(te.tex.as_ref().map(|x| x.size_vec2())).unwrap_or(Vec2::splat(256.0));
+    let nat = te.orig.map(size_of).or(orig).or(te.pic.as_ref().map(|x| x.size_vec2())).unwrap_or(Vec2::splat(256.0));
     well(&p, t, rect, CornerRadius::ZERO, true);
     // El GIF, cuando ya hay dos fotogramas: su textura en vez de la quieta.
     if let Some(x) = st.anim.as_ref().filter(|a| a.frames.len() >= 2).and_then(|a| a.tex.as_ref()) {
-        id = x.id();
+        pic = Pic::of(x);
     }
     let fit = fit_of(nat);
     let zmax = ZOOM_MAX.max(fit);
@@ -546,7 +553,7 @@ fn picture(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Tex
     let lim = |s: f32, b: f32| ((s + b) / 2.0 - s.min(b) / 4.0).max(0.0);
     st.pan = vec2(st.pan.x.clamp(-lim(size.x, rect.width()), lim(size.x, rect.width())), st.pan.y.clamp(-lim(size.y, rect.height()), lim(size.y, rect.height())));
     let r = Rect::from_center_size(rect.center() + st.pan, size);
-    image(&p, t, id, opaque, r, motion::since(&ctx, at, design::dur::SLOW));
+    image(&p, t, &pic, opaque, r, motion::since(&ctx, at, design::dur::SLOW));
     // Píldora de zoom, abajo a la derecha, solo si no está encajada.
     if let Some(z) = st.zoom {
         let label = format!("{:.0} %", z * 100.0);
@@ -668,6 +675,7 @@ impl Anim {
 /// Arranca la decodificación (pasados `OPEN_DELAY`), recibe fotogramas, avanza según sus demoras
 /// y sube a la textura el que toca. Pide el cuadro siguiente para cuando toque, nunca seguido.
 fn anim_tick(ctx: &egui::Context, path: &str, st: &mut ViewState, now: f64) {
+    let _p = super::perf::scope("ql.gif");
     if st.anim.is_none() {
         if st.anim_tried || fsx::is_online_only(path) {
             return;
@@ -737,6 +745,7 @@ fn anim_tick(ctx: &egui::Context, path: &str, st: &mut ViewState, now: f64) {
 /// derecha y paginador flotante. Se piden solo las páginas a la vista y una de cada lado.
 #[allow(clippy::too_many_arguments)]
 fn pdf_body(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Textures, cfg: &QuickLookCfg, st: &mut ViewState, now: f64) {
+    let _p = super::perf::scope("ql.pdf");
     let src = item.source().to_string();
     let ctx = ui.ctx().clone();
     let ppp = ctx.pixels_per_point();
@@ -746,7 +755,7 @@ fn pdf_body(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Te
     if st.pages.is_none() {
         let strip_guess = if cfg.strip && !narrow { STRIP_W } else { 0.0 };
         let w = (rect.width() - strip_guess - 2.0 * sp::L).clamp(40.0, PDF_MAX);
-        let first = tex.get_now(&src, side_for(w, w * 1.414)).map(|te| (te.tex.is_some(), te.pages, te.orig));
+        let first = tex.get_now(&src, side_for(w, w * 1.414)).map(|te| (te.pic.is_some(), te.pages, te.orig));
         match first {
             None => {
                 let p = ui.painter_at(rect);
@@ -819,10 +828,10 @@ fn pdf_body(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Te
                 best = seen;
                 cur = i;
             }
-            let got = tex.get_now(&pdf::page_key(&src, i as u32), side_for(pw, ph)).and_then(|te| te.tex.as_ref().map(|x| x.id()));
+            let got = tex.get_now(&pdf::page_key(&src, i as u32), side_for(pw, ph)).and_then(|te| te.pic.clone());
             if seen > 0.0 {
                 match got {
-                    Some(id) => image(ui.painter(), t, id, true, r, 1.0),
+                    Some(pic) => image(ui.painter(), t, &pic, true, r, 1.0),
                     None => blank_page(ui.painter(), t, r),
                 }
             }
@@ -859,8 +868,8 @@ fn pdf_body(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Te
                 }
                 let resp = ui.interact(r, egui::Id::new(("ql-strip-page", &st.path, i)), Sense::click());
                 let painter = ui.painter();
-                match tex.get(&pdf::page_key(&src, i as u32), STRIP_TEX).and_then(|te| te.tex.as_ref().map(|x| x.id())) {
-                    Some(id) => image(painter, t, id, true, r, 1.0),
+                match tex.get(&pdf::page_key(&src, i as u32), STRIP_TEX).and_then(|te| te.pic.clone()) {
+                    Some(pic) => image(painter, t, &pic, true, r, 1.0),
                     None => blank_page(painter, t, r),
                 }
                 let on = i == cur;

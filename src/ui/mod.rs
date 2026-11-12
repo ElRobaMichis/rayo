@@ -11,6 +11,7 @@ pub mod design;
 pub mod icons;
 pub mod language;
 pub mod motion;
+pub mod perf;
 pub mod preview;
 pub mod shellicons;
 pub mod state;

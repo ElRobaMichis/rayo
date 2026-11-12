@@ -745,7 +745,6 @@ barra.cerrar_pestana,Close tab,Cerrar pestaña,
 barra.renombrar_grupo,Rename,Cambiar nombre,
 barra.desagrupar,Ungroup,Desagrupar,
 barra.cerrar_grupo,Close group,Cerrar el grupo,
-barra.grupo_plegar,Click: collapse or expand · double-click: rename,Clic: plegar o desplegar · doble clic: cambiar nombre,
 cmd.customize_toolbar,Customize toolbar…,Personalizar barra de herramientas…,
 cmd.customize_toolbar.buscar,buttons bar toolbar add remove,botones barra toolbar agregar quitar,
 app.barra_explicacion,Checked commands appear as buttons next to the path. The arrows change their order.,Los comandos marcados aparecen como botones junto a la ruta. Las flechas cambian su orden.,
@@ -855,3 +854,15 @@ rapida.pdf_no_abre,This PDF couldn't be opened,No se pudo abrir este PDF,Línea 
 rapida.primeros_kb,Showing the first {n} KB,Se muestran los primeros {n} KB,Micro-etiqueta al final de un texto largo (se muestra en mayúsculas) · {n} = un número
 cmd.ql_autoplay,Quick look: play on open,Vista rápida: reproducir al abrir,Comando (paleta Ctrl+K y menú de clic derecho)
 cmd.ql_autoplay.buscar,sound audio video music autoplay automatic,sonido audio video musica automatico autoplay,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+barra.grupo_desplegado,Click: collapse · double-click: rename,Clic: plegar · doble clic: cambiar nombre,Tooltip de la etiqueta de un grupo de pestañas desplegado
+barra.grupo_plegado,Click: expand · double-click: rename,Clic: desplegar · doble clic: cambiar nombre,Tooltip de la etiqueta de un grupo de pestañas plegado que no guarda pestañas ocultas
+barra.grupo_plegado_n.uno,{n} tab · click: expand · double-click: rename,{n} pestaña · clic: desplegar · doble clic: cambiar nombre,Tooltip de un grupo de pestañas plegado · Cuando la cantidad es 1 · {n} = un número
+barra.grupo_plegado_n.varios,{n} tabs · click: expand · double-click: rename,{n} pestañas · clic: desplegar · doble clic: cambiar nombre,Tooltip de un grupo de pestañas plegado · Cuando la cantidad no es 1 · {n} = un número
+tecla.repag,PgUp,RePág,Nombre de la tecla Page Up en los atajos
+tecla.avpag,PgDn,AvPág,Nombre de la tecla Page Down en los atajos
+cmd.move_tab_left,Move tab left,Mover la pestaña a la izquierda,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.move_tab_left.buscar,tab move left reorder,pestana mover izquierda reordenar,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.move_tab_right,Move tab right,Mover la pestaña a la derecha,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.move_tab_right.buscar,tab move right reorder,pestana mover derecha reordenar,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.move_tab_other,Move tab to the other pane,Mover la pestaña al otro panel,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.move_tab_other.buscar,tab move pane split,pestana mover panel dividida,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"

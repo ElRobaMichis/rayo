@@ -607,6 +607,8 @@ pub struct Chip<'a> {
     pub on_sel: bool,
     /// Ancho fijo (columna de chips, como los de Hash) con el contenido centrado; 0 = el propio.
     pub width: f32,
+    /// Conteo tras el texto (un grupo de pestañas plegado: cuántas guarda), en `mono_s` `faint`.
+    pub count: &'a str,
 }
 
 impl<'a> Chip<'a> {
@@ -639,16 +641,28 @@ pub fn chip_width(p: &Painter, c: &Chip) -> f32 {
     if c.closable {
         w += icon::S + sp::XS;
     }
+    if !c.count.is_empty() {
+        w += sp::XS + text_width(p, c.count, text::mono_s());
+    }
     w
 }
 
 /// Pinta un chip con su borde izquierdo en `left_center`. Devuelve su rectángulo.
 pub fn chip_paint(p: &Painter, t: &Theme, left_center: Pos2, c: &Chip, hovered: bool) -> Rect {
-    let (ch, pad) = chip_metrics(c);
+    let ch = chip_metrics(c).0;
     let natural = chip_width(p, c);
     let rect = Rect::from_min_size(pos2(left_center.x, left_center.y - ch / 2.0), vec2(natural.max(c.width), ch));
+    chip_paint_rect(p, t, rect, c, hovered);
+    rect
+}
+
+/// Pinta un chip en `rect` (que puede ser más angosto que el chip mientras crece: el contenido
+/// va desde la izquierda y quien llama lo recorta).
+pub fn chip_paint_rect(p: &Painter, t: &Theme, rect: Rect, c: &Chip, hovered: bool) {
+    let pad = chip_metrics(c).1;
+    let natural = chip_width(p, c);
     // Con ancho fijo, el contenido va centrado.
-    let shift = (rect.width() - natural) / 2.0;
+    let shift = if c.width > 0.0 { ((rect.width() - natural) / 2.0).max(0.0) } else { 0.0 };
     let fill = if c.dot.is_some() { t.hover } else { c.tone.soft(t) };
     p.rect_filled(rect, radius::S, fill);
     if hovered {
@@ -672,11 +686,13 @@ pub fn chip_paint(p: &Painter, t: &Theme, left_center: Pos2, c: &Chip, hovered: 
         p.text(pos2(x + icon::S / 2.0, rect.center().y), Align2::CENTER_CENTER, c.icon, icon_font(icon::S), fg);
         x += icon::S + sp::XS - 2.0;
     }
-    p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, c.text, chip_font(c), fg);
+    let tr = p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, c.text, chip_font(c), fg);
+    if !c.count.is_empty() {
+        p.text(pos2(tr.right() + sp::XS, rect.center().y), Align2::LEFT_CENTER, c.count, text::mono_s(), t.faint);
+    }
     if c.closable {
         p.text(pos2(rect.right() - 6.0 - icon::S / 2.0, rect.center().y), Align2::CENTER_CENTER, ic::X, icon_font(icon::S - 2.0), fg);
     }
-    rect
 }
 
 pub fn chip(ui: &mut Ui, t: &Theme, c: Chip) -> ChipOut {

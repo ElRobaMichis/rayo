@@ -71,7 +71,7 @@ pub fn get(path: &str, ext: &str, size: u32) -> Option<(TextureHandle, f32)> {
 }
 
 /// Lo que llegó del cargador para un pedido de ícono.
-pub fn deliver(ctx: &egui::Context, key: &ThumbKey, img: Option<Rgba>) {
+pub fn deliver(ctx: &egui::Context, key: &ThumbKey, img: Option<(Rgba, ColorImage)>) {
     CACHE.with(|c| {
         let mut c = c.borrow_mut();
         c.ctx.get_or_insert_with(|| ctx.clone());
@@ -87,9 +87,7 @@ pub fn deliver(ctx: &egui::Context, key: &ThumbKey, img: Option<Rgba>) {
             }
         }
         c.failed.remove(&cache);
-        let tex = img.map(|img| {
-            let size = [img.w as usize, img.h as usize];
-            let ci = if img.premultiplied { ColorImage::from_rgba_premultiplied(size, &img.px) } else { ColorImage::from_rgba_unmultiplied(size, &img.px) };
+        let tex = img.map(|(img, ci)| {
             // Se pide del tamaño exacto en pantalla: si llegó así, se copia píxel a píxel, sin suavizar.
             let exact = img.w == key.size && img.h == key.size;
             ctx.load_texture(&cache, ci, if exact { TextureOptions::NEAREST } else { TextureOptions::LINEAR })

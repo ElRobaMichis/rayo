@@ -134,6 +134,9 @@ pub struct Config {
     pub tab_groups: Vec<TabGroup>,
     pub tab_group_of: Vec<u64>,
     pub tab_group_of_right: Vec<u64>,
+    /// El grupo de cada pestaña de los paneles de abajo (2 × 2).
+    pub tab_group_of_bottom_left: Vec<u64>,
+    pub tab_group_of_bottom_right: Vec<u64>,
     /// Botones propios de la barra (comandos del catálogo, en orden).
     pub toolbar: Vec<String>,
     /// Columnas extra de la vista de detalles ("created", "ext", "dims", "duration", "tags").
@@ -215,6 +218,8 @@ impl Default for Config {
             tab_groups: Vec::new(),
             tab_group_of: Vec::new(),
             tab_group_of_right: Vec::new(),
+            tab_group_of_bottom_left: Vec::new(),
+            tab_group_of_bottom_right: Vec::new(),
             toolbar: Vec::new(),
             extra_columns: Vec::new(),
             quad: false,
@@ -318,6 +323,22 @@ mod tests {
         assert_eq!(c.tabs.len(), 2);
         assert_eq!(c.groups.len(), 2);
         assert!(c.default_explorer);
+    }
+
+    /// Una configuración de antes de que los paneles de abajo guardaran grupos se lee igual, y los
+    /// grupos nuevos se guardan y se vuelven a leer.
+    #[test]
+    fn bottom_pane_groups_are_optional_and_round_trip() {
+        let (c, dropped) = Config::parse(include_str!("testdata/config-0.2.4.json"));
+        assert!(dropped.is_empty(), "{dropped:?}");
+        assert!(c.tab_group_of_bottom_left.is_empty() && c.tab_group_of_bottom_right.is_empty());
+        let mut c = c;
+        c.tab_group_of_bottom_left = vec![0, 7];
+        c.tab_group_of_bottom_right = vec![7];
+        let (back, dropped) = Config::parse(&serde_json::to_string(&c).unwrap());
+        assert!(dropped.is_empty(), "{dropped:?}");
+        assert_eq!(back.tab_group_of_bottom_left, vec![0, 7]);
+        assert_eq!(back.tab_group_of_bottom_right, vec![7]);
     }
 
     /// Guardado con marca BOM (Bloc de notas, PowerShell): se lee igual.

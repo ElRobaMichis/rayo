@@ -80,9 +80,11 @@ pub struct App {
     /// Vista rápida (barra espaciadora), en su propia ventana.
     ql: super::ql::QuickLook,
     /// Texto de lo que muestra la Vista rápida (más largo que el del panel): (ruta, texto).
-    ql_text: Option<(String, Option<String>)>,
+    ql_text: Option<(String, Option<Arc<str>>)>,
     rename: Option<Rename>,
     group_edit: Option<(usize, String)>,
+    /// Grupo de favoritos recién creado o nombrado (cuál, cuándo): crece en la barra lateral.
+    group_born: Option<(usize, f64)>,
     toast: Option<ToastMsg>,
     /// Si en el cuadro anterior había un diálogo modal (al abrirse uno se descarta el aviso).
     modal_seen: bool,
@@ -92,7 +94,7 @@ pub struct App {
     diag_dirty: std::collections::HashMap<String, std::time::Instant>,
     epoch_seen: u64,
     cut: Vec<String>,
-    text_cache: Option<(String, Option<String>)>,
+    text_cache: Option<(String, Option<Arc<str>>)>,
     paste_latch: bool,
     /// Menú nativo pendiente: se muestra un cuadro después, cuando el menú propio ya se cerró.
     pending_menu: Option<(Vec<String>, (i32, i32), u8)>,
@@ -179,6 +181,13 @@ pub struct App {
     /// Diálogo "Seleccionar por patrón": (patrón, sumar a la selección, primer cuadro).
     pattern: Option<(String, bool, bool)>,
     hash: Option<super::tools::HashDialog>,
+}
+
+/// Destello de la etiqueta de un grupo de pestañas (al crearlo, plegarlo, desplegarlo o recibir una
+/// pestaña): `chrome` lo pinta mientras dura.
+fn pulse_group(ctx: &egui::Context, g: u64) {
+    let now = ctx.input(|i| i.time);
+    ctx.data_mut(|d| d.insert_temp(Id::new(("tabgroup-pulse", g)), now));
 }
 
 fn hwnd_of(h: &impl raw_window_handle::HasWindowHandle) -> Option<HWND> {
@@ -343,6 +352,8 @@ impl App {
             let groups_of = match p {
                 0 => &cfg.tab_group_of,
                 1 => &cfg.tab_group_of_right,
+                2 => &cfg.tab_group_of_bottom_left,
+                3 => &cfg.tab_group_of_bottom_right,
                 _ => &no_groups,
             };
             for (k, path) in list.iter().enumerate() {
@@ -397,6 +408,7 @@ impl App {
             ql_text: None,
             rename: None,
             group_edit: None,
+            group_born: None,
             toast: None,
             modal_seen: false,
             hwnd,
@@ -452,8 +464,81 @@ impl App {
             pattern: None,
             hash: None,
         };
+        // Desde aquí, el orden del vector es el que se ve.
+        app.normalize_tab_order();
         app.warm_start();
         app
+    }
+
+    /// Ordena `tabs` como se ven en la barra (por panel; las de un grupo juntas, en el lugar de la
+    /// primera) y rehace `pane` y `cur` por id. Así orden visible = orden del vector = orden
+    /// guardado, y Ctrl+Tab recorre lo que se ve.
+    fn normalize_tab_order(&mut self) {
+        let keys: Vec<(u8, u64)> = self.tabs.iter().map(|t| (t.pane, if t.group != 0 && self.cfg.tab_groups.iter().any(|g| g.id == t.group) { t.group } else { 0 })).collect();
+        let perm = chrome::visible_order(&keys);
+        if perm.len() != self.tabs.len() || perm.iter().enumerate().all(|(k, &i)| k == i) {
+            return;
+        }
+        let (pane_ids, cur_id) = self.tab_ids();
+        let mut old: Vec<Option<Tab>> = std::mem::take(&mut self.tabs).into_iter().map(Some).collect();
+        self.tabs = perm.iter().filter_map(|&i| old[i].take()).collect();
+        self.reindex(pane_ids, cur_id);
+    }
+
+    /// Ids de la pestaña actual de cada panel y de la enfocada (para rehacer los índices después
+    /// de reordenar).
+    fn tab_ids(&self) -> ([u64; 4], u64) {
+        (self.pane.map(|k| self.tabs.get(k).map_or(0, |t| t.id)), self.tabs.get(self.cur).map_or(0, |t| t.id))
+    }
+
+    fn reindex(&mut self, pane_ids: [u64; 4], cur_id: u64) {
+        let at = |id: u64| self.tabs.iter().position(|t| t.id == id);
+        let pane = pane_ids.map(|id| at(id).unwrap_or(0));
+        self.pane = pane;
+        self.cur = at(cur_id).unwrap_or(self.pane[self.focus]);
+    }
+
+    /// Lleva la pestaña `id` al panel `pane`, antes de `before` (None = al final), en el grupo
+    /// `group`. Queda activa y su panel toma el foco. Si deja su panel, ahí pasa a la vecina (la de
+    /// la izquierda; si no hay, la de la derecha); si era la única, el panel recibe una pestaña nueva
+    /// en la misma carpeta.
+    fn move_tab(&mut self, ctx: &egui::Context, id: u64, pane: usize, before: Option<u64>, group: u64) {
+        let Some(i) = self.tabs.iter().position(|t| t.id == id) else { return };
+        let pane = pane.min(3);
+        let group = if self.cfg.tab_groups.iter().any(|g| g.id == group) { group } else { 0 };
+        let origin = self.tabs[i].pane as usize;
+        let (mut pane_ids, _) = self.tab_ids();
+        if origin != pane && pane_ids[origin] == id {
+            let mine = self.tabs_of(origin);
+            let k = mine.iter().position(|&x| x == i).unwrap_or(0);
+            let next = if k > 0 { mine.get(k - 1) } else { mine.get(1) };
+            pane_ids[origin] = next.map_or(0, |&j| self.tabs[j].id);
+        }
+        let mut t = self.tabs.remove(i);
+        let path = t.path().to_string();
+        t.pane = pane as u8;
+        t.group = group;
+        let at = match before.filter(|&b| b != id).and_then(|b| self.tabs.iter().position(|x| x.id == b && x.pane as usize == pane)) {
+            Some(k) => k,
+            None => self.tabs.iter().rposition(|x| x.pane as usize == pane).map_or(self.tabs.len(), |k| k + 1),
+        };
+        self.tabs.insert(at, t);
+        pane_ids[pane] = id;
+        if origin != pane && !self.tabs.iter().any(|x| x.pane as usize == origin) {
+            let nid = self.next_id;
+            self.next_id += 1;
+            let mut nt = Tab::new(nid, &path);
+            nt.pane = origin as u8;
+            self.tabs.push(nt);
+            pane_ids[origin] = nid;
+        }
+        self.reindex(pane_ids, id);
+        self.normalize_tab_order();
+        self.set_focus(pane);
+        if group != 0 {
+            pulse_group(ctx, group);
+        }
+        self.save_cfg();
     }
 
     fn tab(&mut self) -> &mut Tab {
@@ -642,10 +727,12 @@ impl App {
                 2 => {
                     self.cfg.tabs_bottom_left = paths;
                     self.cfg.active_bottom_left = active;
+                    self.cfg.tab_group_of_bottom_left = groups;
                 }
                 _ => {
                     self.cfg.tabs_bottom_right = paths;
                     self.cfg.active_bottom_right = active;
+                    self.cfg.tab_group_of_bottom_right = groups;
                 }
             }
         }
@@ -866,6 +953,11 @@ impl App {
     // ------------------------------------------------------------ teclado
 
     fn keys(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        // Arrastrando una pestaña, Esc la devuelve a su lugar. Va antes que todo: `keys` corre antes
+        // de dibujar y otros manejadores también usan Esc.
+        if chrome::tab_drag_active(ctx) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            chrome::tab_drag_cancel(ctx);
+        }
         // Con un menú abierto, las teclas son del menú (Esc lo cierra).
         if self.palette.open || self.batch.is_some() || self.pattern.is_some() || self.hash.is_some() || self.locks.is_some() || self.default_dlg.is_some() || self.lang_dlg.is_some() || self.admin.is_some() || self.confirm_delete.is_some() || self.toolbar_dlg || self.conn_form.is_some() || self.first_run || egui::Popup::is_any_open(ctx) || chrome::overlay_open(ctx) {
             return;
@@ -889,7 +981,15 @@ impl App {
         if consume(ctrl, Key::W) {
             actions.push(Action::CloseTab(self.cur));
         }
-        // Ctrl+Tab recorre las pestañas del panel enfocado.
+        // Ctrl+Mayús+RePág / AvPág mueven la pestaña activa un lugar (como en los navegadores).
+        // Si algún día se agrega Ctrl+RePág, este va antes: un patrón Ctrl también acepta Ctrl+Mayús.
+        if consume(cs, Key::PageUp) {
+            actions.push(Action::MoveTabStep(-1));
+        }
+        if consume(cs, Key::PageDown) {
+            actions.push(Action::MoveTabStep(1));
+        }
+        // Ctrl+Tab recorre las pestañas del panel enfocado (en el orden en que se ven).
         let mine = self.tabs_of(self.focus);
         let k = mine.iter().position(|&i| i == self.cur).unwrap_or(0);
         if consume(cs, Key::Tab) {
@@ -1391,6 +1491,7 @@ impl App {
                 }
                 self.pane[self.focus] = at;
                 self.cur = at;
+                self.normalize_tab_order();
             }
             Action::CloseTab(i) => {
                 // Cada panel conserva al menos una pestaña.
@@ -1417,18 +1518,42 @@ impl App {
                 let color = self.cfg.tab_groups.len() % crate::fsx::tags::COLORS.len();
                 self.cfg.tab_groups.push(super::config::TabGroup { id, name: tf!("barra.grupo_n", n = id), color, collapsed: false });
                 self.tabs[i].group = id;
-                // Recién creado: listo para escribirle el nombre.
-                ctx.data_mut(|d| d.insert_temp(Id::new("group-rename"), (id, tf!("barra.grupo_n", n = id), true)));
+                // Recién creado: listo para escribirle el nombre (en su panel).
+                chrome::start_group_rename(ctx, id, &tf!("barra.grupo_n", n = id), self.tabs[i].pane as usize);
+                pulse_group(ctx, id);
+                self.normalize_tab_order();
                 self.save_cfg();
             }
             Action::SetTabGroup(i, g) if i < self.tabs.len() => {
                 self.tabs[i].group = g;
+                if g != 0 {
+                    pulse_group(ctx, g);
+                }
+                self.normalize_tab_order();
                 self.save_cfg();
             }
             Action::NewTabGroup(_) | Action::SetTabGroup(..) => {}
+            Action::MoveTab { id, pane, before, group } => self.move_tab(ctx, id, pane, before, group),
+            Action::MoveTabStep(dir) => {
+                let mine = self.tabs_of(self.focus);
+                let valid = |g: u64| if self.cfg.tab_groups.iter().any(|x| x.id == g) { g } else { 0 };
+                let order: Vec<(u64, u64)> = mine.iter().map(|&i| (self.tabs[i].id, valid(self.tabs[i].group))).collect();
+                let collapsed: Vec<u64> = self.cfg.tab_groups.iter().filter(|g| g.collapsed).map(|g| g.id).collect();
+                let id = self.tabs[self.cur].id;
+                if let Some((before, group)) = chrome::tab_step(&order, &collapsed, id, dir) {
+                    self.move_tab(ctx, id, self.focus, before, group);
+                }
+            }
+            Action::MoveTabOther => {
+                if let Some(o) = self.other_pane() {
+                    let id = self.tabs[self.cur].id;
+                    self.move_tab(ctx, id, o, None, 0);
+                }
+            }
             Action::ToggleTabGroup(g) => {
                 if let Some(x) = self.cfg.tab_groups.iter_mut().find(|x| x.id == g) {
                     x.collapsed ^= true;
+                    pulse_group(ctx, g);
                 }
                 self.save_cfg();
             }
@@ -1450,6 +1575,7 @@ impl App {
                 for t in self.tabs.iter_mut().filter(|t| t.group == g) {
                     t.group = 0;
                 }
+                self.normalize_tab_order();
                 self.save_cfg();
             }
             Action::CloseTabGroup(g) => {
@@ -2019,6 +2145,9 @@ impl App {
             Action::AddFavorite(gi, p) => {
                 if let Some(g) = self.cfg.groups.get_mut(gi) {
                     if !g.items.iter().any(|x| x.eq_ignore_ascii_case(&p)) {
+                        // La fila nueva se lava con el acento suave, que se apaga.
+                        let now = ctx.input(|i| i.time);
+                        ctx.data_mut(|d| d.insert_temp(chrome::fav_added_key(), (gi, p.to_lowercase(), now)));
                         g.items.push(p);
                         g.collapsed = false;
                     }
@@ -2036,6 +2165,8 @@ impl App {
             Action::NewGroup => {
                 self.cfg.groups.push(FavGroup { name: t!("comun.nuevo_grupo").into(), items: Vec::new(), collapsed: false });
                 self.group_edit = Some((self.cfg.groups.len() - 1, t!("comun.nuevo_grupo").into()));
+                // Crece en la barra lateral desde alto 0, con el campo ya enfocado.
+                self.group_born = Some((self.cfg.groups.len() - 1, ctx.input(|i| i.time)));
             }
             Action::DeleteGroup(gi) => {
                 if gi < self.cfg.groups.len() {
@@ -2457,6 +2588,9 @@ impl App {
             "theme" => Action::ToggleTheme,
             "new_tab" => Action::NewTab(None),
             "close_tab" => Action::CloseTab(self.cur),
+            "move_tab_left" => Action::MoveTabStep(-1),
+            "move_tab_right" => Action::MoveTabStep(1),
+            "move_tab_other" => Action::MoveTabOther,
             "refresh" => Action::Refresh,
             "search" => {
                 self.tab().search.focus = true;
@@ -2802,6 +2936,19 @@ impl App {
         let mut changed = false;
         let mut list = self.cfg.toolbar.clone();
         let shortcuts = self.cfg.shortcuts.clone();
+        // La fila que se movió (o cambió de lista) lleva un lavado de hover que se apaga.
+        let now = ctx.input(|i| i.time);
+        let moved_key = |id: &str| Id::new(("tb-moved", id.to_string()));
+        let mut moved: Option<String> = None;
+        let wash = |ui: &mut Ui, id: &str, top: f32| {
+            if let Some(at) = ctx.data(|d| d.get_temp::<f64>(moved_key(id))) {
+                let a = 1.0 - super::motion::since(ctx, at, dur::SLOW);
+                if a > 0.0 {
+                    let r = egui::Rect::from_min_max(egui::pos2(ui.max_rect().left(), top), egui::pos2(ui.max_rect().right(), ui.cursor().top()));
+                    ui.painter().rect_filled(r, design::radius::M, t.hover.gamma_multiply(a));
+                }
+            }
+        };
         let modal = design::dialog(ctx, &t, "customize-toolbar", DialogW::M, |ui| {
             design::dialog_header(ui, &t, egui_phosphor::regular::SLIDERS_HORIZONTAL, design::Tone::Accent, t!("app.barra_titulo"), None);
             ui.add_space(sp::L);
@@ -2818,16 +2965,21 @@ impl App {
                     for (k, id) in chosen.iter().enumerate() {
                         let Some(c) = super::commands::ALL.iter().find(|c| c.id == id) else { continue };
                         let keys = super::commands::shortcut_of(c.id, &shortcuts);
+                        let top = ui.cursor().top();
                         let (toggle, up, down) = toolbar_row(ui, &t, Id::new(("tb-on", c.id)), true, c.icon, c.label(), &keys, Some((k > 0, k + 1 < chosen.len())));
+                        wash(ui, c.id, top);
                         if toggle {
                             list.retain(|x| x != id);
                             changed = true;
+                            moved = Some(c.id.to_string());
                         } else if up {
                             list.swap(k, k - 1);
                             changed = true;
+                            moved = Some(c.id.to_string());
                         } else if down {
                             list.swap(k, k + 1);
                             changed = true;
+                            moved = Some(c.id.to_string());
                         }
                     }
                     if !chosen.is_empty() {
@@ -2836,18 +2988,25 @@ impl App {
                     design::menu_title(ui, &t, t!("app.barra_disponibles"));
                     for c in super::commands::ALL.iter().filter(|c| !chosen.iter().any(|x| x == c.id) && c.id != "customize_toolbar") {
                         let keys = super::commands::shortcut_of(c.id, &shortcuts);
-                        if toolbar_row(ui, &t, Id::new(("tb-off", c.id)), false, c.icon, c.label(), &keys, None).0 {
+                        let top = ui.cursor().top();
+                        let added = toolbar_row(ui, &t, Id::new(("tb-off", c.id)), false, c.icon, c.label(), &keys, None).0;
+                        wash(ui, c.id, top);
+                        if added {
                             list.push(c.id.to_string());
                             changed = true;
+                            moved = Some(c.id.to_string());
+                            ctx.data_mut(|d| d.insert_temp(Id::new("tb-count"), now));
                         }
                     }
                 });
             });
             let n = list.len();
+            // Al agregar uno, el conteo se enciende y vuelve a `dim`.
+            let lit = ctx.data(|d| d.get_temp::<f64>(Id::new("tb-count"))).map_or(1.0, |at| super::motion::since(ctx, at, dur::SLOW));
             design::dialog_footer(
                 ui,
                 |ui| {
-                    ui.label(egui::RichText::new(tp!(n, "app.barra_botones", n = n)).font(text::small()).color(t.dim));
+                    ui.label(egui::RichText::new(tp!(n, "app.barra_botones", n = n)).font(text::small()).color(t.text.lerp_to_gamma(t.dim, lit)));
                 },
                 |ui| {
                     if design::button(ui, &t, design::Kind::Primary, "", t!("comun.listo"), true).clicked() {
@@ -2858,6 +3017,9 @@ impl App {
         });
         if modal.should_close() {
             close = true;
+        }
+        if let Some(id) = moved {
+            ctx.data_mut(|d| d.insert_temp(moved_key(&id), now));
         }
         if changed {
             self.cfg.toolbar = list;
@@ -3041,6 +3203,7 @@ impl App {
         self.focus = 0;
         self.cfg.split = w.split;
         self.cfg.quad = false;
+        self.normalize_tab_order();
         self.save_cfg();
     }
 
@@ -3672,7 +3835,7 @@ impl App {
         // El panel de la derecha (sin vista previa) tiene arriba los botones de la ventana.
         let rightmost = p == if self.cfg.split { 1 } else { 0 };
         let reserve = if rightmost && !self.cfg.show_preview { chrome::WINDOW_BUTTONS_W } else { 0.0 };
-        let plus_end = chrome::tab_bar(&mut tui, &t, &self.tabs, &self.cfg.tab_groups, &show, ti, reserve, actions);
+        let plus_end = chrome::tab_bar(&mut tui, chrome::TabBarIn { t: &t, tabs: &self.tabs, groups: &self.cfg.tab_groups, pane: p, show: &show, cur: ti, reserve }, actions);
         // Lo que sobra a la derecha de las pestañas es barra de título (arrastrar, doble clic).
         let free = egui::Rect::from_min_max(egui::pos2(plus_end + sp::XS, tabs_rect.top()), egui::pos2(tabs_rect.right() - reserve, tabs_rect.bottom()));
         if free.width() > 4.0 && p < 2 {
@@ -3915,28 +4078,44 @@ impl App {
         None
     }
 
-    fn text_for(&mut self, item: Option<&PreviewItem>) -> Option<String> {
+    fn text_for(&mut self, ctx: &egui::Context, item: Option<&PreviewItem>) -> Option<Arc<str>> {
         let item = item?;
         if !preview::wants_text(&item.entry) {
             return None;
         }
         if self.text_cache.as_ref().is_none_or(|(p, _)| p != item.source()) {
             let local = self.mgr.slot_for(item.source()).is_some();
-            let txt = if local { preview::read_text_snippet(item.source(), 64 * 1024) } else { None };
+            let txt = if !local {
+                None
+            } else {
+                // Se lee en otro hilo: mientras tanto, vacío (el pozo del texto, sin pasar por el ícono).
+                match preview::read_text_async(ctx, item.source(), 64 * 1024) {
+                    Some(txt) => txt,
+                    None => return Some(Arc::from("")),
+                }
+            };
             self.text_cache = Some((item.source().to_string(), txt));
         }
         self.text_cache.as_ref().and_then(|(_, t)| t.clone())
     }
 
     /// Texto para la Vista rápida: hasta `ql::TEXT_MAX` (el panel lee menos).
-    fn ql_text_for(&mut self, item: Option<&PreviewItem>) -> Option<String> {
+    fn ql_text_for(&mut self, ctx: &egui::Context, item: Option<&PreviewItem>) -> Option<Arc<str>> {
         let item = item?;
         if !preview::wants_text(&item.entry) {
             return None;
         }
         if self.ql_text.as_ref().is_none_or(|(p, _)| p != item.source()) {
             let local = self.mgr.slot_for(item.source()).is_some();
-            let txt = if local { preview::read_text_snippet(item.source(), super::ql::TEXT_MAX) } else { None };
+            let txt = if !local {
+                None
+            } else {
+                // Se lee en otro hilo: mientras tanto, vacío (el pozo del texto, sin pasar por el ícono).
+                match preview::read_text_async(ctx, item.source(), super::ql::TEXT_MAX) {
+                    Some(txt) => txt,
+                    None => return Some(Arc::from("")),
+                }
+            };
             self.ql_text = Some((item.source().to_string(), txt));
         }
         self.ql_text.as_ref().and_then(|(_, t)| t.clone())
@@ -4061,6 +4240,8 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
         if crate::instance::SHOWN_AGAIN.swap(false, Ordering::Relaxed) {
+            // El ajuste de animaciones de Windows pudo cambiar mientras Rayo estaba en segundo plano.
+            super::motion::init();
             // De vuelta de segundo plano: lo visible pudo cambiar.
             for p in 0..self.panes() {
                 let paths: Vec<String> = self.tabs[self.pane[p]].cols.iter().map(|c| c.path.clone()).collect();
@@ -4185,7 +4366,7 @@ impl eframe::App for App {
                 let drives = self.drives.lock().clone();
                 chrome::sidebar(
                     ui,
-                    chrome::SidebarIn { t: &t, cfg: &mut self.cfg, places: &self.places, drives: &drives, current: &current_path, special, group_edit: &mut self.group_edit, collection: &collection, shelf: &self.shelf, clouds: &self.clouds },
+                    chrome::SidebarIn { t: &t, cfg: &mut self.cfg, places: &self.places, drives: &drives, current: &current_path, special, group_edit: &mut self.group_edit, group_born: &mut self.group_born, collection: &collection, shelf: &self.shelf, clouds: &self.clouds },
                     &mut actions,
                 );
                 // Botones al pie: a 10 del borde, así el centro del ícono (x=24) queda alineado
@@ -4232,7 +4413,7 @@ impl eframe::App for App {
         // ---- vista previa
         let mut want_handler: Option<(String, egui::Rect)> = None;
         let item = self.focused_item();
-        let text = self.text_for(item.as_ref());
+        let text = self.text_for(&ctx, item.as_ref());
         if self.cfg.show_preview {
             let multi = {
                 let tab = &self.tabs[self.cur];
@@ -4334,6 +4515,9 @@ impl eframe::App for App {
                 ],
             };
             self.pane_rects = rects;
+            // Arrastrando una pestaña: qué tira tiene el hueco (la franja de arriba de cada panel).
+            let strips: Vec<egui::Rect> = rects[..panes].iter().map(|r| egui::Rect::from_min_size(r.min, vec2(r.width(), chrome::TITLE_H))).collect();
+            chrome::tab_drag_host(&ctx, &strips);
             for p in 0..panes {
                 let mut pui = ui.new_child(egui::UiBuilder::new().max_rect(rects[p]).layout(egui::Layout::top_down(egui::Align::Min)));
                 pui.set_clip_rect(rects[p]);
@@ -4458,7 +4642,7 @@ impl eframe::App for App {
             let other = self.ql.pick(focused.as_deref(), &group).filter(|p| Some(p) != focused.as_ref());
             let other_item = other.and_then(|p| self.item_at(&p));
             let ql_item = if other_item.is_some() { other_item.as_ref() } else { item.as_ref() };
-            let ql_text = if self.ql.open { self.ql_text_for(ql_item) } else { None };
+            let ql_text = if self.ql.open { self.ql_text_for(&ctx, ql_item) } else { None };
             let env = super::ql::Env { t: &t, tex: &mut self.tex, host: self.prevhost.as_ref(), player: self.player.as_ref(), cfg: &mut self.cfg.quicklook, main: self.hwnd };
             let model = super::ql::Model { item: ql_item, text: ql_text.as_deref(), group: &group, from_search };
             for e in self.ql.show(&ctx, env, model) {

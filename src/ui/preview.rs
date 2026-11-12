@@ -4,15 +4,19 @@ use super::actions::Action;
 use super::design::{self, h, icon, radius, sp, stroke};
 use super::icons;
 use super::theme::Theme;
-use crate::fsx::thumbs::{Rgba, ThumbKey, ThumbLoader, is_image_ext};
+use crate::fsx::thumbs::{Band, Rgba, ThumbKey, ThumbLoader, is_image_ext};
 use crate::fsx::{self, FileEntry};
-use egui::{Align2, Color32, ColorImage, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, pos2, vec2};
+use egui::emath::GuiRounding;
+use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, pos2, vec2};
 use egui_phosphor::regular as ic;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct TexEntry {
+    /// La textura, si la imagen es chica (va entera). Las grandes van en franjas: `pic`.
     pub tex: Option<TextureHandle>,
+    /// La imagen para dibujar, chica o grande.
+    pub pic: Option<Pic>,
     pub orig: Option<(u32, u32)>,
     /// Páginas (si es un PDF).
     pub pages: Option<u32>,
@@ -29,31 +33,100 @@ pub struct TexEntry {
     seq: u64,
 }
 
-/// Cómo es una imagen recibida: (opaca, ícono en un lienzo vacío). Mira una muestra de ~64×64
-/// píxeles, así cuesta lo mismo una miniatura que una página de 4096. El ícono que da Windows en
-/// lugar de la miniatura es uno de 48 centrado en 256, a veces con un marco semitransparente en
-/// el borde: cuenta solo lo bien opaco (α ≥ 128).
-fn shape(img: &Rgba) -> (bool, bool) {
-    let (w, h) = (img.w as usize, img.h as usize);
-    if w == 0 || h == 0 || img.px.len() < w * h * 4 {
-        return (false, false);
+/// Una franja de una imagen grande ya en la GPU: sus filas y la fila de la imagen con que empieza
+/// la textura (que trae `thumbs::GUTTER` filas de las vecinas).
+#[derive(Clone)]
+struct BandTex {
+    tex: TextureHandle,
+    rows: std::ops::Range<usize>,
+    top: usize,
+}
+
+/// Una imagen en la GPU: una textura, o varias franjas (subir 48 MB de una vez traba un cuadro;
+/// en franjas de 4 MB se sube una por cuadro). Se dibuja igual en los dos casos.
+#[derive(Clone)]
+pub struct Pic {
+    bands: Vec<BandTex>,
+    size: [usize; 2],
+}
+
+impl Pic {
+    pub fn of(tex: &TextureHandle) -> Pic {
+        let size = tex.size();
+        Pic { bands: vec![BandTex { tex: tex.clone(), rows: 0..size[1], top: 0 }], size }
     }
-    let step = (w.max(h) / 64).max(1);
-    let mut opaque = true;
-    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
-    for y in (step / 2..h).step_by(step) {
-        for x in (step / 2..w).step_by(step) {
-            let a = img.px[(y * w + x) * 4 + 3];
-            opaque &= a == 255;
-            if a >= 128 {
-                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+
+    /// Tamaño en píxeles.
+    pub fn size_vec2(&self) -> egui::Vec2 {
+        vec2(self.size[0] as f32, self.size[1] as f32)
+    }
+
+    /// Dibuja la imagen entera en `r`. Con `corner` (foto, página): rectángulo redondeado con la
+    /// textura, como `RectShape`; sin él, suelta (`Painter::image`).
+    ///
+    /// En franjas: cada una se recorta (tijera de la GPU) a sus filas, pero se dibuja un poco más
+    /// alta, con las filas de sus vecinas (`GUTTER`): así el borde suavizado de cada franja cae
+    /// fuera de su recorte y el filtrado en la unión usa los píxeles de verdad. Los recortes
+    /// comparten el mismo borde: cada píxel de la pantalla es de una sola franja. Se ve igual que
+    /// una textura sola.
+    pub fn paint(&self, p: &egui::Painter, r: Rect, corner: Option<egui::CornerRadius>, tint: Color32) {
+        if let [b] = self.bands.as_slice() {
+            match corner {
+                Some(cr) => {
+                    p.add(egui::epaint::RectShape::filled(r, cr, tint).with_texture(b.tex.id(), UV));
+                }
+                None => {
+                    p.image(b.tex.id(), r, UV, tint);
+                }
+            }
+            return;
+        }
+        let ppp = p.ctx().pixels_per_point();
+        // Lo que haría el teselador con un rectángulo con textura (alinearlo a píxeles), hecho una
+        // vez para toda la imagen; las franjas no se vuelven a alinear.
+        let r = if corner.is_some() { r.round_to_pixels(ppp) } else { r };
+        let h = self.size[1] as f32;
+        let y_of = |row: f32| r.top() + r.height() * row / h;
+        // Cuánto de más (filas) para correr el borde suavizado fuera del recorte: 3 px.
+        let extra = 3.0 / ppp * h / r.height().max(1.0);
+        let full = p.clip_rect();
+        for b in &self.bands {
+            let th = b.tex.size()[1] as f32;
+            let (first, last) = (b.rows.start == 0, b.rows.end >= self.size[1]);
+            let (a, z) = (b.rows.start as f32, b.rows.end as f32);
+            let (qa, qz) = (if first { a } else { a - extra }, if last { z } else { z + extra });
+            let quad = Rect::from_x_y_ranges(r.x_range(), y_of(qa)..=y_of(qz));
+            let uv = Rect::from_min_max(pos2(0.0, (qa - b.top as f32) / th), pos2(1.0, (qz - b.top as f32) / th));
+            let top = if first { full.top() } else { y_of(a) };
+            let bottom = if last { full.bottom() } else { y_of(z) };
+            let clip = Rect::from_x_y_ranges(full.x_range(), top..=bottom).intersect(full);
+            if !clip.is_positive() {
+                continue;
+            }
+            let pb = p.with_clip_rect(clip);
+            match corner {
+                Some(cr) => {
+                    let cr = egui::CornerRadius { nw: if first { cr.nw } else { 0 }, ne: if first { cr.ne } else { 0 }, sw: if last { cr.sw } else { 0 }, se: if last { cr.se } else { 0 } };
+                    pb.add(egui::epaint::RectShape::filled(quad, cr, tint).with_texture(b.tex.id(), uv).with_round_to_pixels(false));
+                }
+                None => {
+                    pb.image(b.tex.id(), quad, uv, tint);
+                }
             }
         }
     }
-    // El borde también cuenta para «opaca» (el marco de Windows es semitransparente).
-    opaque &= img.px[3] == 255 && img.px[(w * h - 1) * 4 + 3] == 255;
-    let icon = !opaque && w.max(h) >= 96 && x1 >= x0 && (x1 - x0 + step) * 2 <= w && (y1 - y0 + step) * 2 <= h;
-    (opaque, icon)
+}
+
+/// Una imagen grande a medio subir: las franjas que faltan, las ya subidas y lo demás de su
+/// entrada. Se suben de a una por cuadro (ver `UPLOAD_BYTES`).
+struct Pending {
+    key: ThumbKey,
+    img: Rgba,
+    shape: (bool, bool),
+    left: std::collections::VecDeque<Band>,
+    done: Vec<BandTex>,
+    /// Último cuadro en que se pidió (lo que deja de pedirse se descarta).
+    used: u64,
 }
 
 /// Texturas de miniaturas. Se desaloja lo que hace más que no se usa: por cantidad (`MAX_TEX`) y,
@@ -62,6 +135,7 @@ fn shape(img: &Rgba) -> (bool, bool) {
 pub struct Textures {
     pub loader: Arc<ThumbLoader>,
     map: HashMap<ThumbKey, TexEntry>,
+    pending: Vec<Pending>,
     /// Cuadro actual (para saber qué se usó hace poco) y orden de llegada.
     frame: u64,
     seq: u64,
@@ -71,57 +145,94 @@ const MAX_TEX: usize = 240;
 /// Lado desde el que una textura cuenta para el tope en bytes.
 const BIG_SIDE: u32 = 512;
 const BIG_BYTES: usize = 192 * 1024 * 1024;
+/// Bytes de texturas que se suben por cuadro (al menos una franja): subir cuesta ~0,15 ms por MB.
+const UPLOAD_BYTES: usize = 6 << 20;
+/// Cuadros sin pedirse tras los que se descarta una imagen a medio subir.
+const PENDING_FRAMES: u64 = 30;
 
 impl Textures {
     pub fn new(loader: Arc<ThumbLoader>) -> Self {
         super::shellicons::init(loader.clone());
-        Textures { loader, map: HashMap::new(), frame: 0, seq: 0 }
+        Textures { loader, map: HashMap::new(), pending: Vec::new(), frame: 0, seq: 0 }
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) {
+        super::perf::install(ctx);
+        let _p = super::perf::scope("texturas");
         self.loader.next_frame();
         self.frame += 1;
-        // Subir texturas tiene su costo: se suben las que entren en ~3 ms por cuadro y el resto en
-        // el siguiente, así una carpeta llena de fotos no traba el movimiento.
+        // Subir texturas tiene su costo: por cuadro se suben las que entren en ~3 ms y en
+        // `UPLOAD_BYTES`, y el resto en el siguiente. Así una carpeta llena de fotos no traba el
+        // movimiento, y una foto grande se sube en franjas, una por cuadro.
         let t0 = std::time::Instant::now();
         let budget = std::time::Duration::from_millis(3);
         let now = ctx.input(|i| i.time);
-        loop {
-            if t0.elapsed() > budget {
-                if !self.loader.rx.is_empty() {
-                    ctx.request_repaint();
+        let frame = self.frame;
+        self.pending.retain(|p| p.used + PENDING_FRAMES >= frame);
+        let mut sent = 0;
+        while t0.elapsed() <= budget && sent < UPLOAD_BYTES {
+            // Primero lo que quedó a medio subir.
+            if let Some(p) = self.pending.first_mut() {
+                let Some(b) = p.left.pop_front() else {
+                    self.pending.remove(0);
+                    continue;
+                };
+                sent += b.img.pixels.len() * 4;
+                let tex = ctx.load_texture(format!("{}#{}", p.key.path, b.rows.start), b.img, TextureOptions::LINEAR);
+                p.done.push(BandTex { tex, rows: b.rows, top: b.top });
+                if p.left.is_empty() {
+                    let p = self.pending.remove(0);
+                    let pic = Pic { bands: p.done, size: [p.img.w as usize, p.img.h as usize] };
+                    self.insert(p.key, Some((p.img, pic, p.shape)), now);
                 }
-                break;
+                continue;
             }
             let Ok(r) = self.loader.rx.try_recv() else { break };
             if r.key.path.starts_with(crate::fsx::thumbs::ICON_PREFIX) {
-                super::shellicons::deliver(ctx, &r.key, r.img);
+                let ci = r.bands.into_iter().next().map(|b| b.img);
+                super::shellicons::deliver(ctx, &r.key, r.img.zip(ci));
                 continue;
             }
-            // Si ya se veía otra versión del mismo archivo, la nueva la reemplaza sin fundido.
-            let replaces = self.map.iter().any(|(k, e)| k.path == r.key.path && e.tex.is_some());
-            let at = if replaces { f64::MIN } else { now };
-            self.seq += 1;
-            let (used, seq) = (self.frame, self.seq);
-            let entry = match r.img {
-                Some(img) => {
-                    let size = [img.w as usize, img.h as usize];
-                    let ci = if img.premultiplied {
-                        ColorImage::from_rgba_premultiplied(size, &img.px)
-                    } else {
-                        ColorImage::from_rgba_unmultiplied(size, &img.px)
-                    };
-                    let (opaque, icon) = shape(&img);
-                    let tex = ctx.load_texture(&r.key.path, ci, TextureOptions::LINEAR);
-                    let big = img.w.max(img.h) > BIG_SIDE;
-                    TexEntry { tex: Some(tex), orig: img.orig, pages: img.pages, at, opaque, icon, bytes: if big { img.w as usize * img.h as usize * 4 } else { 0 }, used, seq }
+            let mut bands = r.bands;
+            match r.img {
+                Some(img) if bands.len() == 1 => {
+                    let b = bands.pop().expect("una franja");
+                    sent += b.img.pixels.len() * 4;
+                    let tex = ctx.load_texture(&r.key.path, b.img, TextureOptions::LINEAR);
+                    let pic = Pic::of(&tex);
+                    self.insert(r.key, Some((img, pic, r.shape)), now);
                 }
-                None => TexEntry { tex: None, orig: None, pages: None, at, opaque: false, icon: false, bytes: 0, used, seq },
-            };
-            let key = r.key.clone();
-            self.map.insert(r.key, entry);
-            self.evict(&key);
+                Some(img) if !bands.is_empty() => {
+                    self.pending.push(Pending { key: r.key, img, shape: r.shape, left: bands.into(), done: Vec::new(), used: frame });
+                }
+                _ => self.insert(r.key, None, now),
+            }
         }
+        if !self.pending.is_empty() || !self.loader.rx.is_empty() {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Guarda lo que llegó (ya en la GPU) y desaloja lo que sobre.
+    fn insert(&mut self, key: ThumbKey, got: Option<(Rgba, Pic, (bool, bool))>, now: f64) {
+        // Si ya se veía otra versión del mismo archivo, la nueva la reemplaza sin fundido.
+        let replaces = self.map.iter().any(|(k, e)| k.path == key.path && e.pic.is_some());
+        let at = if replaces { f64::MIN } else { now };
+        self.seq += 1;
+        let (used, seq) = (self.frame, self.seq);
+        let entry = match got {
+            Some((img, pic, (opaque, icon))) => {
+                let big = img.w.max(img.h) > BIG_SIDE;
+                let tex = match pic.bands.as_slice() {
+                    [b] => Some(b.tex.clone()),
+                    _ => None,
+                };
+                TexEntry { tex, pic: Some(pic), orig: img.orig, pages: img.pages, at, opaque, icon, bytes: if big { img.w as usize * img.h as usize * 4 } else { 0 }, used, seq }
+            }
+            None => TexEntry { tex: None, pic: None, orig: None, pages: None, at, opaque: false, icon: false, bytes: 0, used, seq },
+        };
+        self.map.insert(key.clone(), entry);
+        self.evict(&key);
     }
 
     /// Desaloja lo menos usado hasta volver a los topes. Nunca lo usado en los dos últimos cuadros
@@ -163,9 +274,15 @@ impl Textures {
         let key = ThumbKey { path: path.to_string(), size };
         let frame = self.frame;
         if !self.map.contains_key(&key) {
-            self.loader.request(key.clone(), urgent);
-            // Mientras tanto, la versión más grande ya cargada del mismo archivo.
-            let alt = self.map.iter().filter(|(k, _)| k.path == path).max_by_key(|(k, e)| (e.tex.is_some(), k.size)).map(|(k, _)| k.clone())?;
+            // Si ya llegó y se está subiendo, no se pide de nuevo.
+            match self.pending.iter_mut().find(|p| p.key == key) {
+                Some(p) => p.used = frame,
+                None => self.loader.request(key.clone(), urgent),
+            }
+            // Mientras tanto, la versión más grande ya cargada del mismo archivo (para una
+            // miniatura, una que vaya entera: la cuadrícula dibuja `tex`).
+            let small = size <= BIG_SIDE;
+            let alt = self.map.iter().filter(|(k, _)| k.path == path).max_by_key(|(k, e)| (if small { e.tex.is_some() } else { e.pic.is_some() }, k.size)).map(|(k, _)| k.clone())?;
             let e = self.map.get_mut(&alt)?;
             e.used = frame;
             return Some(e);
@@ -178,7 +295,7 @@ impl Textures {
     /// Lo que ya haya de un archivo (la versión más grande), sin pedir nada: para el subtítulo
     /// de la Vista rápida (medidas, páginas).
     pub fn peek(&self, path: &str) -> Option<&TexEntry> {
-        self.map.iter().filter(|(k, _)| k.path == path).max_by_key(|(k, e)| (e.tex.is_some(), k.size)).map(|(_, e)| e)
+        self.map.iter().filter(|(k, _)| k.path == path).max_by_key(|(k, e)| (e.pic.is_some(), k.size)).map(|(_, e)| e)
     }
 
     /// La imagen de una foto (vista previa, vista rápida). Si Windows dio el ícono del tipo en vez
@@ -193,6 +310,29 @@ impl Textures {
 
     pub fn clear(&mut self) {
         self.map.clear();
+        self.pending.clear();
+    }
+}
+
+/// Suelta algo grande (los fotogramas de un GIF, cientos de MB) en otro hilo: devolver tanta
+/// memoria a Windows tarda milisegundos y en el hilo de la interfaz se come un cuadro.
+pub fn drop_later<T: Send + 'static>(x: T) {
+    type Job = Box<dyn Send>;
+    static TX: std::sync::OnceLock<Option<crossbeam_channel::Sender<Job>>> = std::sync::OnceLock::new();
+    let tx = TX.get_or_init(|| {
+        let (tx, rx) = crossbeam_channel::unbounded::<Job>();
+        let spawned = std::thread::Builder::new().name("soltar".into()).spawn(move || {
+            for job in rx {
+                drop(job);
+            }
+        });
+        spawned.ok().map(|_| tx)
+    });
+    match tx {
+        Some(tx) => {
+            let _ = tx.send(Box::new(x));
+        }
+        None => drop(x),
     }
 }
 
@@ -202,9 +342,42 @@ pub const TEXT_EXTS: &[&str] = &[
     "gitignore", "env", "reg", "srt", "vtt", "properties", "gradle", "lock", "editorconfig", "svg", "zig", "nix", "mk", "makefile", "dockerfile",
 ];
 
+/// Lecturas de texto en curso o terminadas y todavía sin retirar: (ruta, tope, resultado).
+type TextJobs = parking_lot::Mutex<Vec<(String, usize, Option<Option<Arc<str>>>)>>;
+static TEXT_JOBS: TextJobs = parking_lot::Mutex::new(Vec::new());
+
+/// `read_text_snippet` en otro hilo: None mientras se lee (y al terminar se pide un cuadro);
+/// después, una vez, `Some(lo leído)`. Leer 512 KB del disco en el hilo de la interfaz tarda de
+/// medio milisegundo (en caché) a decenas (disco frío).
+pub fn read_text_async(ctx: &egui::Context, path: &str, max: usize) -> Option<Option<Arc<str>>> {
+    let mut jobs = TEXT_JOBS.lock();
+    if let Some(i) = jobs.iter().position(|j| j.0 == path && j.1 == max) {
+        return if jobs[i].2.is_some() { jobs.remove(i).2 } else { None };
+    }
+    // Lo que nadie retiró (se pasó a otro archivo antes de que terminara) no se acumula.
+    while jobs.len() >= 8 {
+        jobs.remove(0);
+    }
+    jobs.push((path.to_string(), max, None));
+    drop(jobs);
+    let (job, ctx) = (path.to_string(), ctx.clone());
+    let spawned = std::thread::Builder::new().name("leer-texto".into()).spawn(move || {
+        let txt = read_text_snippet(&job, max).map(Arc::<str>::from);
+        if let Some(j) = TEXT_JOBS.lock().iter_mut().find(|j| j.0 == job && j.1 == max) {
+            j.2 = Some(txt);
+        }
+        ctx.request_repaint();
+    });
+    if spawned.is_err() {
+        TEXT_JOBS.lock().retain(|j| j.0 != path || j.1 != max);
+    }
+    None
+}
+
 /// Lee el inicio de un archivo de texto (o None si parece binario).
 pub fn read_text_snippet(path: &str, max: usize) -> Option<String> {
     use std::io::Read;
+    let _p = super::perf::scope("leer texto");
     if fsx::is_online_only(path) {
         return None;
     }
@@ -283,16 +456,7 @@ pub fn kind(item: &PreviewItem, has_text: bool) -> Kind {
 /// `mono_l`); si no, el panel (`small` / `mono`). El texto plano y el Markdown se ajustan al ancho;
 /// el código no (ver `scrolls_sideways`).
 pub fn text_view(ui: &mut Ui, t: &Theme, text: &str, ext: &str, large: bool) {
-    // Un texto en chino o japonés en una carpeta con nombres ASCII: que se cargue la fuente.
-    super::theme::want_cjk(text);
-    if matches!(ext, "md" | "markdown" | "mdx") {
-        super::richtext::markdown(ui, t, text, large);
-    } else if super::richtext::is_code(ext) {
-        super::richtext::code(ui, t, text, large);
-    } else {
-        let font = if large { design::text::mono_l() } else { design::text::mono() };
-        ui.add(egui::Label::new(egui::RichText::new(text).font(font).color(t.text)).wrap());
-    }
+    super::richtext::document(ui, t, text, ext, large);
 }
 
 /// ¿Se desplaza también a lo ancho? Solo el código (sus líneas no se parten).
@@ -331,18 +495,18 @@ pub(super) fn fit(tex_size: egui::Vec2, area: Rect) -> Rect {
 const UV: Rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
 
 /// Imagen con radio `S` y borde fino (foto o página: en el pozo del panel y en Vista rápida).
-fn framed_image(p: &egui::Painter, t: &Theme, tex: egui::TextureId, r: Rect) {
-    p.add(egui::epaint::RectShape::filled(r, radius::S, Color32::WHITE).with_texture(tex, UV));
+fn framed_image(p: &egui::Painter, t: &Theme, pic: &Pic, r: Rect) {
+    pic.paint(p, r, Some(radius::S.into()), Color32::WHITE);
     p.rect_stroke(r, radius::S, Stroke::new(stroke::HAIR, t.border), StrokeKind::Outside);
 }
 
 /// Una imagen recibida: con marco si es opaca (foto, página); si tiene transparencia (ícono,
 /// PNG recortado), suelta sobre el fondo.
-pub(super) fn picture(p: &egui::Painter, t: &Theme, te: &TexEntry, tx: &TextureHandle, r: Rect) {
+pub(super) fn picture(p: &egui::Painter, t: &Theme, te: &TexEntry, pic: &Pic, r: Rect) {
     if te.opaque {
-        framed_image(p, t, tx.id(), r);
+        framed_image(p, t, pic, r);
     } else {
-        p.image(tx.id(), r, UV, Color32::WHITE);
+        pic.paint(p, r, None, Color32::WHITE);
     }
 }
 
@@ -483,6 +647,7 @@ pub fn preview_pane(
     host: Option<&super::prevhost::PreviewHost>,
     actions: &mut Vec<Action>,
 ) -> Option<(String, Rect)> {
+    let _p = super::perf::scope("panel");
     let mut want = None;
     if let Some((n, size)) = multi {
         // Varios: la trama con el ícono, cuántos y cuánto pesan (como un estado vacío).
@@ -556,7 +721,7 @@ pub fn preview_pane(
                 let ppp = ui.ctx().pixels_per_point();
                 let size = ((w.max(h) * ppp).min(768.0) as u32).next_multiple_of(128);
                 if let Some(te) = tex.get_now(item.source(), size)
-                    && let Some(tx) = te.tex.as_ref().filter(|_| !te.icon)
+                    && let Some(tx) = te.pic.as_ref().filter(|_| !te.icon)
                 {
                     let air = if w >= 240.0 { sp::XL } else { sp::L };
                     picture(&p, t, te, tx, fit(tx.size_vec2() / ppp, area.shrink(air)));
@@ -581,7 +746,7 @@ pub fn preview_pane(
                     pages = te.pages;
                     // Una foto que llegó como el ícono del tipo no es su miniatura: el ícono
                     // grande sin marco mientras llega la de verdad.
-                    if let Some(tx) = te.tex.as_ref().filter(|_| !(te.icon && photo)) {
+                    if let Some(tx) = te.pic.as_ref().filter(|_| !(te.icon && photo)) {
                         // Con aire dentro del pozo, para que la trama se vea alrededor.
                         let air = if w >= 240.0 { sp::XL } else { sp::L };
                         picture(&p, t, te, tx, fit(tx.size_vec2() / ppp, area.shrink(air)));

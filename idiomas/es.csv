@@ -739,7 +739,6 @@ barra.cerrar_pestana,Cerrar pestaña,,
 barra.renombrar_grupo,Cambiar nombre,,
 barra.desagrupar,Desagrupar,,
 barra.cerrar_grupo,Cerrar el grupo,,
-barra.grupo_plegar,Clic: plegar o desplegar · doble clic: cambiar nombre,,
 cmd.customize_toolbar,Personalizar barra de herramientas…,,
 cmd.customize_toolbar.buscar,botones barra toolbar agregar quitar,,
 app.barra_explicacion,Los comandos marcados aparecen como botones junto a la ruta. Las flechas cambian su orden.,,
@@ -849,3 +848,15 @@ rapida.pdf_no_abre,No se pudo abrir este PDF,,Línea de estado: PDF protegido o 
 rapida.primeros_kb,Se muestran los primeros {n} KB,,Micro-etiqueta al final de un texto largo (se muestra en mayúsculas) · {n} = un número
 cmd.ql_autoplay,Vista rápida: reproducir al abrir,,Comando (paleta Ctrl+K y menú de clic derecho)
 cmd.ql_autoplay.buscar,sonido audio video musica automatico autoplay,,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+barra.grupo_desplegado,Clic: plegar · doble clic: cambiar nombre,,Tooltip de la etiqueta de un grupo de pestañas desplegado
+barra.grupo_plegado,Clic: desplegar · doble clic: cambiar nombre,,Tooltip de la etiqueta de un grupo de pestañas plegado que no guarda pestañas ocultas
+barra.grupo_plegado_n.uno,{n} pestaña · clic: desplegar · doble clic: cambiar nombre,,Tooltip de un grupo de pestañas plegado · Cuando la cantidad es 1 · {n} = un número
+barra.grupo_plegado_n.varios,{n} pestañas · clic: desplegar · doble clic: cambiar nombre,,Tooltip de un grupo de pestañas plegado · Cuando la cantidad no es 1 · {n} = un número
+tecla.repag,RePág,,Nombre de la tecla Page Up en los atajos
+tecla.avpag,AvPág,,Nombre de la tecla Page Down en los atajos
+cmd.move_tab_left,Mover la pestaña a la izquierda,,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.move_tab_left.buscar,pestana mover izquierda reordenar,,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.move_tab_right,Mover la pestaña a la derecha,,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.move_tab_right.buscar,pestana mover derecha reordenar,,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"
+cmd.move_tab_other,Mover la pestaña al otro panel,,Comando (paleta Ctrl+K y menú de clic derecho)
+cmd.move_tab_other.buscar,pestana mover panel dividida,,"Palabras extra para encontrar el comando en la paleta (sin acentos, separadas por espacios)"

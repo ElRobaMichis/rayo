@@ -93,6 +93,20 @@ pub fn click(pos: egui::Pos2, button: egui::PointerButton) {
     push_frames(vec![vec![egui::Event::PointerMoved(pos)], vec![ev(true)], vec![ev(false)]]);
 }
 
+/// Apretar en `from` y arrastrar hasta `to` en `steps` cuadros; `release`: soltar al final (si no,
+/// queda a medio arrastrar).
+pub fn drag(from: egui::Pos2, to: egui::Pos2, steps: usize, release: bool) {
+    let press = egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() };
+    let mut frames = vec![vec![egui::Event::PointerMoved(from)], vec![press]];
+    for k in 1..=steps.max(1) {
+        frames.push(vec![egui::Event::PointerMoved(from + (to - from) * (k as f32 / steps.max(1) as f32))]);
+    }
+    if release {
+        frames.push(vec![egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }]);
+    }
+    push_frames(frames);
+}
+
 /// Clic en el centro del control `id` (como quedó en el cuadro anterior). false si no está.
 pub fn click_on(ctx: &egui::Context, id: egui::Id, button: egui::PointerButton) -> bool {
     match ctx.read_response(id) {

@@ -143,6 +143,61 @@ impl App {
                 self.tabs[start].group = 1;
                 self.apply(ctx, Action::SwitchTab(start));
             }
+            // ---- movimiento de grupos y pestañas: se arma la tira, se deja asentar y recién
+            // entonces se hace el cambio (con RAYO_MOVIMIENTO_LENTO se captura a mitad de camino).
+            "grupo-plegar" | "grupo-desplegar" | "grupo-crear" | "pestana-arrastrar" | "pestana-al-grupo" | "pestana-soltar" | "pestana-cerrar" | "pestana-teclado" => {
+                self.capture_step(ctx, "grupos");
+                capture::later(ctx, 2.2, &format!("#{step}"));
+            }
+            "#grupo-plegar" => self.apply(ctx, Action::ToggleTabGroup(1)),
+            // Cerrar la activa; Ctrl+Mayús+AvPág dos veces (la activa sale de su grupo y pasa al siguiente).
+            "#pestana-cerrar" => self.apply(ctx, Action::CloseTab(self.cur)),
+            "#pestana-teclado" => {
+                self.apply(ctx, Action::MoveTabStep(1));
+                self.apply(ctx, Action::MoveTabStep(1));
+                self.apply(ctx, Action::MoveTabStep(1));
+            }
+            "#grupo-desplegar" => self.apply(ctx, Action::ToggleTabGroup(3)),
+            "#grupo-crear" => {
+                // La última pestaña sin grupo del panel.
+                if let Some(i) = self.tabs_of(0).into_iter().rev().find(|&i| self.tabs[i].group == 0) {
+                    self.apply(ctx, Action::NewTabGroup(i));
+                }
+            }
+            "#pestana-arrastrar" | "#pestana-al-grupo" | "#pestana-soltar" => {
+                // La activa se levanta y se lleva a la derecha (o sobre la etiqueta plegada de
+                // «Trabajo», que al levantarla se corre a la izquierda lo que ella ocupaba).
+                let id = self.tabs[self.cur].id;
+                if let Some(r) = ctx.read_response(Id::new(("tab", id))).map(|r| r.rect) {
+                    let to = if step == "#pestana-al-grupo" {
+                        ctx.read_response(Id::new(("tabgroup", 0usize, 3u64))).map_or(r.center() + vec2(400.0, 0.0), |c| c.rect.center() - vec2(r.width() + sp::XS, 0.0))
+                    } else {
+                        r.center() + vec2(260.0, 0.0)
+                    };
+                    capture::drag(r.center(), to, 12, step == "#pestana-soltar");
+                }
+            }
+            "pestana-otro-panel" | "pestana-otro-panel-soltar" => {
+                self.capture_step(ctx, "dividida");
+                capture::later(ctx, 2.2, &format!("#{step}"));
+            }
+            "#pestana-otro-panel" | "#pestana-otro-panel-soltar" => {
+                // La activa del panel izquierdo se lleva a la tira del derecho.
+                let id = self.tabs[self.pane[0]].id;
+                if let Some(r) = ctx.read_response(Id::new(("tab", id))).map(|r| r.rect) {
+                    let to = egui::pos2(self.pane_rects[1].left() + 160.0, r.center().y);
+                    capture::drag(r.center(), to, 14, step == "#pestana-otro-panel-soltar");
+                }
+            }
+            "seccion-plegar" => capture::later(ctx, 0.8, "#seccion-plegar"),
+            "#seccion-plegar" => self.cfg.places_collapsed = true,
+            "seccion-desplegar" => {
+                self.cfg.places_collapsed = true;
+                capture::later(ctx, 0.8, "#seccion-desplegar");
+            }
+            "#seccion-desplegar" => self.cfg.places_collapsed = false,
+            "favoritos-nuevo" => capture::later(ctx, 0.8, "#favoritos-nuevo"),
+            "#favoritos-nuevo" => self.apply(ctx, Action::NewGroup),
             // ---- barra lateral
             "etiquetas" => {
                 fsx::tags::toggle(&[at("torii-fushimi.jpg")], 0);

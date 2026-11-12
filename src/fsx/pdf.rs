@@ -33,14 +33,26 @@ fn session() -> std::sync::MutexGuard<'static, Option<Session>> {
     SESSION.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Suelta el documento si es ese (al cerrar la Vista rápida, al pasar a otro archivo, antes de
-/// borrarlo).
+fn take(path: &str) -> Option<Session> {
+    let mut s = session();
+    if s.as_ref().is_some_and(|s| s.path == path) { s.take() } else { None }
+}
+
+/// Suelta el documento si es ese, ya: antes de borrarlo, moverlo o renombrarlo.
 pub fn forget(path: &str) {
-    let old = {
-        let mut s = session();
-        if s.as_ref().is_some_and(|s| s.path == path) { s.take() } else { None }
-    };
-    drop(old);
+    drop(take(path));
+}
+
+/// Lo mismo, sin esperar: al cerrar la Vista rápida o pasar a otro archivo. Cerrar el documento
+/// puede tardar (Windows termina lo que estuviera dibujando) y eso no debe pasar en el hilo de la
+/// interfaz.
+pub fn release(path: &str) {
+    if let Some(old) = take(path) {
+        let _ = std::thread::Builder::new().name("pdf-cerrar".into()).spawn(move || {
+            mta();
+            drop(old);
+        });
+    }
 }
 
 /// El documento abierto (de la sesión, o lo abre y lo deja en ella). En un hilo multihilo de COM.

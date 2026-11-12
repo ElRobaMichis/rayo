@@ -155,6 +155,30 @@ compile_error!("`accesskit` feature is only available with `android-game-activit
 // Re-export all useful libraries:
 pub use {egui, egui::emath, egui::epaint};
 
+/// Rayo: lo que tardó cada parte de un cuadro de una ventana, en segundos.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameTimes {
+    /// La ventana (la raíz, o una inmediata como la Vista rápida, que se dibuja dentro de la raíz).
+    pub viewport: egui::ViewportId,
+    /// La interfaz (`App::ui`; en la raíz incluye las ventanas inmediatas).
+    pub update: f32,
+    /// Pasar las formas a triángulos.
+    pub tessellate: f32,
+    /// Subir texturas y dibujar.
+    pub paint: f32,
+    /// Presentar el cuadro (en la raíz, incluye la espera al monitor).
+    pub swap: f32,
+    /// Cambiar el contexto de OpenGL a esta ventana (y limpiarla, en las inmediatas).
+    pub switch: f32,
+    /// Todo el cuadro de esta ventana, de punta a punta.
+    pub total: f32,
+}
+
+/// Rayo: si se instala, se la llama al terminar cada cuadro (para medir tirones). Sin instalar no
+/// cuesta nada: ni se mide.
+#[cfg(not(target_arch = "wasm32"))]
+pub static FRAME_HOOK: std::sync::OnceLock<fn(FrameTimes)> = std::sync::OnceLock::new();
+
 #[cfg(feature = "glow")]
 pub use {egui_glow, glow};
 

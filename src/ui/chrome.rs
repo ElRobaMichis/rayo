@@ -1,8 +1,9 @@
 //! Barra lateral, pestañas, barra de herramientas y barra de estado.
 
 use super::actions::Action;
-use super::config::{Config, ViewMode};
-use super::design::{self, Chip, DialogW, IconBtn, Kind, MenuItem, Row, Sel, Tone, Trailing, h, icon, radius, sp, stroke, text};
+use super::config::{Config, TabGroup, ViewMode};
+use super::design::{self, Chip, DialogW, IconBtn, Kind, MenuItem, Row, Sel, Tone, Trailing, dur, h, icon, radius, sp, stroke, text};
+use super::motion::SlotKey;
 use super::state::Tab;
 use super::theme::{self, Theme};
 use super::views::elided;
@@ -46,25 +47,71 @@ fn cmd_keys(id: &str, shortcuts: &[(String, String)]) -> String {
 pub const SIDEBAR_FOOT: f32 = h::CTL + 2.0 * sp::S;
 
 /// Encabezado de sección: micro-etiqueta en x=16 y caret pegado (con hover o si está plegada).
-/// `first`: el primero lleva menos aire arriba.
-fn section_header(ui: &mut Ui, t: &Theme, label: &str, collapsed: bool, first: bool) -> (Response, Rect) {
-    let (resp, rect, _) = section_header_ex(ui, t, label, collapsed, first, true);
+/// `first`: el primero lleva menos aire arriba. `fold_id`: el del cuerpo (`fold`), para que el caret
+/// gire con él.
+fn section_header(ui: &mut Ui, t: &Theme, label: &str, collapsed: bool, first: bool, fold_id: Id) -> (Response, Rect) {
+    let k = super::motion::fade(ui.ctx(), fold_id, !collapsed, dur::SLOW);
+    let (resp, rect, _) = section_header_ex(ui, t, label, first, Some(k));
     (resp, rect)
 }
 
-/// Igual; `foldable`: lleva caret (el estante no se pliega). Devuelve además el rectángulo de la
-/// etiqueta.
-fn section_header_ex(ui: &mut Ui, t: &Theme, label: &str, collapsed: bool, first: bool, foldable: bool) -> (Response, Rect, Rect) {
+/// Igual; `open`: cuánto está abierta (0 a 1), o None si no se pliega (el estante: sin caret).
+/// Devuelve además el rectángulo de la etiqueta.
+fn section_header_ex(ui: &mut Ui, t: &Theme, label: &str, first: bool, open: Option<f32>) -> (Response, Rect, Rect) {
     ui.add_space(if first { 0.0 } else { sp::M });
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h::HEAD), Sense::click());
     let p = ui.painter();
     let hovered = ui.rect_contains_pointer(rect);
-    let lr = design::micro(p, pos2(rect.left() + sp::L, rect.center().y), Align2::LEFT_CENTER, label, if hovered && foldable { t.dim } else { t.faint });
-    if foldable && (hovered || collapsed) {
-        let caret = if collapsed { ic::CARET_RIGHT } else { ic::CARET_DOWN };
-        p.text(pos2(lr.right() + sp::XS, rect.center().y), Align2::LEFT_CENTER, caret, design::icon_font(icon::S), t.faint);
+    let lr = design::micro(p, pos2(rect.left() + sp::L, rect.center().y), Align2::LEFT_CENTER, label, if hovered && open.is_some() { t.dim } else { t.faint });
+    if let Some(k) = open {
+        // Un solo glifo que gira con el pliegue; plegada se ve siempre, desplegada con hover, y
+        // durante el giro nunca desaparece de golpe.
+        let alpha = if hovered { 1.0 } else { 1.0 - k };
+        if alpha > 0.0 {
+            let g = p.layout_no_wrap(ic::CARET_RIGHT.to_string(), design::icon_font(icon::S), t.faint);
+            let pos = pos2(lr.right() + sp::XS, rect.center().y - g.size().y / 2.0);
+            let shape = egui::epaint::TextShape::new(pos, g, t.faint).with_angle_and_anchor(k * std::f32::consts::FRAC_PI_2, Align2::CENTER_CENTER).with_opacity_factor(alpha);
+            p.add(shape);
+        }
     }
     (resp, rect, lr)
+}
+
+/// Cuerpo plegable con recorte (secciones y grupos de la barra lateral). Devuelve cuánto está
+/// abierto (0 a 1). El alto va de 0 al del contenido; el contenido entra 12 px desde arriba con
+/// opacidad desde 0,3 (la receta de siempre). `born`: algo recién creado crece desde alto 0.
+/// Se dibuja siempre en un hijo con `id_salt` (y plegado se saltan los mismos ids), así los ids
+/// automáticos de lo que sigue no cambian entre cuadros.
+fn fold(ui: &mut Ui, id: Id, open: bool, born: Option<f64>, body: impl FnOnce(&mut Ui)) -> f32 {
+    let ctx = ui.ctx().clone();
+    let mut k = super::motion::fade(&ctx, id, open, dur::SLOW);
+    if let Some(at) = born {
+        k = k.min(super::motion::since(&ctx, at, dur::SLOW));
+    }
+    if !open && k <= 0.0 {
+        // Plegado: no se dibuja (costo cero); se gastan los ids que gastaría.
+        ui.skip_ahead_auto_ids(2);
+        return 0.0;
+    }
+    let h_id = id.with("h");
+    let prev_h: f32 = ctx.data(|d| d.get_temp(h_id)).unwrap_or(0.0);
+    let avail = ui.available_rect_before_wrap();
+    let top = avail.top();
+    let ppp = ctx.pixels_per_point();
+    let shift = ((1.0 - k) * prev_h.min(12.0) * ppp).round() / ppp;
+    let max = Rect::from_min_max(pos2(avail.left(), top - shift), pos2(avail.right(), top - shift + 100_000.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().id_salt(id).max_rect(max).layout(*ui.layout()));
+    if k < 1.0 {
+        let clip = Rect::from_min_max(pos2(avail.left(), top), pos2(avail.right(), top + ((k * prev_h * ppp).round() / ppp))).intersect(ui.clip_rect());
+        child.set_clip_rect(clip);
+        child.multiply_opacity(0.3 + 0.7 * k);
+    }
+    body(&mut child);
+    let h = child.min_rect().height();
+    ctx.data_mut(|d| d.insert_temp(h_id, h));
+    let used = if k >= 1.0 { h } else { (k * h * ppp).round() / ppp };
+    ui.allocate_space(vec2(avail.width(), used));
+    k
 }
 
 /// Pista bajo una sección («Usa + para…», «y N más»): `small` `faint`, alineada con el texto de
@@ -269,12 +316,25 @@ pub struct SidebarIn<'a> {
     /// Lugar especial que muestra la pestaña actual: "recientes", "papelera" o "".
     pub special: &'a str,
     pub group_edit: &'a mut Option<(usize, String)>,
+    /// Grupo de favoritos recién creado (o recién nombrado): cuál y cuándo, para que crezca.
+    pub group_born: &'a mut Option<(usize, f64)>,
     /// Colección que muestra la pestaña actual ("" si no es una).
     pub collection: &'a str,
     /// Lo que está en el estante.
     pub shelf: &'a [String],
     /// Carpetas de la nube de este equipo (nombre, carpeta).
     pub clouds: &'a [(String, String)],
+}
+
+/// Clave del pliegue de una sección fija de la barra lateral.
+fn side_fold(name: &'static str) -> Id {
+    Id::new(("side-fold", name))
+}
+
+/// Favorito recién agregado (grupo, ruta en minúsculas, cuándo): su fila se lava con
+/// `accent_soft` que se apaga.
+pub fn fav_added_key() -> Id {
+    Id::new("fav-added")
 }
 
 pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
@@ -290,13 +350,14 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
         ui.spacing_mut().item_spacing.y = 0.0;
         let cur_lower = s.current.to_lowercase();
 
-        let (hd, _) = section_header(ui, t, t!("barra.lugares"), s.cfg.places_collapsed, true);
+        let fid = side_fold("lugares");
+        let (hd, _) = section_header(ui, t, t!("barra.lugares"), s.cfg.places_collapsed, true, fid);
         if hd.clicked() {
             s.cfg.places_collapsed ^= true;
         }
         let groups: Vec<String> = s.cfg.groups.iter().map(|g| g.name.clone()).collect();
         let split = s.cfg.split;
-        if !s.cfg.places_collapsed {
+        fold(ui, fid, !s.cfg.places_collapsed, None, |ui| {
             for p in s.places {
                 let sel = p.path.to_lowercase() == cur_lower;
                 let r = side_item(ui, t, p.icon, if sel { t.accent } else { t.dim }, false, p.name, sel, None);
@@ -324,27 +385,29 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
             if r.clicked() || r.middle_clicked() {
                 actions.push(Action::OpenRecycle);
             }
-        }
+        });
 
-        let (hd, _) = section_header(ui, t, t!("barra.unidades"), s.cfg.drives_collapsed, false);
+        let fid = side_fold("unidades");
+        let (hd, _) = section_header(ui, t, t!("barra.unidades"), s.cfg.drives_collapsed, false, fid);
         if hd.clicked() {
             s.cfg.drives_collapsed ^= true;
         }
-        if !s.cfg.drives_collapsed {
+        fold(ui, fid, !s.cfg.drives_collapsed, None, |ui| {
             for d in s.drives {
                 let sel = cur_lower == d.root().to_lowercase();
                 drive_row(ui, t, d, sel, split, &groups, actions);
             }
-        }
+        });
 
         // Etiquetas de color (solo las que se usan): todo lo de un color, esté donde esté.
         let counts = fsx::tags::counts();
         if counts.iter().any(|&n| n > 0) {
-            let (hd, _) = section_header(ui, t, t!("barra.etiquetas"), s.cfg.tags_collapsed, false);
+            let fid = side_fold("etiquetas");
+            let (hd, _) = section_header(ui, t, t!("barra.etiquetas"), s.cfg.tags_collapsed, false, fid);
             if hd.clicked() {
                 s.cfg.tags_collapsed ^= true;
             }
-            if !s.cfg.tags_collapsed {
+            fold(ui, fid, !s.cfg.tags_collapsed, None, |ui| {
                 for (i, &n) in counts.iter().enumerate().filter(|(_, n)| **n > 0) {
                     let sel = s.special == fsx::tags::COLORS[i].0;
                     let count = fsx::thousands(n);
@@ -354,16 +417,17 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
                         actions.push(Action::OpenTag(i));
                     }
                 }
-            }
+            });
         }
 
         // Nube: OneDrive, Dropbox, iCloud, Google Drive… (lo que haya en este equipo).
         if !s.clouds.is_empty() {
-            let (hd, _) = section_header(ui, t, t!("barra.nube"), s.cfg.cloud_collapsed, false);
+            let fid = side_fold("nube");
+            let (hd, _) = section_header(ui, t, t!("barra.nube"), s.cfg.cloud_collapsed, false, fid);
             if hd.clicked() {
                 s.cfg.cloud_collapsed ^= true;
             }
-            if !s.cfg.cloud_collapsed {
+            fold(ui, fid, !s.cfg.cloud_collapsed, None, |ui| {
                 for (name, path) in s.clouds {
                     let sel = path.to_lowercase() == cur_lower;
                     let r = design::tip(side_item(ui, t, ic::CLOUD, if sel { t.accent } else { t.dim }, false, name, sel, None), t, path);
@@ -375,12 +439,13 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
                         actions.push(Action::NewTab(Some(path.clone())));
                     }
                 }
-            }
+            });
         }
 
         // Conexiones: SMB, WebDAV y SFTP guardados; "+" agrega una.
         {
-            let (hd, hrect) = section_header(ui, t, t!("barra.conexiones"), s.cfg.connections_collapsed, false);
+            let fid = side_fold("conexiones");
+            let (hd, hrect) = section_header(ui, t, t!("barra.conexiones"), s.cfg.connections_collapsed, false, fid);
             if hd.clicked() {
                 s.cfg.connections_collapsed ^= true;
             }
@@ -389,8 +454,9 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
             if add.clicked() {
                 actions.push(Action::EditConnection(None));
             }
-            if !s.cfg.connections_collapsed {
-                for (i, c) in s.cfg.connections.iter().enumerate() {
+            let connections = &s.cfg.connections;
+            fold(ui, fid, !s.cfg.connections_collapsed, None, |ui| {
+                for (i, c) in connections.iter().enumerate() {
                     use fsx::remote::Kind;
                     let icon = match c.kind {
                         Kind::Smb => ic::HARD_DRIVES,
@@ -417,17 +483,18 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
                         }
                     });
                 }
-            }
+            });
         }
 
         // Colecciones: carpetas virtuales (soltar archivos en una los agrega).
         let colls = fsx::collections::list();
         if !colls.is_empty() {
-            let (hd, _) = section_header(ui, t, t!("barra.colecciones"), s.cfg.collections_collapsed, false);
+            let fid = side_fold("colecciones");
+            let (hd, _) = section_header(ui, t, t!("barra.colecciones"), s.cfg.collections_collapsed, false, fid);
             if hd.clicked() {
                 s.cfg.collections_collapsed ^= true;
             }
-            if !s.cfg.collections_collapsed {
+            fold(ui, fid, !s.cfg.collections_collapsed, None, |ui| {
                 for (name, n) in &colls {
                     let count = fsx::thousands(*n);
                     let sel = s.collection == name;
@@ -445,14 +512,14 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
                         }
                     });
                 }
-            }
+            });
         }
 
         // Estante: un lugar donde juntar archivos de varias carpetas para llevarlos juntos a otro
         // lado. Se ve si tiene algo, o mientras se arrastran archivos (para soltarlos ahí).
         let dragging = egui::DragAndDrop::has_payload_of_type::<crate::ui::views::DragFiles>(ui.ctx()) || ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
         if !s.shelf.is_empty() || dragging {
-            let (_, hrect, lr) = section_header_ex(ui, t, t!("barra.estante"), false, false, false);
+            let (_, hrect, lr) = section_header_ex(ui, t, t!("barra.estante"), false, None);
             if !s.shelf.is_empty() {
                 // El conteo, junto a la etiqueta.
                 ui.painter().text(pos2(lr.right() + sp::XS, hrect.center().y), Align2::LEFT_CENTER, fsx::thousands(s.shelf.len()), text::mono_s(), t.faint);
@@ -511,28 +578,56 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
             }
         }
 
+        let now = ui.input(|i| i.time);
+        let added: Option<(usize, String, f64)> = ui.data(|d| d.get_temp(fav_added_key()));
         let ngroups = s.cfg.groups.len();
         for gi in 0..ngroups {
+            let born = s.group_born.filter(|(i, _)| *i == gi).map(|(_, at)| at);
             let editing = s.group_edit.as_ref().is_some_and(|(i, _)| *i == gi);
             if editing {
-                ui.add_space(sp::M);
-                let (_, buf) = s.group_edit.as_mut().unwrap();
-                let mut f = super::widgets::Field::new(("grupo-nombre", gi), egui_phosphor::regular::TAG, t!("barra.nombre_grupo"));
-                f.width = ui.available_width() - sp::M;
-                let r = super::widgets::field(ui, t, buf, f).edit;
-                r.request_focus();
-                if ui.input(|i| i.key_pressed(egui::Key::Enter)) || r.lost_focus() {
-                    let name = buf.trim().to_string();
-                    if !name.is_empty() {
-                        s.cfg.groups[gi].name = name;
+                // Grupo nuevo: crece desde alto 0 con el campo ya enfocado y todo el texto
+                // seleccionado (escribir no espera a la animación); empuja lo de abajo.
+                let group_edit = &mut *s.group_edit;
+                let groups_cfg = &mut s.cfg.groups;
+                let mut committed = false;
+                fold(ui, Id::new(("fav-new", gi)), true, born, |ui| {
+                    ui.add_space(sp::M);
+                    let (_, buf) = group_edit.as_mut().unwrap();
+                    let mut f = super::widgets::Field::new(("grupo-nombre", gi), egui_phosphor::regular::TAG, t!("barra.nombre_grupo"));
+                    f.width = ui.available_width() - sp::M;
+                    let r = super::widgets::field(ui, t, buf, f).edit;
+                    if !r.has_focus()
+                        && let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), r.id)
+                    {
+                        st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()))));
+                        st.store(ui.ctx(), r.id);
                     }
-                    *s.group_edit = None;
+                    r.request_focus();
+                    if born.is_some_and(|at| now - at < 0.5) {
+                        // Mientras crece, que no quede bajo el pie.
+                        ui.scroll_to_rect(r.rect, None);
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) || r.lost_focus() {
+                        let name = buf.trim().to_string();
+                        if !name.is_empty() {
+                            groups_cfg[gi].name = name;
+                        }
+                        *group_edit = None;
+                        committed = true;
+                    }
+                });
+                if committed {
+                    // Ya con nombre: el encabezado reemplaza al campo y la pista entra con el pliegue.
+                    *s.group_born = Some((gi, now));
                 }
                 continue;
             }
             let collapsed = s.cfg.groups[gi].collapsed;
             let name = s.cfg.groups[gi].name.clone();
-            let (hd, hrect) = section_header(ui, t, &name, collapsed, false);
+            // El nombre va en la clave: al borrar un grupo los índices se corren y el siguiente no
+            // debe heredar una animación ajena.
+            let fid = Id::new(("fav-fold", gi, &name));
+            let (hd, hrect) = section_header(ui, t, &name, collapsed, false, fid);
             if let Some(files) = sidebar_drop(ui, t, &hd) {
                 // Soltar carpetas en el título de un grupo: agregarlas a sus favoritos.
                 for f in files.into_iter().filter(|f| fsx::is_dir_like(f)) {
@@ -559,31 +654,38 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
                     actions.push(Action::DeleteGroup(gi));
                 }
             });
-            if collapsed {
-                continue;
-            }
-            if s.cfg.groups[gi].items.is_empty() {
-                side_hint(ui, t, t!("barra.usa_agregar_carpeta_actual"));
-            }
-            for (ii, path) in s.cfg.groups[gi].items.iter().enumerate() {
-                let sel = path.to_lowercase() == cur_lower;
-                let label = if path.len() <= 3 { path.clone() } else { fsx::file_name(path) };
-                let r = design::tip(side_item(ui, t, ic::FOLDER, if sel { t.accent } else { t.folder }, true, &label, sel, None), t, path);
-                drop_into(ui, t, &r, path, actions);
-                if r.clicked() {
-                    actions.push(Action::Navigate(path.clone()));
+            let group = &s.cfg.groups[gi];
+            fold(ui, fid, !group.collapsed, born, |ui| {
+                if group.items.is_empty() {
+                    side_hint(ui, t, t!("barra.usa_agregar_carpeta_actual"));
                 }
-                if r.middle_clicked() {
-                    actions.push(Action::NewTab(Some(path.clone())));
-                }
-                design::context_menu(&r, t, |ui| {
-                    location_menu(ui, t, path, split, &[], actions);
-                    design::menu_sep(ui, t);
-                    if design::menu_item(ui, t, ic::X, t!("barra.quitar_favoritos"), "").clicked() {
-                        actions.push(Action::RemoveFavorite(gi, ii));
+                for (ii, path) in group.items.iter().enumerate() {
+                    let sel = path.to_lowercase() == cur_lower;
+                    let label = if path.len() <= 3 { path.clone() } else { fsx::file_name(path) };
+                    let r = design::tip(side_item(ui, t, ic::FOLDER, if sel { t.accent } else { t.folder }, true, &label, sel, None), t, path);
+                    // Recién agregado (p. ej. soltando una carpeta en el título): un lavado que se apaga.
+                    if let Some((_, _, at)) = added.as_ref().filter(|(g, p, _)| *g == gi && *p == path.to_lowercase()) {
+                        let a = 1.0 - super::motion::since(ui.ctx(), *at, dur::SLOW);
+                        if a > 0.0 {
+                            ui.painter().rect_filled(r.rect.shrink2(vec2(NAV_INSET, 1.0)), radius::M, t.accent_soft.gamma_multiply(a));
+                        }
                     }
-                });
-            }
+                    drop_into(ui, t, &r, path, actions);
+                    if r.clicked() {
+                        actions.push(Action::Navigate(path.clone()));
+                    }
+                    if r.middle_clicked() {
+                        actions.push(Action::NewTab(Some(path.clone())));
+                    }
+                    design::context_menu(&r, t, |ui| {
+                        location_menu(ui, t, path, split, &[], actions);
+                        design::menu_sep(ui, t);
+                        if design::menu_item(ui, t, ic::X, t!("barra.quitar_favoritos"), "").clicked() {
+                            actions.push(Action::RemoveFavorite(gi, ii));
+                        }
+                    });
+                }
+            });
         }
         ui.add_space(sp::M);
         // Una fila más de la barra lateral (ícono y texto en la misma rejilla), discreta.
@@ -597,7 +699,6 @@ pub fn sidebar(ui: &mut Ui, s: SidebarIn, actions: &mut Vec<Action>) {
 
 // ---------------------------------------------------------------- pestañas
 
-/// Pestañas de un panel: `show` son los índices (en `tabs`) que le pertenecen.
 /// Alto de la fila de arriba (pestañas y botones de la ventana): es la barra de título.
 pub const TITLE_H: f32 = h::TITLE;
 /// La pestaña ocupa desde 6 px bajo el borde de arriba hasta el fondo de la tira.
@@ -613,6 +714,8 @@ const TAB_X_INSET: f32 = 15.0;
 const TAB_MIN_W: f32 = 34.0;
 const TAB_MAX_W: f32 = 220.0;
 const TAB_ACTIVE_MIN_W: f32 = 120.0;
+/// Ancho del "+" (con su aire).
+const TAB_PLUS_W: f32 = 36.0;
 /// Ancho máximo de la etiqueta de un grupo.
 const GROUP_CHIP_MAX: f32 = 160.0;
 /// Ancho de los tres botones de la ventana.
@@ -620,22 +723,26 @@ pub const WINDOW_BUTTONS_W: f32 = 3.0 * 46.0;
 /// Íconos de los botones de la ventana: maximizar se ve más grande, va uno más chico.
 const CAPTION_ICON: f32 = icon::CAPTION;
 const CAPTION_ICON_MAX: f32 = icon::S;
+/// Destello de la etiqueta de un grupo al crearlo, plegarlo, desplegarlo o recibir una pestaña.
+const GROUP_PULSE: f32 = 0.28;
 
-/// Pestañas de un panel. `reserve`: espacio a la derecha que no se usa (ahí van los
-/// botones de la ventana). Devuelve dónde termina el botón "+" (lo que sigue es espacio
-/// libre: barra de título).
-/// Lo que va en la barra de pestañas, en orden: etiquetas de grupo y pestañas.
+/// Lo que va en la barra de pestañas, en orden: etiquetas de grupo y pestañas (índices en `tabs`),
+/// y mientras se arrastra una pestaña, su hueco.
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum BarItem {
     Group(usize),
     Tab(usize),
+    /// El lugar vacío de la pestaña arrastrada (índice en `tabs`).
+    Hole(usize),
 }
 
 /// Orden de la barra: las pestañas de un grupo van juntas, detrás de su etiqueta (en el lugar de la
-/// primera); las de un grupo plegado no se ven, salvo la activa.
-fn bar_items(tabs: &[Tab], groups: &[super::config::TabGroup], show: &[usize], cur: usize) -> Vec<BarItem> {
+/// primera); las de un grupo plegado no se ven, salvo la activa. `skip`: la pestaña arrastrada.
+fn bar_items(tabs: &[Tab], groups: &[TabGroup], show: &[usize], cur: usize, skip: Option<u64>) -> Vec<BarItem> {
     let mut out = Vec::new();
     let mut done: Vec<u64> = Vec::new();
-    for &i in show {
+    let show: Vec<usize> = show.iter().copied().filter(|&i| Some(tabs[i].id) != skip).collect();
+    for &i in &show {
         let g = tabs[i].group;
         let Some(gi) = groups.iter().position(|x| x.id == g).filter(|_| g != 0) else {
             out.push(BarItem::Tab(i));
@@ -655,6 +762,209 @@ fn bar_items(tabs: &[Tab], groups: &[super::config::TabGroup], show: &[usize], c
     out
 }
 
+/// Orden visible de las pestañas (el de la barra, sin mirar si un grupo está plegado): por panel,
+/// y las de un grupo juntas en el lugar de la primera. Recibe (panel, grupo) de cada pestaña (0 =
+/// sin grupo, o un grupo que ya no existe) y devuelve la permutación.
+pub fn visible_order(tabs: &[(u8, u64)]) -> Vec<usize> {
+    let mut out = Vec::with_capacity(tabs.len());
+    for pane in 0..=tabs.iter().map(|t| t.0).max().unwrap_or(0) {
+        let mut done: Vec<u64> = Vec::new();
+        for (i, &(p, g)) in tabs.iter().enumerate() {
+            if p != pane || (g != 0 && done.contains(&g)) {
+                continue;
+            }
+            if g == 0 {
+                out.push(i);
+            } else {
+                done.push(g);
+                out.extend(tabs.iter().enumerate().filter(|(_, t)| t.0 == pane && t.1 == g).map(|(j, _)| j));
+            }
+        }
+    }
+    out
+}
+
+/// Mover la pestaña `cur` un lugar a la izquierda (`dir` < 0) o a la derecha, con las mismas paradas
+/// que el arrastre. `order`: (id, grupo) de las pestañas del panel en orden visible (normalizado);
+/// `collapsed`: los grupos plegados. Devuelve (antes de qué pestaña queda, grupo), o None si no se
+/// mueve (en el extremo).
+pub fn tab_step(order: &[(u64, u64)], collapsed: &[u64], cur: u64, dir: i32) -> Option<(Option<u64>, u64)> {
+    let k = order.iter().position(|t| t.0 == cur)?;
+    let g = order[k].1;
+    let id_at = |i: usize| order.get(i).map(|t| t.0);
+    // Primera y última posición del grupo `g` (sus pestañas van juntas).
+    let span = |g: u64, around: usize| {
+        let mut s = around;
+        while s > 0 && order[s - 1].1 == g {
+            s -= 1;
+        }
+        let mut e = around;
+        while e + 1 < order.len() && order[e + 1].1 == g {
+            e += 1;
+        }
+        (s, e)
+    };
+    let folded = |g: u64| collapsed.contains(&g);
+    if dir > 0 {
+        if g != 0 {
+            if !folded(g) && order.get(k + 1).is_some_and(|t| t.1 == g) {
+                return Some((id_at(k + 2), g));
+            }
+            // Última del grupo (o grupo plegado): sale y queda justo después.
+            let (_, e) = span(g, k);
+            return Some((id_at(e + 1), 0));
+        }
+        let next = order.get(k + 1)?;
+        if next.1 == 0 {
+            Some((id_at(k + 2), 0))
+        } else if !folded(next.1) {
+            // Entra como primera.
+            Some((Some(next.0), next.1))
+        } else {
+            // Un grupo plegado se salta entero.
+            let (_, e) = span(next.1, k + 1);
+            Some((id_at(e + 1), 0))
+        }
+    } else {
+        if g != 0 {
+            if !folded(g) && k > 0 && order[k - 1].1 == g {
+                return Some((Some(order[k - 1].0), g));
+            }
+            // Primera del grupo (o grupo plegado): sale por delante de la etiqueta.
+            let (s, _) = span(g, k);
+            return Some((if s == k { id_at(k + 1) } else { id_at(s) }, 0));
+        }
+        if k == 0 {
+            return None;
+        }
+        let prev = order[k - 1];
+        if prev.1 == 0 {
+            Some((Some(prev.0), 0))
+        } else if !folded(prev.1) {
+            // Entra como última.
+            Some((id_at(k + 1), prev.1))
+        } else {
+            let (s, _) = span(prev.1, k - 1);
+            Some((id_at(s), 0))
+        }
+    }
+}
+
+/// Qué es cada lugar de la fila al decidir dónde cae una pestaña arrastrada.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum DropKind {
+    Chip { group: u64, collapsed: bool },
+    Tab { group: u64 },
+}
+
+/// Dónde cae la pestaña levantada: cuántos lugares (chips y pestañas) tienen su centro a la
+/// izquierda de su borde izquierdo `l`. Se calcula sobre la fila de destino sin la arrastrada,
+/// nunca sobre lo pintado (que se mueve y haría oscilar el hueco).
+fn drop_index(centers: &[f32], l: f32) -> usize {
+    centers.iter().filter(|&&c| c < l).count()
+}
+
+/// Lugar y grupo de lo que se soltaría. `items`: la fila de destino sin la arrastrada (qué es,
+/// borde izquierdo, borde derecho); `l`: borde izquierdo de la levantada; `px`: el puntero.
+/// Devuelve (índice, grupo, chip plegado sobre el que está el puntero). En una frase: se une a
+/// un grupo mientras su borde izquierdo esté dentro del tramo del grupo.
+fn drop_target(items: &[(DropKind, f32, f32)], l: f32, px: f32) -> (usize, u64, Option<u64>) {
+    // Sobre la etiqueta de un grupo plegado: entra al final de ese grupo.
+    for (i, &(k, a, b)) in items.iter().enumerate() {
+        if let DropKind::Chip { group, collapsed: true } = k
+            && px >= a
+            && px < b
+        {
+            return (i + 1, group, Some(group));
+        }
+    }
+    let centers: Vec<f32> = items.iter().map(|&(_, a, b)| (a + b) / 2.0).collect();
+    let index = drop_index(&centers, l);
+    let before = index.checked_sub(1).and_then(|i| items.get(i)).copied();
+    let after = items.get(index).copied();
+    let group = match (before, after) {
+        (_, Some((DropKind::Tab { group }, ..))) if group != 0 => group,
+        (Some((DropKind::Tab { group }, _, right)), _) if group != 0 => {
+            if l < right {
+                group
+            } else {
+                0
+            }
+        }
+        (Some((DropKind::Chip { group, collapsed: false }, ..)), _) => group,
+        _ => 0,
+    };
+    (index, group, None)
+}
+
+/// Una pestaña que se está arrastrando para reordenarla (estado propio en `ctx.data`, no un
+/// `egui::DragAndDrop`: eso encendería las zonas para soltar archivos).
+#[derive(Clone, Debug)]
+struct TabDrag {
+    id: u64,
+    /// Dónde se la agarró: fracción de su ancho.
+    grab: f32,
+    from_pane: usize,
+    /// El panel cuya tira tiene el hueco.
+    host: usize,
+    /// Cuándo empezó (la sombra y el relleno aparecen en `FAST`).
+    start: f64,
+    /// Lugar de la levantada en el último cuadro (x, ancho del lugar).
+    lift: [f32; 2],
+    /// Ya se soltó en este cuadro: las otras tiras todavía no la muestran.
+    dropped: bool,
+}
+
+fn drag_key() -> Id {
+    Id::new("tab-drag")
+}
+
+fn strip_id(pane: usize) -> Id {
+    Id::new(("tabstrip", pane))
+}
+
+/// ¿Se está arrastrando una pestaña?
+pub fn tab_drag_active(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<TabDrag>(drag_key())).is_some_and(|d| !d.dropped)
+}
+
+/// Cancelar el arrastre (Esc, clic derecho, la ventana pierde el foco): nada cambió en la app, la
+/// pestaña vuelve a su lugar desde donde estaba.
+pub fn tab_drag_cancel(ctx: &egui::Context) {
+    let d = ctx.data_mut(|m| {
+        let d = m.get_temp::<TabDrag>(drag_key());
+        m.remove::<TabDrag>(drag_key());
+        d
+    });
+    if let Some(d) = d.filter(|d| !d.dropped) {
+        super::motion::strip_seed(ctx, strip_id(d.from_pane), SlotKey::Tab(d.id), d.lift[0], d.lift[1]);
+    }
+}
+
+/// Una vez por cuadro, antes de dibujar los paneles: qué tira tiene el hueco (la que tiene el
+/// puntero, con 12 px de margen arriba y abajo; fuera de todas, la última). `strips`: la franja de
+/// pestañas de cada panel visible.
+pub fn tab_drag_host(ctx: &egui::Context, strips: &[Rect]) {
+    let Some(mut d) = ctx.data(|d| d.get_temp::<TabDrag>(drag_key())) else { return };
+    if d.dropped {
+        ctx.data_mut(|m| m.remove::<TabDrag>(drag_key()));
+        return;
+    }
+    let (pos, secondary, focused) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.secondary_pressed(), i.focused));
+    if secondary || !focused || strips.is_empty() {
+        tab_drag_cancel(ctx);
+        return;
+    }
+    if let Some(h) = pos.and_then(|p| strips.iter().position(|r| r.expand2(vec2(0.0, sp::M)).contains(p))) {
+        d.host = h;
+    }
+    if d.host >= strips.len() {
+        d.host = d.from_pane.min(strips.len() - 1);
+    }
+    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+    ctx.data_mut(|m| m.insert_temp(drag_key(), d));
+}
+
 /// Nombre de un grupo recortado para que su chip no pase de `GROUP_CHIP_MAX`.
 fn group_name_fit(p: &egui::Painter, name: &str, color: Color32) -> String {
     let fits = |s: &str| design::chip_width(p, &Chip { text: s, dot: Some(color), ..Default::default() }) <= GROUP_CHIP_MAX;
@@ -668,26 +978,70 @@ fn group_name_fit(p: &egui::Painter, name: &str, color: Color32) -> String {
     format!("{s}…")
 }
 
-/// Ancho de la etiqueta de un grupo en la barra.
-fn group_chip_w(p: &egui::Painter, t: &Theme, g: &super::config::TabGroup) -> f32 {
+/// Ancho de la etiqueta de un grupo en la barra; `hidden`: cuántas pestañas guarda plegado.
+fn group_chip_w(p: &egui::Painter, t: &Theme, g: &TabGroup, hidden: usize) -> f32 {
     let color = t.tags[g.color.min(6)];
-    design::chip_width(p, &Chip { text: &group_name_fit(p, &g.name, color), dot: Some(color), ..Default::default() })
+    let count = if hidden > 0 { fsx::thousands(hidden) } else { String::new() };
+    design::chip_width(p, &Chip { text: &group_name_fit(p, &g.name, color), dot: Some(color), count: &count, ..Default::default() })
+}
+
+/// Una etiqueta de grupo en la tira.
+struct GroupChip<'a> {
+    g: &'a TabGroup,
+    pane: usize,
+    /// Lo pintado en este cuadro (puede estar creciendo o cerrándose).
+    rect: Rect,
+    /// Ancho de destino: el contenido se arma con este y se recorta a lo pintado.
+    target_w: f32,
+    /// Pestañas que guarda plegado (las que no se ven).
+    hidden: usize,
+    /// Se está yendo: solo se pinta, apagándose.
+    presence: f32,
+    leaving: bool,
+    /// Zona para soltar la pestaña arrastrada (el puntero está encima y el grupo está plegado).
+    drop_zone: bool,
+    dragging: bool,
+}
+
+/// Renombrando un grupo: (grupo, texto, primer cuadro, panel).
+type GroupRename = (u64, String, bool, usize);
+
+fn rename_key() -> Id {
+    Id::new("group-rename")
+}
+
+/// Empezar a renombrar el grupo `g` en el panel `pane` (el campo aparece en su etiqueta).
+pub fn start_group_rename(ctx: &egui::Context, g: u64, name: &str, pane: usize) {
+    ctx.data_mut(|d| d.insert_temp::<GroupRename>(rename_key(), (g, name.to_string(), true, pane)));
 }
 
 /// La etiqueta de un grupo: clic pliega o despliega, doble clic cambia el nombre, clic derecho
-/// ofrece color, nombre, desagrupar y cerrar.
-fn group_chip(ui: &mut Ui, t: &Theme, g: &super::config::TabGroup, r: Rect, actions: &mut Vec<Action>) {
-    let p = ui.painter().clone();
+/// ofrece color, nombre, desagrupar y cerrar. Plegado, muestra cuántas pestañas guarda.
+fn group_chip(ui: &mut Ui, t: &Theme, c: GroupChip, actions: &mut Vec<Action>) {
+    let g = c.g;
+    let ctx = ui.ctx().clone();
     let color = t.tags[g.color.min(6)];
-    let key = Id::new("group-rename");
-    let pill = Rect::from_center_size(r.center(), vec2(r.width(), h::CHIP));
-    let renaming: Option<(u64, String, bool)> = ui.data(|d| d.get_temp(key)).filter(|(id, _, _): &(u64, String, bool)| *id == g.id);
-    if let Some((id, mut buf, first)) = renaming {
-        // Como el renombrado de archivos: campo hundido con anillo de foco.
+    let clip = c.rect.intersect(ui.clip_rect());
+    let mut p = ui.painter().with_clip_rect(clip);
+    let pill = Rect::from_min_size(pos2(c.rect.left(), c.rect.center().y - h::CHIP / 2.0), vec2(c.rect.width(), h::CHIP));
+    let full = Rect::from_min_size(pill.min, vec2(c.target_w, h::CHIP));
+    let name = group_name_fit(&p, &g.name, color);
+    let chip = Chip { text: &name, dot: Some(color), ..Default::default() };
+    if c.leaving {
+        p.multiply_opacity(c.presence);
+        design::chip_paint_rect(&p, t, pill, &chip, false);
+        return;
+    }
+    p.multiply_opacity(0.3 + 0.7 * c.presence);
+    let renaming: Option<GroupRename> = ui.data(|d| d.get_temp(rename_key())).filter(|r: &GroupRename| r.0 == g.id && r.3 == c.pane);
+    if let Some((id, mut buf, first, pane)) = renaming {
+        // Como el renombrado de archivos: campo hundido con anillo de foco. Se arma al ancho de
+        // destino (escribir no espera a que la etiqueta termine de crecer) y se recorta.
         p.rect_filled(pill, radius::S, t.sidebar);
         design::focus_ring(&p, t, pill, radius::S);
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pill.shrink2(vec2(sp::S - sp::XXS, 0.0))));
-        let out = egui::TextEdit::singleline(&mut buf).frame(egui::Frame::NONE).desired_width(pill.width() - 2.0 * sp::S).font(text::small()).vertical_align(egui::Align::Center).show(&mut child);
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(full.shrink2(vec2(sp::S - sp::XXS, 0.0))));
+        child.set_clip_rect(clip);
+        let out = egui::TextEdit::singleline(&mut buf).frame(egui::Frame::NONE).desired_width(full.width() - 2.0 * sp::S).font(text::small()).vertical_align(egui::Align::Center).show(&mut child);
         if first {
             out.response.request_focus();
             let mut st = out.state.clone();
@@ -698,24 +1052,60 @@ fn group_chip(ui: &mut Ui, t: &Theme, g: &super::config::TabGroup, r: Rect, acti
         let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
         if enter || (out.response.lost_focus() && !first) {
             actions.push(Action::RenameTabGroup(id, buf));
-            ui.data_mut(|d| d.remove::<(u64, String, bool)>(key));
+            ui.data_mut(|d| d.remove::<GroupRename>(rename_key()));
         } else if esc {
-            ui.data_mut(|d| d.remove::<(u64, String, bool)>(key));
+            ui.data_mut(|d| d.remove::<GroupRename>(rename_key()));
         } else {
-            ui.data_mut(|d| d.insert_temp(key, (id, buf, false)));
+            ui.data_mut(|d| d.insert_temp::<GroupRename>(rename_key(), (id, buf, false, pane)));
         }
         return;
     }
-    let resp = design::tip(ui.interact(r, Id::new(("tabgroup", g.id)), Sense::click()), t, t!("barra.grupo_plegar"));
-    let name = group_name_fit(&p, &g.name, color);
-    let chip = Chip { text: &name, dot: Some(color), ..Default::default() };
-    let cr = design::chip_paint(&p, t, pill.left_center(), &chip, resp.hovered());
-    if g.collapsed {
-        // Plegado: el subrayado del grupo queda bajo la etiqueta (sus pestañas no se ven).
-        p.line_segment([pos2(cr.left(), r.bottom() - stroke::MARK / 2.0), pos2(cr.right(), r.bottom() - stroke::MARK / 2.0)], Stroke::new(stroke::MARK, color));
+    let resp = ui.interact(pill, Id::new(("tabgroup", c.pane, g.id)), Sense::click());
+    let resp = if c.dragging {
+        resp
+    } else {
+        let tip = if !g.collapsed {
+            t!("barra.grupo_desplegado").to_string()
+        } else if c.hidden > 0 {
+            tp!(c.hidden, "barra.grupo_plegado_n")
+        } else {
+            t!("barra.grupo_plegado").to_string()
+        };
+        design::tip(resp, t, &tip)
+    };
+    design::chip_paint_rect(&p, t, pill, &chip, resp.hovered() && !c.dragging);
+    // Plegado: cuántas guarda (aparece y se apaga con el plegado) y la raya del grupo bajo la
+    // etiqueta. Al desplegar se sigue viendo el último conteo mientras se apaga.
+    let fold = super::motion::fade(&ctx, Id::new(("tabgroup-fold", c.pane, g.id)), g.collapsed, dur::SLOW);
+    let count_key = Id::new(("tabgroup-count", c.pane, g.id));
+    if c.hidden > 0 {
+        ui.data_mut(|d| d.insert_temp(count_key, c.hidden));
+    }
+    let shown = if c.hidden > 0 { c.hidden } else { ui.data(|d| d.get_temp::<usize>(count_key)).unwrap_or(0) };
+    if fold > 0.0 && shown > 0 {
+        let base = design::chip_width(&p, &chip);
+        let x = pill.left() + base - sp::S + sp::XS;
+        p.text(pos2(x, pill.center().y), Align2::LEFT_CENTER, fsx::thousands(shown), text::mono_s(), t.faint.gamma_multiply(fold));
+    }
+    if fold > 0.0 {
+        let y = c.rect.bottom() - stroke::MARK / 2.0;
+        p.line_segment([pos2(pill.left(), y), pos2(pill.right(), y)], Stroke::new(stroke::MARK, color.gamma_multiply(fold)));
+    }
+    // Destello en el color del grupo (no el acento) al crearlo, plegarlo, desplegarlo o recibir una pestaña.
+    if let Some(at) = ui.data(|d| d.get_temp::<f64>(Id::new(("tabgroup-pulse", g.id)))) {
+        let a = GROUP_PULSE * (1.0 - super::motion::since(&ctx, at, dur::SLOW));
+        if a > 0.0 {
+            p.rect_filled(pill, radius::S, color.gamma_multiply(a));
+        }
+    }
+    if c.drop_zone {
+        p.rect_filled(pill, radius::S, t.accent_soft);
+        design::focus_ring(&p, t, pill, radius::S);
     }
     if resp.double_clicked() {
-        ui.data_mut(|d| d.insert_temp(key, (g.id, g.name.clone(), true)));
+        // El primer clic ya plegó o desplegó: se deshace (la animación vuelve sola) y se renombra.
+        actions.push(Action::ToggleTabGroup(g.id));
+        start_group_rename(ui.ctx(), g.id, &g.name, c.pane);
     } else if resp.clicked() {
         actions.push(Action::ToggleTabGroup(g.id));
     }
@@ -724,23 +1114,23 @@ fn group_chip(ui: &mut Ui, t: &Theme, g: &super::config::TabGroup, r: Rect, acti
             // Siete botones mini con un punto de 12; el elegido, con capa gris.
             ui.spacing_mut().item_spacing.x = sp::XXS;
             ui.add_space(sp::XS);
-            for c in 0..t.tags.len() {
-                let cresp = design::icon_button(ui, t, "", IconBtn { on: c == g.color, ..IconBtn::mini() });
+            for k in 0..t.tags.len() {
+                let cresp = design::icon_button(ui, t, "", IconBtn { on: k == g.color, ..IconBtn::mini() });
                 let center = cresp.rect.center();
-                ui.painter().circle_filled(center, 6.0, t.tags[c]);
+                ui.painter().circle_filled(center, 6.0, t.tags[k]);
                 if !t.dark {
                     ui.painter().circle_stroke(center, 6.0 - stroke::HAIR / 2.0, Stroke::new(stroke::HAIR, Color32::from_black_alpha(41)));
                 }
-                let cresp = design::tip(cresp, t, crate::ui::views::tag_label(c));
+                let cresp = design::tip(cresp, t, crate::ui::views::tag_label(k));
                 if cresp.clicked() {
-                    actions.push(Action::RecolorTabGroup(g.id, c));
+                    actions.push(Action::RecolorTabGroup(g.id, k));
                     ui.close();
                 }
             }
         });
         design::menu_sep(ui, t);
         if design::menu_item(ui, t, ic::PENCIL_SIMPLE, t!("barra.renombrar_grupo"), "").clicked() {
-            ui.data_mut(|d| d.insert_temp(key, (g.id, g.name.clone(), true)));
+            start_group_rename(ui.ctx(), g.id, &g.name, c.pane);
         }
         if design::menu_item(ui, t, ic::SQUARES_FOUR, t!("barra.desagrupar"), "").clicked() {
             actions.push(Action::Ungroup(g.id));
@@ -759,199 +1149,450 @@ fn tab_btn(ui: &Ui, t: &Theme, rect: Rect, resp: &Response, glyph: &str, size: f
     p.text(rect.center() + vec2(0.0, nudge), Align2::CENTER_CENTER, glyph, design::icon_font(size), if resp.hovered() { t.text } else { t.faint });
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn tab_bar(ui: &mut Ui, t: &Theme, tabs: &[Tab], groups: &[super::config::TabGroup], show: &[usize], cur: usize, reserve: f32, actions: &mut Vec<Action>) -> f32 {
+/// Ícono y título de una pestaña.
+fn tab_visual(tab: &Tab) -> (&'static str, String) {
+    let q = tab.search.text.trim_start().to_lowercase();
+    let recent = q.starts_with("recientes:");
+    let icon = if let Some(tool) = &tab.tool {
+        tool.icon()
+    } else if recent {
+        ic::CLOCK_COUNTER_CLOCKWISE
+    } else if fsx::tags::query_color(&tab.search.text).is_some() {
+        ic::TAG
+    } else if fsx::collections::query_name(&tab.search.text).is_some() {
+        ic::BOOKMARKS_SIMPLE
+    } else if tab.search.active() {
+        ic::MAGNIFYING_GLASS
+    } else {
+        ic::FOLDER
+    };
+    let tag = fsx::tags::query_color(&tab.search.text).filter(|_| tab.tool.is_none());
+    let coll = fsx::collections::query_name(&tab.search.text).filter(|_| tab.tool.is_none());
+    let title = if recent && tab.tool.is_none() {
+        t!("barra.recientes").to_string()
+    } else if let Some(c) = tag {
+        crate::ui::views::tag_label(c).to_string()
+    } else if let Some(n) = coll {
+        n
+    } else if tab.search.active() && tab.tool.is_none() {
+        format!("“{}”", tab.search.text.trim())
+    } else {
+        tab.title()
+    };
+    (icon, title)
+}
+
+/// Ícono y título de una pestaña dentro de `r`, armados con el ancho de destino `target_w` (así el
+/// título no cambia de recorte mientras la pestaña crece); quien llama recorta a lo pintado.
+/// `hide_icon`: muy angosta y con el puntero encima, la X ocupa el lugar del ícono.
+fn tab_content(p: &egui::Painter, t: &Theme, r: Rect, target_w: f32, tab: &Tab, active: bool, hide_icon: bool) {
+    let (icon, title) = tab_visual(tab);
+    let r = Rect::from_min_size(r.min, vec2((target_w - sp::XS).max(1.0), r.height()));
+    let narrow = target_w < 84.0;
+    let tiny = target_w < 58.0;
+    if !hide_icon {
+        // Ícono en +8 de la pestaña: a plomo con el de las filas.
+        let ip = if tiny { (r.center(), Align2::CENTER_CENTER) } else { (pos2(r.left() + sp::S, r.center().y), Align2::LEFT_CENTER) };
+        // La carpeta va rellena y en su color solo en la activa; en las demás, contorno.
+        let folder = active && icon == ic::FOLDER;
+        let font = if folder { design::icon_fill(icon::M) } else { design::icon_font(icon::M) };
+        p.text(ip.0, ip.1, icon, font, if folder { t.folder } else { t.dim });
+    }
+    if !narrow {
+        // Texto tras el ícono; a la derecha, el lugar de la X.
+        let x_text = r.left() + sp::S + icon::M + sp::S;
+        let g = elided(p, &title, text::body(), if active { t.text } else { t.dim }, r.right() - TAB_X_INSET - h::CHIP / 2.0 - sp::XS - x_text);
+        p.galley(pos2(x_text, r.center().y - g.size().y / 2.0), g, t.text);
+    }
+}
+
+/// Fondo de la pestaña activa: relleno del contenido con borde a la izquierda, arriba y a la
+/// derecha (sin base: se funde con lo de abajo).
+fn active_tab_bg(p: &egui::Painter, t: &Theme, r: Rect) {
+    let top = radius::M as u8;
+    let corners = egui::CornerRadius { nw: top, ne: top, sw: 0, se: 0 };
+    p.rect_filled(r, corners, t.bg);
+    let clipped = p.with_clip_rect(r.intersect(p.clip_rect()));
+    clipped.rect_stroke(r.with_max_y(r.bottom() + 2.0 * stroke::HAIR), corners, Stroke::new(stroke::HAIR, t.border), StrokeKind::Inside);
+}
+
+/// Subrayado de grupo bajo una pestaña: largo `k` (0 a 1) desde la izquierda.
+fn group_mark(p: &egui::Painter, r: Rect, color: Color32, k: f32) {
+    if k <= 0.0 {
+        return;
+    }
+    let y = r.bottom() - stroke::MARK / 2.0;
+    let x0 = r.left() + sp::S;
+    p.line_segment([pos2(x0, y), pos2(x0 + (r.width() - 2.0 * sp::S).max(0.0) * k, y)], Stroke::new(stroke::MARK, color));
+}
+
+/// Lo que necesita la tira de pestañas de un panel.
+pub struct TabBarIn<'a> {
+    pub t: &'a Theme,
+    pub tabs: &'a [Tab],
+    pub groups: &'a [TabGroup],
+    pub pane: usize,
+    /// Índices (en `tabs`) de las pestañas del panel, en orden.
+    pub show: &'a [usize],
+    /// La pestaña activa del panel.
+    pub cur: usize,
+    /// Espacio a la derecha que no se usa (ahí van los botones de la ventana).
+    pub reserve: f32,
+}
+
+/// Pestañas de un panel. Devuelve dónde termina el botón "+" (lo que sigue es espacio libre:
+/// barra de título). Cada etiqueta y cada pestaña tiene su lugar en una `motion::Strip`: abrir,
+/// cerrar, plegar, desplegar, agrupar y reordenar se animan solos.
+pub fn tab_bar(ui: &mut Ui, s: TabBarIn, actions: &mut Vec<Action>) -> f32 {
+    let TabBarIn { t, tabs, groups, pane, show, cur, reserve } = s;
+    let ctx = ui.ctx().clone();
     let full = ui.available_rect_before_wrap();
-    let items = bar_items(tabs, groups, show, cur);
     let painter = ui.painter().clone();
-    let chips: f32 = items.iter().map(|it| if let BarItem::Group(gi) = it { group_chip_w(&painter, t, &groups[*gi]) + sp::XS } else { 0.0 }).sum();
-    let n = items.iter().filter(|it| matches!(it, BarItem::Tab(_))).count().max(1);
-    let plus_w = 36.0;
+    let ppp = ctx.pixels_per_point();
+    let px = |v: f32| (v * ppp).round() / ppp;
+    let top = full.top() + TAB_TOP;
+    let height = full.height() - TAB_TOP;
+    // ---- arrastre: si esta tira tiene el hueco, dónde va
+    let mut drag = ctx.data(|d| d.get_temp::<TabDrag>(drag_key())).filter(|d| !d.dropped);
+    if drag.as_ref().is_some_and(|d| !tabs.iter().any(|x| x.id == d.id)) {
+        // Se cerró mientras se arrastraba.
+        ctx.data_mut(|d| d.remove::<TabDrag>(drag_key()));
+        drag = None;
+    }
+    let dragging = drag.is_some();
+    let dragged = drag.as_ref().map(|d| d.id);
+    let hosting = drag.as_ref().filter(|d| d.host == pane).cloned();
+    let dragged_i = dragged.and_then(|id| tabs.iter().position(|x| x.id == id));
+    let mut items = bar_items(tabs, groups, show, cur, dragged);
+    // Pestañas que guarda cada grupo plegado (en este panel): las suyas que no se ven.
+    let hidden_of = |g: &TabGroup| -> usize { if g.collapsed { show.iter().filter(|&&j| tabs[j].group == g.id && j != cur && Some(tabs[j].id) != dragged).count() } else { 0 } };
+    let chip_w: Vec<f32> = groups.iter().map(|g| group_chip_w(&painter, t, g, hidden_of(g))).collect();
+    let chips: f32 = items.iter().map(|it| if let BarItem::Group(gi) = it { chip_w[*gi] + sp::XS } else { 0.0 }).sum();
+    let n = items.iter().filter(|it| matches!(it, BarItem::Tab(_))).count() + hosting.is_some() as usize;
+    let n = n.max(1);
     // Se achican hasta caber (antes tenían un mínimo y, con muchas, tapaban los botones de la
     // ventana): primero se recorta el título, luego queda solo el ícono.
-    let room = full.width() - reserve - plus_w - sp::M - chips;
+    let room = full.width() - reserve - TAB_PLUS_W - sp::M - chips;
     let even = (room / n as f32).clamp(TAB_MIN_W, TAB_MAX_W);
-    // La activa conserva su título (al menos 120): las demás se achican primero.
-    let cur_shown = items.iter().any(|it| matches!(it, BarItem::Tab(i) if *i == cur));
-    let (active_w, other_w) = if n > 1 && cur_shown && even < TAB_ACTIVE_MIN_W {
+    // La activa conserva su título (al menos 120): las demás se achican primero. Mientras esta tira
+    // tiene el hueco, el hueco se mide como la activa (lo será al soltar).
+    let active_shown = hosting.is_some() || items.iter().any(|it| matches!(it, BarItem::Tab(i) if *i == cur));
+    let (active_w, other_w) = if n > 1 && active_shown && even < TAB_ACTIVE_MIN_W {
         let a = TAB_ACTIVE_MIN_W.min(room - TAB_MIN_W * (n - 1) as f32).max(even);
         (a, ((room - a) / (n - 1) as f32).clamp(TAB_MIN_W, TAB_MAX_W))
     } else {
         (even, even)
     };
+    let is_active = |it: &BarItem| match it {
+        BarItem::Tab(i) => *i == cur && hosting.is_none(),
+        BarItem::Hole(_) => true,
+        BarItem::Group(_) => false,
+    };
+    let slot_w = |it: &BarItem| match it {
+        BarItem::Group(gi) => chip_w[*gi] + sp::XS,
+        _ if is_active(it) => active_w,
+        _ => other_w,
+    };
     // La primera pestaña a plomo con el pill de las filas (4 del borde).
-    let mut x = full.left() + sp::XS;
-    let p = ui.painter().clone();
-    // Hairline al pie de la tira: la pestaña activa la tapa con su relleno y queda abierta abajo.
-    p.hline(full.x_range(), full.bottom() - stroke::HAIR / 2.0, Stroke::new(stroke::HAIR, t.border));
-    let order: Vec<usize> = items.iter().filter_map(|it| if let BarItem::Tab(i) = it { Some(*i) } else { None }).collect();
-    for it in &items {
-        let i = match it {
-            BarItem::Group(gi) => {
-                let w = group_chip_w(&painter, t, &groups[*gi]);
-                group_chip(ui, t, &groups[*gi], Rect::from_min_size(pos2(x + sp::XXS, full.top() + TAB_TOP), vec2(w, full.height() - TAB_TOP)), actions);
-                x += w + sp::XS;
-                continue;
-            }
-            BarItem::Tab(i) => *i,
-        };
-        let k = order.iter().position(|&j| j == i).unwrap_or(0);
-        let show = &order;
-        let tab = &tabs[i];
-        let active = i == cur;
-        let tab_w = if active { active_w } else { other_w };
-        let narrow = tab_w < 84.0;
-        let tiny = tab_w < 58.0;
-        let r = Rect::from_min_size(pos2(x, full.top() + TAB_TOP), vec2(tab_w - sp::XS, full.height() - TAB_TOP));
-        let resp = ui.interact(r, Id::new(("tab", tab.id)), Sense::click());
-        // Arrastrar archivos sobre una pestaña: tras un momento se cambia a ella; soltarlos ahí los lleva a su carpeta.
-        let drop_hover = tab.tool.is_none() && crate::ui::views::drag_hovering(&resp);
-        if drop_hover && !active {
-            let key = Id::new("tab-drag-hover");
-            let now = ui.input(|i| i.time);
-            let pass = ui.ctx().cumulative_pass_nr();
-            // (pestaña, desde cuándo, último cuadro): si el puntero se fue, el tiempo vuelve a empezar.
-            let since = ui.data_mut(|d| {
-                let t0 = match d.get_temp::<(u64, f64, u64)>(key) {
-                    Some((id, t0, last)) if id == tab.id && last + 1 >= pass => t0,
-                    _ => now,
+    let x0 = full.left() + sp::XS;
+    let layout = |items: &[BarItem]| -> Vec<(f32, f32)> {
+        let mut x = x0;
+        items
+            .iter()
+            .map(|it| {
+                let w = slot_w(it);
+                x += w;
+                (x - w, w)
+            })
+            .collect()
+    };
+    // (borde izquierdo y ancho de la levantada, grupo del hueco, chip plegado de destino)
+    let mut lift: Option<(f32, f32, u64, Option<u64>)> = None;
+    let mut drop_before: Option<u64> = None;
+    if let (Some(d), Some(di)) = (&hosting, dragged_i) {
+        let wo = layout(&items);
+        let kinds: Vec<(DropKind, f32, f32)> = items
+            .iter()
+            .zip(&wo)
+            .map(|(it, &(x, w))| {
+                let k = match it {
+                    BarItem::Group(gi) => DropKind::Chip { group: groups[*gi].id, collapsed: groups[*gi].collapsed },
+                    BarItem::Tab(j) => DropKind::Tab { group: if groups.iter().any(|g| g.id == tabs[*j].group) { tabs[*j].group } else { 0 } },
+                    BarItem::Hole(_) => DropKind::Tab { group: 0 },
                 };
-                d.insert_temp(key, (tab.id, t0, pass));
-                t0
-            });
-            if now - since > super::motion::DWELL_TAB {
-                actions.push(Action::SwitchTab(i));
-                ui.data_mut(|d| d.remove::<(u64, f64, u64)>(key));
-            } else {
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
-            }
-        }
-        if tab.tool.is_none() {
-            if let Some(files) = crate::ui::views::take_drop(&resp) {
-                actions.push(Action::DropFiles { paths: files, dest: tab.path().to_string(), force: crate::ui::views::drop_force() });
-            }
-        }
-        // Se mira la posición del ratón (no `hovered`): la X queda encima de la pestaña y,
-        // si dependiera de ella, la X aparecería y desaparecería en cuadros alternos.
-        let hovering = ui.rect_contains_pointer(r);
-        if active {
-            let top = radius::M as u8;
-            let corners = egui::CornerRadius { nw: top, ne: top, sw: 0, se: 0 };
-            p.rect_filled(r, corners, t.bg);
-            // Borde a la izquierda, arriba y a la derecha (sin base): el borde de abajo cae fuera
-            // del recorte, así la pestaña se funde con el contenido.
-            let clipped = p.with_clip_rect(r.intersect(p.clip_rect()));
-            clipped.rect_stroke(r.with_max_y(r.bottom() + 2.0 * stroke::HAIR), corners, Stroke::new(stroke::HAIR, t.border), StrokeKind::Inside);
-        } else {
-            // Sin tocar el fondo de la tira: 4 px de aire abajo.
-            let hr = Rect::from_min_max(r.min, pos2(r.right(), r.bottom() - sp::XS));
-            let hov = design::hover_amount(ui.ctx(), resp.id, hovering);
-            design::state_fill(&p, t, hr, radius::M, hov, false, Sel::None);
-        }
-        if drop_hover {
-            p.rect_filled(r, radius::M, t.accent_soft);
-            design::focus_ring(&p, t, r, radius::M);
-        }
-        let icon = if let Some(tool) = &tab.tool {
-            tool.icon()
-        } else if tab.search.text.trim_start().to_lowercase().starts_with("recientes:") {
-            ic::CLOCK_COUNTER_CLOCKWISE
-        } else if fsx::tags::query_color(&tab.search.text).is_some() {
-            ic::TAG
-        } else if fsx::collections::query_name(&tab.search.text).is_some() {
-            ic::BOOKMARKS_SIMPLE
-        } else if tab.search.active() {
-            ic::MAGNIFYING_GLASS
-        } else {
-            ic::FOLDER
+                (k, x, x + w)
+            })
+            .collect();
+        let pointer = ctx.input(|i| i.pointer.latest_pos()).map_or(d.lift[0] + d.grab * active_w, |p| p.x);
+        let max_l = (full.right() - reserve - TAB_PLUS_W - sp::M - active_w).max(full.left() + sp::XS);
+        let l = (pointer - d.grab * active_w).clamp(full.left() + sp::XS, max_l);
+        let (index, group, into) = drop_target(&kinds, l, pointer);
+        let rest: Vec<usize> = show.iter().copied().filter(|&j| Some(tabs[j].id) != dragged).collect();
+        drop_before = match into {
+            Some(g) => rest.iter().rposition(|&j| tabs[j].group == g).and_then(|k| rest.get(k + 1)).map(|&j| tabs[j].id),
+            None => match items.get(index) {
+                Some(BarItem::Tab(j)) => Some(tabs[*j].id),
+                Some(BarItem::Group(gi)) => rest.iter().find(|&&j| tabs[j].group == groups[*gi].id).map(|&j| tabs[j].id),
+                _ => None,
+            },
         };
-        let close_r = if tiny { Rect::from_center_size(r.center(), vec2(h::CHIP, h::CHIP)) } else { Rect::from_center_size(pos2(r.right() - TAB_X_INSET, r.center().y), vec2(h::CHIP, h::CHIP)) };
-        // Muy angosta, la X va en el centro: solo en la activa (en las demás, un clic cambia a ella).
-        let has_x = !tiny || active;
-        if !(tiny && active && hovering) {
-            // Ícono en +8 de la pestaña: a plomo con el de las filas.
-            let ip = if tiny { (r.center(), Align2::CENTER_CENTER) } else { (pos2(r.left() + sp::S, r.center().y), Align2::LEFT_CENTER) };
-            // La carpeta va rellena y en su color solo en la activa; en las demás, contorno.
-            let folder = active && icon == ic::FOLDER;
-            let font = if folder { design::icon_fill(icon::M) } else { design::icon_font(icon::M) };
-            p.text(ip.0, ip.1, icon, font, if folder { t.folder } else { t.dim });
+        items.insert(index, BarItem::Hole(di));
+        lift = Some((l, active_w, group, into));
+    }
+    // ---- destinos y lo pintado
+    let key_of = |it: &BarItem| match it {
+        BarItem::Group(gi) => SlotKey::Group(groups[*gi].id),
+        BarItem::Tab(i) | BarItem::Hole(i) => SlotKey::Tab(tabs[*i].id),
+    };
+    let targets: Vec<(SlotKey, f32, f32)> = items.iter().zip(layout(&items)).map(|(it, (x, w))| (key_of(it), x, w)).collect();
+    let placed = super::motion::strip(&ctx, strip_id(pane), &targets);
+    // Hairline al pie de la tira: la pestaña activa la tapa con su relleno y queda abierta abajo.
+    painter.hline(full.x_range(), full.bottom() - stroke::HAIR / 2.0, Stroke::new(stroke::HAIR, t.border));
+    let tab_order: Vec<BarItem> = items.iter().copied().filter(|it| !matches!(it, BarItem::Group(_))).collect();
+    let mut x_end = x0;
+    for pl in &placed {
+        let (x, right) = (px(pl.x), px(pl.x + pl.w));
+        x_end = x_end.max(right);
+        if right - x < 0.5 {
+            continue;
         }
-        let recent = tab.search.text.trim_start().to_lowercase().starts_with("recientes:");
-        let tag = fsx::tags::query_color(&tab.search.text).filter(|_| tab.tool.is_none());
-        let coll = fsx::collections::query_name(&tab.search.text).filter(|_| tab.tool.is_none());
-        let title = if recent && tab.tool.is_none() {
-            t!("barra.recientes").to_string()
-        } else if let Some(c) = tag {
-            crate::ui::views::tag_label(c).to_string()
-        } else if let Some(n) = coll {
-            n
-        } else if tab.search.active() && tab.tool.is_none() {
-            format!("“{}”", tab.search.text.trim())
-        } else {
-            tab.title()
-        };
-        if !narrow {
-            // Texto tras el ícono; a la derecha, el lugar de la X.
-            let x_text = r.left() + sp::S + icon::M + sp::S;
-            let g = elided(&p, &title, text::body(), if active { t.text } else { t.dim }, r.right() - TAB_X_INSET - h::CHIP / 2.0 - sp::XS - x_text);
-            p.galley(pos2(x_text, r.center().y - g.size().y / 2.0), g, t.text);
-        }
-        let resp = if narrow { design::tip(resp, t, &title) } else { resp };
-        if let Some(g) = groups.iter().find(|g| g.id == tab.group && tab.group != 0) {
-            // Las pestañas de un grupo llevan su color abajo.
-            let c = t.tags[g.color.min(6)];
-            let y = r.bottom() - stroke::MARK / 2.0;
-            p.line_segment([pos2(r.left() + sp::S, y), pos2(r.right() - sp::S, y)], Stroke::new(stroke::MARK, c));
-        }
-        design::context_menu(&resp, t, |ui| {
-            if design::menu_item(ui, t, ic::PLUS_SQUARE, t!("barra.nuevo_grupo_con_pestana"), "").clicked() {
-                actions.push(Action::NewTabGroup(i));
+        let item = items.iter().copied().find(|it| key_of(it) == pl.key && !pl.leaving);
+        match pl.key {
+            SlotKey::Group(gid) => {
+                let Some(gi) = groups.iter().position(|g| g.id == gid) else {
+                    // Un grupo que ya no existe: solo su píldora, apagándose.
+                    let r = Rect::from_min_size(pos2(x + sp::XXS, top + (height - h::CHIP) / 2.0), vec2(right - x - sp::XS, h::CHIP));
+                    painter.with_clip_rect(full).rect_filled(r, radius::S, t.hover.gamma_multiply(pl.presence));
+                    continue;
+                };
+                let r = Rect::from_min_size(pos2(x + sp::XXS, top), vec2((right - x - sp::XS).max(0.0), height));
+                let chip = GroupChip {
+                    g: &groups[gi],
+                    pane,
+                    rect: r,
+                    target_w: pl.target_w - sp::XS,
+                    hidden: hidden_of(&groups[gi]),
+                    presence: pl.presence,
+                    leaving: pl.leaving,
+                    drop_zone: lift.is_some_and(|l| l.3 == Some(gid)),
+                    dragging,
+                };
+                group_chip(ui, t, chip, actions);
             }
-            for g in groups.iter().filter(|g| g.id != tab.group) {
-                if design::menu_item(ui, t, ic::ARROW_SQUARE_RIGHT, &tf!("barra.mover_a_grupo", nombre = g.name), "").clicked() {
-                    actions.push(Action::SetTabGroup(i, g.id));
+            SlotKey::Tab(id) => {
+                let r = Rect::from_min_size(pos2(x, top), vec2((right - x - sp::XS).max(0.0), height));
+                let p = painter.with_clip_rect(r.intersect(ui.clip_rect()));
+                if Some(id) == dragged {
+                    // El hueco: vacío, con la raya del grupo al que entraría.
+                    if let (Some((_, _, g, _)), Some(BarItem::Hole(_))) = (lift, item)
+                        && let Some(gr) = groups.iter().find(|x| x.id == g && g != 0)
+                    {
+                        group_mark(&p, r, t.tags[gr.color.min(6)], 1.0);
+                    }
+                    continue;
                 }
-            }
-            if tab.group != 0 && design::menu_item(ui, t, ic::MINUS_SQUARE, t!("barra.quitar_del_grupo"), "").clicked() {
-                actions.push(Action::SetTabGroup(i, 0));
-            }
-            design::menu_sep(ui, t);
-            if design::menu_item(ui, t, ic::X, t!("barra.cerrar_pestana"), "").clicked() {
-                actions.push(Action::CloseTab(i));
-            }
-        });
-        if resp.clicked() {
-            actions.push(Action::SwitchTab(i));
-        }
-        if resp.middle_clicked() {
-            actions.push(Action::CloseTab(i));
-        }
-        // La X existe siempre (así no cambia lo que hay bajo el ratón); se ve en la activa y al pasar por encima.
-        let cresp = ui.interact(if has_x { close_r } else { Rect::NOTHING }, Id::new(("tabx", tab.id)), Sense::click());
-        if has_x && (hovering || (active && !tiny)) {
-            tab_btn(ui, t, close_r, &cresp, ic::X, TAB_X_ICON, 0.0);
-            if cresp.clicked() {
-                actions.push(Action::CloseTab(i));
+                let Some(i) = tabs.iter().position(|x| x.id == id) else {
+                    // Cerrada: solo su píldora, apagándose.
+                    p.rect_filled(Rect::from_min_max(r.min, pos2(r.right(), r.bottom() - sp::XS)), radius::M, t.hover.gamma_multiply(pl.presence));
+                    continue;
+                };
+                let tab = &tabs[i];
+                if pl.leaving {
+                    // Sigue existiendo (se plegó dentro de su grupo, pasó a otro panel): se cierra
+                    // con su contenido, apagándose.
+                    let mut p = p;
+                    p.multiply_opacity(pl.presence);
+                    tab_content(&p, t, r, pl.target_w, tab, false, false);
+                    continue;
+                }
+                let active = item.is_some_and(|it| is_active(&it));
+                tab_slot(ui, t, TabSlot { tab, i, r, target_w: pl.target_w, presence: pl.presence, travel: pl.top, active, dragging, pane, groups, next: tab_order.iter().position(|it| *it == BarItem::Tab(i)).and_then(|k| tab_order.get(k + 1)).copied(), is_active: &is_active }, actions);
             }
         }
-        // Divisor fino entre pestañas inactivas.
-        let next_active = show.get(k + 1) == Some(&cur);
-        if !active && !next_active && k + 1 < show.len() {
-            let sx = r.right() + sp::XXS - stroke::HAIR / 2.0;
-            p.line_segment([pos2(sx, r.top() + sp::S), pos2(sx, r.bottom() - sp::S)], Stroke::new(stroke::HAIR, t.border));
+    }
+    // ---- la levantada: encima de todo (puede cruzar al otro panel), solo en horizontal
+    if let (Some(d), Some((l, w, group, into)), Some(di)) = (&hosting, lift, dragged_i) {
+        let w = super::motion::glide(&ctx, Id::new("tab-lift-w"), w, dur::SLOW);
+        let y = super::motion::glide(&ctx, Id::new("tab-lift-y"), top, dur::SLOW);
+        let lr = Rect::from_min_size(pos2(px(l), px(y)), vec2(px(w - sp::XS), height));
+        let k = super::motion::since(&ctx, d.start, dur::FAST);
+        let mut lp = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("tab-lift")));
+        if into.is_some() {
+            // Sobre la etiqueta de un grupo plegado: la levantada deja ver la zona para soltar.
+            lp.multiply_opacity(0.7);
         }
-        x += tab_w;
+        let mut shadow = design::popover_shadow(t);
+        shadow.color = shadow.color.gamma_multiply(k);
+        lp.add(shadow.as_shape(lr, radius::M));
+        lp.rect_filled(lr, radius::M, t.bg.lerp_to_gamma(t.raised, k));
+        lp.rect_stroke(lr, radius::M, Stroke::new(stroke::HAIR, t.border.lerp_to_gamma(t.border_strong, k)), StrokeKind::Inside);
+        let inner = lp.with_clip_rect(lr);
+        tab_content(&inner, t, lr, w, &tabs[di], true, false);
+        if let Some(gr) = groups.iter().find(|x| x.id == group && group != 0) {
+            group_mark(&inner, lr, t.tags[gr.color.min(6)], 1.0);
+        }
+        let released = ctx.input(|i| !i.pointer.primary_down());
+        let mut d = d.clone();
+        d.lift = [l, w];
+        if released {
+            // Soltar en cualquier lado = soltar en el hueco. La pestaña sale desde donde se la soltó.
+            actions.push(Action::MoveTab { id: d.id, pane, before: drop_before, group });
+            super::motion::strip_seed(&ctx, strip_id(pane), SlotKey::Tab(d.id), l, w);
+            d.dropped = true;
+        }
+        ctx.data_mut(|m| m.insert_temp(drag_key(), d));
     }
     // Mismo tamaño y misma altura que la X de las pestañas (centrado con su texto).
-    let pr = Rect::from_center_size(pos2(x + sp::XS + h::CHIP / 2.0, full.top() + TAB_TOP + (full.height() - TAB_TOP) / 2.0), vec2(h::CHIP, h::CHIP));
-    let presp = ui.interact(pr, Id::new(("newtab", show.first().copied().unwrap_or(0))), Sense::click());
-    let presp = design::tip_keys(presp, t, t!("barra.pestana_nueva_ctrl_t"), &kbd_keys(&super::commands::get("new_tab").keys()));
+    let pr = Rect::from_center_size(pos2(x_end + sp::XS + h::CHIP / 2.0, top + height / 2.0), vec2(h::CHIP, h::CHIP));
+    let presp = ui.interact(pr, Id::new(("newtab", pane)), Sense::click());
+    let presp = if dragging { presp } else { design::tip_keys(presp, t, t!("barra.pestana_nueva_ctrl_t"), &kbd_keys(&super::commands::get("new_tab").keys())) };
     tab_btn(ui, t, pr, &presp, ic::PLUS, TAB_PLUS_ICON, TAB_PLUS_NUDGE);
     if presp.clicked() {
         actions.push(Action::NewTab(None));
     }
     ui.allocate_rect(full, Sense::hover());
     pr.right()
+}
+
+/// Una pestaña viva en la tira.
+struct TabSlot<'a> {
+    tab: &'a Tab,
+    /// Índice en `tabs`.
+    i: usize,
+    /// Lo pintado en este cuadro.
+    r: Rect,
+    target_w: f32,
+    presence: f32,
+    /// Viaja a otro lugar (encima de las demás): lleva relleno para tapar lo que cruza.
+    travel: bool,
+    active: bool,
+    /// Se está arrastrando una pestaña: sin hover, X ni tooltips.
+    dragging: bool,
+    pane: usize,
+    groups: &'a [TabGroup],
+    /// Lo que sigue en la tira (sin las etiquetas): para el divisor.
+    next: Option<BarItem>,
+    is_active: &'a dyn Fn(&BarItem) -> bool,
+}
+
+fn tab_slot(ui: &mut Ui, t: &Theme, s: TabSlot, actions: &mut Vec<Action>) {
+    let TabSlot { tab, i, r, target_w, presence, travel, active, dragging, pane, groups, next, is_active } = s;
+    let ctx = ui.ctx().clone();
+    let narrow = target_w < 84.0;
+    let tiny = target_w < 58.0;
+    let mut p = ui.painter().with_clip_rect(r.intersect(ui.clip_rect()));
+    // Lo que entra aparece con la receta de siempre (desde 0,3).
+    if presence < 1.0 {
+        p.multiply_opacity(0.3 + 0.7 * presence);
+    }
+    let resp = ui.interact(r, Id::new(("tab", tab.id)), Sense::click_and_drag());
+    if resp.drag_started_by(egui::PointerButton::Primary) && !dragging {
+        // Se levanta: pasa a ser la activa y su panel toma el foco.
+        let grab = ctx.input(|i| i.pointer.press_origin()).map_or(0.5, |o| ((o.x - r.left()) / r.width().max(1.0)).clamp(0.0, 1.0));
+        let now = ctx.input(|i| i.time);
+        ctx.data_mut(|d| d.insert_temp(drag_key(), TabDrag { id: tab.id, grab, from_pane: pane, host: pane, start: now, lift: [r.left(), target_w], dropped: false }));
+        actions.push(Action::SwitchTab(i));
+    }
+    // Arrastrar archivos sobre una pestaña: tras un momento se cambia a ella; soltarlos ahí los lleva a su carpeta.
+    let drop_hover = tab.tool.is_none() && crate::ui::views::drag_hovering(&resp);
+    if drop_hover && !active {
+        let key = Id::new("tab-drag-hover");
+        let now = ui.input(|i| i.time);
+        let pass = ctx.cumulative_pass_nr();
+        // (pestaña, desde cuándo, último cuadro): si el puntero se fue, el tiempo vuelve a empezar.
+        let since = ui.data_mut(|d| {
+            let t0 = match d.get_temp::<(u64, f64, u64)>(key) {
+                Some((id, t0, last)) if id == tab.id && last + 1 >= pass => t0,
+                _ => now,
+            };
+            d.insert_temp(key, (tab.id, t0, pass));
+            t0
+        });
+        if now - since > super::motion::DWELL_TAB {
+            actions.push(Action::SwitchTab(i));
+            ui.data_mut(|d| d.remove::<(u64, f64, u64)>(key));
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(60));
+        }
+    }
+    if tab.tool.is_none() {
+        if let Some(files) = crate::ui::views::take_drop(&resp) {
+            actions.push(Action::DropFiles { paths: files, dest: tab.path().to_string(), force: crate::ui::views::drop_force() });
+        }
+    }
+    // Se mira la posición del ratón (no `hovered`): la X queda encima de la pestaña y,
+    // si dependiera de ella, la X aparecería y desaparecería en cuadros alternos.
+    let hovering = !dragging && ui.rect_contains_pointer(r);
+    if active {
+        active_tab_bg(&p, t, r);
+    } else {
+        // Sin tocar el fondo de la tira: 4 px de aire abajo.
+        let hr = Rect::from_min_max(r.min, pos2(r.right(), r.bottom() - sp::XS));
+        if travel {
+            p.rect_filled(r, radius::M, t.chrome);
+        }
+        let hov = design::hover_amount(&ctx, resp.id, hovering);
+        design::state_fill(&p, t, hr, radius::M, hov, false, Sel::None);
+    }
+    if drop_hover {
+        p.rect_filled(r, radius::M, t.accent_soft);
+        design::focus_ring(&p, t, r, radius::M);
+    }
+    tab_content(&p, t, r, target_w, tab, active, tiny && active && hovering);
+    let (_, title) = tab_visual(tab);
+    let resp = if narrow && !dragging { design::tip(resp, t, &title) } else { resp };
+    // Las pestañas de un grupo llevan su color abajo: crece desde la izquierda al entrar y se
+    // retrae con su último color al salir.
+    let mark_id = Id::new(("tab-mark", tab.id));
+    let gcolor = groups.iter().find(|g| g.id == tab.group && tab.group != 0).map(|g| t.tags[g.color.min(6)]);
+    if let Some(c) = gcolor {
+        ui.data_mut(|d| d.insert_temp(mark_id.with("c"), c));
+    }
+    let mark = super::motion::fade(&ctx, mark_id, gcolor.is_some(), dur::SLOW);
+    if let Some(c) = gcolor.or_else(|| ui.data(|d| d.get_temp::<Color32>(mark_id.with("c")))) {
+        group_mark(&p, r, c, mark);
+    }
+    design::context_menu(&resp, t, |ui| {
+        if design::menu_item(ui, t, ic::PLUS_SQUARE, t!("barra.nuevo_grupo_con_pestana"), "").clicked() {
+            actions.push(Action::NewTabGroup(i));
+        }
+        for g in groups.iter().filter(|g| g.id != tab.group) {
+            if design::menu_item(ui, t, ic::ARROW_SQUARE_RIGHT, &tf!("barra.mover_a_grupo", nombre = g.name), "").clicked() {
+                actions.push(Action::SetTabGroup(i, g.id));
+            }
+        }
+        if tab.group != 0 && design::menu_item(ui, t, ic::MINUS_SQUARE, t!("barra.quitar_del_grupo"), "").clicked() {
+            actions.push(Action::SetTabGroup(i, 0));
+        }
+        design::menu_sep(ui, t);
+        if design::menu_item(ui, t, ic::X, t!("barra.cerrar_pestana"), "").clicked() {
+            actions.push(Action::CloseTab(i));
+        }
+    });
+    if resp.clicked() {
+        actions.push(Action::SwitchTab(i));
+    }
+    if resp.middle_clicked() {
+        actions.push(Action::CloseTab(i));
+    }
+    // La X existe siempre (así no cambia lo que hay bajo el ratón); se ve en la activa y al pasar
+    // por encima. Se arma con el ancho de destino; mientras la pestaña crece queda recortada.
+    let rt = Rect::from_min_size(r.min, vec2(target_w - sp::XS, r.height()));
+    let close_r = if tiny { Rect::from_center_size(rt.center(), vec2(h::CHIP, h::CHIP)) } else { Rect::from_center_size(pos2(rt.right() - TAB_X_INSET, rt.center().y), vec2(h::CHIP, h::CHIP)) };
+    // Muy angosta, la X va en el centro: solo en la activa (en las demás, un clic cambia a ella).
+    let has_x = (!tiny || active) && !dragging && r.contains_rect(close_r);
+    let cresp = ui.interact(if has_x { close_r } else { Rect::NOTHING }, Id::new(("tabx", tab.id)), Sense::click());
+    if has_x && (hovering || (active && !tiny)) {
+        tab_btn(ui, t, close_r, &cresp, ic::X, TAB_X_ICON, 0.0);
+        if cresp.clicked() {
+            actions.push(Action::CloseTab(i));
+        }
+    }
+    // Divisor fino entre pestañas inactivas.
+    if !active && next.is_some_and(|n| !is_active(&n) && !matches!(n, BarItem::Hole(_))) {
+        let sx = r.right() + sp::XXS - stroke::HAIR / 2.0;
+        ui.painter().line_segment([pos2(sx, r.top() + sp::S), pos2(sx, r.bottom() - sp::S)], Stroke::new(stroke::HAIR, t.border));
+    }
 }
 
 /// Arriba de la barra lateral: el ícono y el nombre de Rayo, discretos.
@@ -2085,4 +2726,116 @@ pub fn conflict_dialog(ctx: &egui::Context, t: &Theme, j: &transfer::JobView, ac
         }
     });
     ctx.data_mut(|d| d.insert_temp(all_id, all));
+}
+
+#[cfg(test)]
+mod tab_tests {
+    use super::*;
+
+    #[test]
+    fn visible_order_groups_tabs_where_the_first_one_is() {
+        // Panel 0: a, b(g1), c, d(g1), e(g2); panel 1: f, g(g1).
+        let tabs = [(0, 0), (0, 1), (0, 0), (0, 1), (0, 2), (1, 0), (1, 1)];
+        assert_eq!(visible_order(&tabs), vec![0, 1, 3, 2, 4, 5, 6]);
+        // Ya ordenado: queda igual.
+        let sorted: Vec<(u8, u64)> = visible_order(&tabs).iter().map(|&i| tabs[i]).collect();
+        assert_eq!(visible_order(&sorted), (0..sorted.len()).collect::<Vec<_>>());
+        // Paneles mezclados en el vector: primero el 0.
+        assert_eq!(visible_order(&[(1, 0), (0, 0), (2, 5), (0, 5), (2, 0)]), vec![1, 3, 0, 2, 4]);
+    }
+
+    #[test]
+    fn drop_index_counts_centers_left_of_the_edge() {
+        let centers = [50.0, 150.0, 250.0];
+        assert_eq!(drop_index(&centers, 0.0), 0);
+        assert_eq!(drop_index(&centers, 149.0), 1);
+        assert_eq!(drop_index(&centers, 151.0), 2);
+        assert_eq!(drop_index(&centers, 999.0), 3);
+    }
+
+    fn row(kinds: &[(DropKind, f32)]) -> Vec<(DropKind, f32, f32)> {
+        let mut x = 0.0;
+        kinds
+            .iter()
+            .map(|&(k, w)| {
+                x += w;
+                (k, x - w, x)
+            })
+            .collect()
+    }
+
+    use DropKind::{Chip, Tab as T};
+
+    #[test]
+    fn drop_target_joins_while_inside_the_group_span() {
+        // [a] [● G] [g1] [g2] [b]   (anchos distintos)
+        let items = row(&[(T { group: 0 }, 100.0), (Chip { group: 7, collapsed: false }, 60.0), (T { group: 7 }, 120.0), (T { group: 7 }, 80.0), (T { group: 0 }, 100.0)]);
+        // Antes de todo: sin grupo.
+        assert_eq!(drop_target(&items, 10.0, 60.0), (0, 0, None));
+        // Entre a y el chip: B es un chip → ninguno.
+        assert_eq!(drop_target(&items, 120.0, 170.0), (1, 0, None));
+        // Entre el chip y g1: B es de G.
+        assert_eq!(drop_target(&items, 200.0, 250.0), (2, 7, None));
+        // Después de g2 (fin del grupo) con el borde izquierdo todavía dentro de g2: G.
+        assert_eq!(drop_target(&items, 345.0, 400.0), (4, 7, None));
+        // Ya fuera del tramo (pasó el borde derecho de g2 = 360): ninguno.
+        assert_eq!(drop_target(&items, 362.0, 400.0), (4, 0, None));
+        // Al final: sin grupo.
+        assert_eq!(drop_target(&items, 500.0, 550.0), (5, 0, None));
+    }
+
+    #[test]
+    fn drop_target_on_a_collapsed_chip_goes_inside() {
+        // [a] [● G 3] [b]
+        let items = row(&[(T { group: 0 }, 100.0), (Chip { group: 4, collapsed: true }, 70.0), (T { group: 0 }, 100.0)]);
+        // El puntero sobre el chip plegado manda, aunque el borde izquierdo esté antes.
+        assert_eq!(drop_target(&items, 40.0, 130.0), (2, 4, Some(4)));
+        // Al lado, sin el puntero encima: después de un chip plegado no se entra.
+        assert_eq!(drop_target(&items, 160.0, 175.0), (2, 0, None));
+        // Un chip desplegado cuya única pestaña es la arrastrada: queda en el grupo.
+        let items = row(&[(T { group: 0 }, 100.0), (Chip { group: 4, collapsed: false }, 70.0)]);
+        assert_eq!(drop_target(&items, 160.0, 175.0), (2, 4, None));
+    }
+
+    #[test]
+    fn keyboard_steps_follow_the_same_stops() {
+        // a, [G: g1, g2], b — G desplegado.
+        let order = [(1, 0), (2, 9), (3, 9), (4, 0)];
+        let none: &[u64] = &[];
+        // a → derecha: entra a G como primera.
+        assert_eq!(tab_step(&order, none, 1, 1), Some((Some(2), 9)));
+        // g1 → derecha: se intercambia con g2.
+        assert_eq!(tab_step(&order, none, 2, 1), Some((Some(4), 9)));
+        // g2 → derecha (última): sale y queda justo después del grupo.
+        assert_eq!(tab_step(&order, none, 3, 1), Some((Some(4), 0)));
+        // b → derecha: en el extremo, no se mueve.
+        assert_eq!(tab_step(&order, none, 4, 1), None);
+        // b → izquierda: entra a G como última.
+        assert_eq!(tab_step(&order, none, 4, -1), Some((None, 9)));
+        // g1 → izquierda (primera): sale por delante del chip.
+        assert_eq!(tab_step(&order, none, 2, -1), Some((Some(3), 0)));
+        // g2 → izquierda: se intercambia con g1.
+        assert_eq!(tab_step(&order, none, 3, -1), Some((Some(2), 9)));
+        // a → izquierda: extremo.
+        assert_eq!(tab_step(&order, none, 1, -1), None);
+        // G plegado: a → derecha lo salta entero; b → izquierda también.
+        assert_eq!(tab_step(&order, &[9], 1, 1), Some((Some(4), 0)));
+        assert_eq!(tab_step(&order, &[9], 4, -1), Some((Some(2), 0)));
+        // Dentro de un grupo plegado (es la activa, a la vista): sale.
+        assert_eq!(tab_step(&order, &[9], 2, 1), Some((Some(4), 0)));
+        assert_eq!(tab_step(&order, &[9], 3, -1), Some((Some(2), 0)));
+    }
+
+    #[test]
+    fn bar_items_hide_collapsed_except_the_active_and_skip_the_dragged() {
+        let mut tabs: Vec<Tab> = (1..=4).map(|id| Tab::new(id, "C:\\")).collect();
+        tabs[1].group = 5;
+        tabs[2].group = 5;
+        let mut groups = vec![TabGroup { id: 5, name: "G".into(), color: 0, collapsed: false }];
+        let show = [0, 1, 2, 3];
+        assert_eq!(bar_items(&tabs, &groups, &show, 0, None), vec![BarItem::Tab(0), BarItem::Group(0), BarItem::Tab(1), BarItem::Tab(2), BarItem::Tab(3)]);
+        groups[0].collapsed = true;
+        assert_eq!(bar_items(&tabs, &groups, &show, 2, None), vec![BarItem::Tab(0), BarItem::Group(0), BarItem::Tab(2), BarItem::Tab(3)]);
+        assert_eq!(bar_items(&tabs, &groups, &show, 0, Some(4)), vec![BarItem::Tab(0), BarItem::Group(0)]);
+    }
 }

@@ -94,6 +94,9 @@ pub struct QuickLook {
     hidden: bool,
     /// Cuándo se abrió (fundido del contenido) y cuándo pasó al archivo actual (demora).
     opened_at: f64,
+    /// El fundido empieza de nuevo en el cuadro siguiente: el que muestra la ventana. Crearla y
+    /// mostrarla tarda unos milisegundos (Windows); así el fundido no arranca con un salto.
+    fade_next: bool,
     shown_at: f64,
     /// Lo que se ve (ruta; vacío = nada), de dónde se lee (para soltar el PDF) y una copia,
     /// para las teclas.
@@ -245,6 +248,7 @@ impl QuickLook {
     /// Dibuja la ventana (o la cierra en dos tiempos). Una vez por cuadro; no hace nada si
     /// está cerrada.
     pub fn show(&mut self, ctx: &egui::Context, env: Env, model: Model) -> Vec<Event> {
+        let _p = super::perf::scope("vista rápida");
         let mut ev = Vec::new();
         let mut env = env;
         let inline = super::capture::inline_windows();
@@ -286,11 +290,14 @@ impl QuickLook {
             qlwin::show_again();
             self.hidden = false;
         }
+        if std::mem::take(&mut self.fade_next) {
+            self.opened_at = now;
+        }
 
         // Cambio de archivo: encajada, página 1, sonido nuevo.
         let path = model.item.map_or(String::new(), |i| i.path.clone());
         if path != self.shown {
-            fsx::pdf::forget(&self.shown_src);
+            fsx::pdf::release(&self.shown_src);
             self.shown_src = model.item.map_or(String::new(), |i| i.source().to_string());
             qlview::reset(&mut self.view);
             if let Some(pl) = env.player {
@@ -311,6 +318,7 @@ impl QuickLook {
         } else {
             let t = env.t;
             let builder = self.builder(ctx);
+            let _w = super::perf::scope("ql.ventana");
             ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(TITLE), builder, |ui, _| {
                 inject_wheel(ui);
                 let vctx = ui.ctx().clone();
@@ -336,6 +344,7 @@ impl QuickLook {
                 if !self.adopted {
                     crate::diag::log("vista rápida: no se encontró su ventana");
                 }
+                self.fade_next = self.adopted;
                 // El próximo cuadro la muestra (ya sin barra de título).
                 ctx.request_repaint();
             }
@@ -394,7 +403,7 @@ impl QuickLook {
         self.video_in = false;
         self.native = false;
         qlview::reset(&mut self.view);
-        fsx::pdf::forget(&self.shown_src);
+        fsx::pdf::release(&self.shown_src);
         self.shown.clear();
         self.shown_src.clear();
         self.current = None;
@@ -554,6 +563,7 @@ impl QuickLook {
     /// Encabezado de 44: ‹ › y «2 / 5» (varios), ícono, nombre y micro-etiqueta; a la derecha la
     /// herramienta, «Abrir con ‹programa›», maximizar y cerrar.
     fn header(&mut self, ui: &mut Ui, head: Rect, env: &mut Env, model: &Model, ev: &mut Vec<Event>) -> HeadOut {
+        let _p = super::perf::scope("ql.encabezado");
         let t = env.t;
         let mut out = HeadOut::default();
         let p = ui.painter().clone();

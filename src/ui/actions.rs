@@ -22,6 +22,13 @@ pub enum Action {
     Ungroup(u64),
     /// Cerrar todas las pestañas del grupo.
     CloseTabGroup(u64),
+    /// Llevar la pestaña `id` al panel `pane`, antes de la pestaña `before` (None = al final), en el
+    /// grupo `group` (0 = ninguno). Lo que hace soltar una pestaña arrastrada.
+    MoveTab { id: u64, pane: usize, before: Option<u64>, group: u64 },
+    /// Mover la pestaña activa un lugar a la izquierda (-1) o a la derecha (1).
+    MoveTabStep(i32),
+    /// Llevar la pestaña activa al panel de enfrente.
+    MoveTabOther,
     SwitchTab(usize),
     Reveal(String),
     Select { col: usize, name: String, is_dir: bool, ctrl: bool, shift: bool },
