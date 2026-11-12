@@ -43,6 +43,23 @@ pub struct Volume {
 
 static CACHE: Mutex<Option<HashMap<String, Volume>>> = Mutex::new(None);
 
+/// Corre `f` (algo que lee del disco de `path`) de a uno por disco físico si el disco tiene
+/// cabezal (mecánico, USB): de a tres lecturas a la vez el cabezal salta entre archivos y rinde
+/// la mitad (medido en un disco mecánico: 223 → 106 MB/s leyendo fotos enteras). En SSD, NVMe y
+/// red, sin esperar.
+pub fn one_at_a_time<T>(path: &str, f: impl FnOnce() -> T) -> T {
+    type Locks = HashMap<String, std::sync::Arc<Mutex<()>>>;
+    static LOCKS: Mutex<Option<Locks>> = Mutex::new(None);
+    let v = volume(path);
+    if v.kind.parallel_friendly() {
+        return f();
+    }
+    let disk = v.disks.first().cloned().unwrap_or_default();
+    let lock = LOCKS.lock().get_or_insert_with(Default::default).entry(disk).or_default().clone();
+    let _g = lock.lock();
+    f()
+}
+
 /// El volumen de una ruta (se pregunta a Windows una sola vez por volumen).
 pub fn volume(path: &str) -> Volume {
     let root = volume_root(path);

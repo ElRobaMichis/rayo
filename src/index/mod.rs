@@ -884,6 +884,41 @@ impl IndexManager {
         Some(m)
     }
 
+    /// Lo que hay en `dir` según el índice (un nivel), sin tocar el disco: el listado que se
+    /// muestra al instante mientras un disco mecánico dormido arranca. `None` si el disco no está
+    /// indexado o la carpeta no está en el índice. No trae fecha de creación ni estado en la nube.
+    pub fn children_entries(&self, dir: &str) -> Option<Vec<crate::fsx::FileEntry>> {
+        let slot = self.slot_for(dir)?;
+        let v = slot.index.read();
+        if v.len() <= 1 {
+            return None;
+        }
+        let d = v.find_path(dir)?;
+        let mut out = Vec::new();
+        for c in v.children(d) {
+            if v.is_deleted(c) {
+                continue;
+            }
+            let name = v.name(c);
+            let is_dir = v.is_dir(c);
+            let flags = v.flags[c as usize];
+            out.push(crate::fsx::FileEntry {
+                lower: name.to_lowercase(),
+                ext: if is_dir { String::new() } else { crate::fsx::ext_of(&name) },
+                is_dir,
+                hidden: flags & (store::F_HIDDEN | store::F_SYSTEM) != 0,
+                size: if is_dir { 0 } else { v.size[c as usize] },
+                dir_size: is_dir.then(|| v.size[c as usize]),
+                mtime: v.mtime[c as usize],
+                ctime: 0,
+                cloud: crate::fsx::Cloud::None,
+                link: flags & store::F_REPARSE != 0 && is_dir,
+                name,
+            });
+        }
+        Some(out)
+    }
+
     /// Todos los archivos bajo `dir` (vista plana), con su ruta relativa. `None` si
     /// el disco no está indexado. Como mucho `limit`.
     pub fn files_under(&self, dir: &str, limit: usize) -> Option<Vec<crate::fsx::FileEntry>> {

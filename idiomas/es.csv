@@ -576,6 +576,7 @@ lista.ajustar_columna,Arrastra para cambiar el ancho · doble clic: ancho origin
 lista.buscando,Buscando…,,
 lista.cambia_extension,Cambia la extensión: {antes} → {despues},,Al renombrar · {antes} y {despues} = extensiones como «.pdf» o «sin extensión»
 lista.cargando,Cargando…,,
+lista.despertando_disco,Despertando el disco…,,
 lista.esperando_servidor,Esperando al servidor…,,
 lista.carpeta_vacia,Carpeta vacía,,
 lista.descarga,Descarga,,Columna Tipo de una descarga que todavía no termina
@@ -829,6 +830,7 @@ rapida.maximizar,Maximizar,,Tooltip de la Vista rápida
 rapida.restaurar,Restaurar,,Tooltip de la Vista rápida
 rapida.miniaturas,Miniaturas,,Tooltip: mostrar u ocultar la tira de páginas del PDF
 rapida.encajar,Encajar,,Tooltip: volver a ver la imagen entera
+rapida.enfocando,Enfocando,,Micro-etiqueta (se muestra en mayúsculas): llega la versión nítida de la foto
 rapida.pagina_anterior,Página anterior,,Tooltip del paginador del PDF
 rapida.pagina_siguiente,Página siguiente,,Tooltip del paginador del PDF
 rapida.sin_seleccion,Sin selección,,Micro-etiqueta (se muestra en mayúsculas)

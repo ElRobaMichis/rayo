@@ -20,17 +20,25 @@ pub struct TexEntry {
     pub orig: Option<(u32, u32)>,
     /// Páginas (si es un PDF).
     pub pages: Option<u32>,
-    /// Cuándo llegó (para que aparezca con un fundido); muy atrás si reemplaza a otra del mismo archivo.
+    /// Cuándo llegó (para que aparezca con un fundido); muy atrás si reemplaza a otra del mismo
+    /// archivo o si el archivo ya se vio en esta sesión (vuelve sin fundido).
     pub at: f64,
     /// Sin transparencia (foto, página): la única que lleva marco.
     pub opaque: bool,
     /// El ícono del tipo que da Windows cuando no tiene la miniatura: un dibujo chico centrado en
-    /// un lienzo vacío (un 48 en 256). En una foto no es su miniatura: ver `get_photo`.
+    /// un lienzo vacío (un 48 en 256). En una foto no es su miniatura: `Textures` no lo guarda.
     pub icon: bool,
-    /// Bytes que cuenta para el tope (solo las grandes); cuándo se usó por última vez; orden de llegada.
+    /// Bytes de la textura; cuándo se usó por última vez; orden de llegada.
     bytes: usize,
     used: u64,
     seq: u64,
+}
+
+impl TexEntry {
+    /// Proporción (ancho / alto) de lo que se ve: la del original si se sabe.
+    pub fn aspect(&self) -> Option<f32> {
+        self.orig.filter(|o| o.0 > 0 && o.1 > 0).map(|(w, h)| w as f32 / h as f32).or_else(|| self.pic.as_ref().map(|p| p.size[0] as f32 / p.size[1].max(1) as f32))
+    }
 }
 
 /// Una franja de una imagen grande ya en la GPU: sus filas y la fila de la imagen con que empieza
@@ -43,22 +51,28 @@ struct BandTex {
 }
 
 /// Una imagen en la GPU: una textura, o varias franjas (subir 48 MB de una vez traba un cuadro;
-/// en franjas de 4 MB se sube una por cuadro). Se dibuja igual en los dos casos.
+/// en franjas de 4 MB se sube una por cuadro). Se dibuja igual en los dos casos. Clonarla no
+/// asigna (se clona en cada cuadro).
 #[derive(Clone)]
 pub struct Pic {
-    bands: Vec<BandTex>,
+    bands: Arc<[BandTex]>,
     size: [usize; 2],
 }
 
 impl Pic {
     pub fn of(tex: &TextureHandle) -> Pic {
         let size = tex.size();
-        Pic { bands: vec![BandTex { tex: tex.clone(), rows: 0..size[1], top: 0 }], size }
+        Pic { bands: Arc::from([BandTex { tex: tex.clone(), rows: 0..size[1], top: 0 }]), size }
     }
 
     /// Tamaño en píxeles.
     pub fn size_vec2(&self) -> egui::Vec2 {
         vec2(self.size[0] as f32, self.size[1] as f32)
+    }
+
+    /// ¿Es la misma imagen (las mismas texturas)?
+    pub fn same(&self, other: &Pic) -> bool {
+        Arc::ptr_eq(&self.bands, &other.bands)
     }
 
     /// Dibuja la imagen entera en `r`. Con `corner` (foto, página): rectángulo redondeado con la
@@ -70,7 +84,7 @@ impl Pic {
     /// comparten el mismo borde: cada píxel de la pantalla es de una sola franja. Se ve igual que
     /// una textura sola.
     pub fn paint(&self, p: &egui::Painter, r: Rect, corner: Option<egui::CornerRadius>, tint: Color32) {
-        if let [b] = self.bands.as_slice() {
+        if let [b] = &*self.bands {
             match corner {
                 Some(cr) => {
                     p.add(egui::epaint::RectShape::filled(r, cr, tint).with_texture(b.tex.id(), UV));
@@ -90,7 +104,7 @@ impl Pic {
         // Cuánto de más (filas) para correr el borde suavizado fuera del recorte: 3 px.
         let extra = 3.0 / ppp * h / r.height().max(1.0);
         let full = p.clip_rect();
-        for b in &self.bands {
+        for b in self.bands.iter() {
             let th = b.tex.size()[1] as f32;
             let (first, last) = (b.rows.start == 0, b.rows.end >= self.size[1]);
             let (a, z) = (b.rows.start as f32, b.rows.end as f32);
@@ -129,48 +143,147 @@ struct Pending {
     used: u64,
 }
 
-/// Texturas de miniaturas. Se desaloja lo que hace más que no se usa: por cantidad (`MAX_TEX`) y,
-/// las grandes (más de `BIG_SIDE` de lado: vista previa, páginas de PDF), por bytes (`BIG_BYTES`),
-/// así un PDF de 300 páginas recorrido con la ventana maximizada no se come la memoria de video.
+/// La huella de una imagen ya vista: proporción y color medio. Se guarda toda la sesión (no se
+/// desaloja con la textura): al volver a una miniatura desalojada se pinta su lugar con su forma
+/// y su color desde el primer cuadro, en vez de una placa gris.
+#[derive(Clone, Copy, Debug)]
+pub struct Print {
+    pub aspect: f32,
+    pub color: Color32,
+}
+
+/// Lo que hay de una miniatura (ver `Textures::thumb`).
+pub enum Thumb<'a> {
+    /// Hay imagen (la pedida u otra versión del mismo archivo).
+    Ready(&'a TexEntry),
+    /// En camino: desde cuándo se pide y su huella si ya se vio.
+    Waiting { since: f64, print: Option<Print> },
+    /// No hay imagen posible (o se agotaron los reintentos): el ícono.
+    Failed,
+}
+
+/// Cómo se pide algo al cargador.
+#[derive(Clone, Copy)]
+enum Req {
+    /// Vista previa, Vista rápida: hilo propio.
+    Urgent,
+    /// Miniatura, con la versión del archivo (0 = no se sabe).
+    Normal(u64),
+    /// Solo si está en la caché en disco (desplazándose rápido).
+    Cheap(u64),
+}
+
+/// Un pedido que falló: cuántas veces y cuándo se puede volver a pedir.
+struct Fail {
+    tries: u32,
+    retry_at: f64,
+}
+
+/// Intentos antes de dar un fallo por definitivo (un disco arrancando, un archivo ocupado o el
+/// shell ocupado al arrancar fallan una vez y después andan). Pausa: `RETRY_PAUSE` × intento.
+const TRIES: u32 = 3;
+const RETRY_PAUSE: f64 = 0.7;
+
+/// Texturas de miniaturas. Se desaloja lo que hace más que no se usa, por bytes: las chicas (hasta
+/// `BIG_SIDE` de lado: cuadrícula) hasta `SMALL_BYTES` y las grandes (vista previa, páginas de PDF)
+/// hasta `BIG_BYTES`, así un PDF de 300 páginas recorrido con la ventana maximizada no se come la
+/// memoria de video.
 pub struct Textures {
     pub loader: Arc<ThumbLoader>,
     map: HashMap<ThumbKey, TexEntry>,
     pending: Vec<Pending>,
-    /// Cuadro actual (para saber qué se usó hace poco) y orden de llegada.
+    /// Cuadro actual (para saber qué se usó hace poco), orden de llegada y hora del cuadro.
     frame: u64,
     seq: u64,
+    now: f64,
+    /// Bytes de las chicas y de las grandes.
+    small_bytes: usize,
+    big_bytes: usize,
+    /// Archivos que ya se vieron en esta sesión (vuelven sin fundido) y su huella.
+    prints: HashMap<String, Print>,
+    /// Cuándo se pidió por primera vez lo que todavía no llegó (para la gracia de la placa).
+    asked: HashMap<ThumbKey, f64>,
+    /// Pedidos que fallaron (se reintentan; con `TRIES` es definitivo).
+    fails: HashMap<ThumbKey, Fail>,
+    /// Pedidos «solo de la caché en disco» que no estaban (no se vuelven a pedir así).
+    cheap_missed: std::collections::HashSet<ThumbKey>,
+    ctx: Option<egui::Context>,
 }
 
-const MAX_TEX: usize = 240;
-/// Lado desde el que una textura cuenta para el tope en bytes.
+/// Bytes de las miniaturas en la GPU (una de 128 px son 44 KB: más de 2 000).
+const SMALL_BYTES: usize = 96 * 1024 * 1024;
+/// Lado desde el que una textura cuenta como grande.
 const BIG_SIDE: u32 = 512;
-const BIG_BYTES: usize = 192 * 1024 * 1024;
-/// Bytes de texturas que se suben por cuadro (al menos una franja): subir cuesta ~0,15 ms por MB.
-const UPLOAD_BYTES: usize = 6 << 20;
+/// Bytes de las grandes: entra la foto de la Vista rápida entera al 100 % (40 MP son 159 MB).
+const BIG_BYTES: usize = 256 * 1024 * 1024;
+/// Bytes de texturas que se suben por cuadro (al menos una): subir cuesta ~0,15 ms por MB.
+/// Quieto y con algo moviéndose.
+const UPLOAD_BYTES: usize = 16 << 20;
+const UPLOAD_BYTES_MOVING: usize = 4 << 20;
+/// Texturas que se suben por cuadro como mucho: una pantalla de miniaturas llega como una ola
+/// corta en vez de un golpe. Quieto y con algo moviéndose.
+const UPLOAD_COUNT: usize = 24;
+const UPLOAD_COUNT_MOVING: usize = 8;
 /// Cuadros sin pedirse tras los que se descarta una imagen a medio subir.
 const PENDING_FRAMES: u64 = 30;
+/// Huellas que se recuerdan (son 16 bytes más la ruta).
+const MAX_PRINTS: usize = 50_000;
+
+fn is_photo(path: &str) -> bool {
+    is_image_ext(&fsx::ext_of(path.rsplit_once(fsx::pdf::PAGE_SEP).map_or(path, |(p, _)| p)))
+}
 
 impl Textures {
     pub fn new(loader: Arc<ThumbLoader>) -> Self {
         super::shellicons::init(loader.clone());
-        Textures { loader, map: HashMap::new(), pending: Vec::new(), frame: 0, seq: 0 }
+        Textures {
+            loader,
+            map: HashMap::new(),
+            pending: Vec::new(),
+            frame: 0,
+            seq: 0,
+            now: 0.0,
+            small_bytes: 0,
+            big_bytes: 0,
+            prints: HashMap::new(),
+            asked: HashMap::new(),
+            fails: HashMap::new(),
+            cheap_missed: Default::default(),
+            ctx: None,
+        }
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) {
         super::perf::install(ctx);
+        // Con `RAYO_PERF` y `RAYO_CAUSAS`: quién pidió cada cuadro (archivo:línea), al diagnóstico.
+        static CAUSAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if super::perf::on() && *CAUSAS.get_or_init(|| std::env::var_os("RAYO_CAUSAS").is_some()) {
+            let c = ctx.repaint_causes();
+            if !c.is_empty() {
+                crate::diag::log(&format!("causas: {:?}", c.iter().map(|c| c.to_string()).collect::<Vec<_>>()));
+            }
+        }
         let _p = super::perf::scope("texturas");
         self.loader.next_frame();
         self.frame += 1;
-        // Subir texturas tiene su costo: por cuadro se suben las que entren en ~3 ms y en
-        // `UPLOAD_BYTES`, y el resto en el siguiente. Así una carpeta llena de fotos no traba el
-        // movimiento, y una foto grande se sube en franjas, una por cuadro.
+        if self.ctx.is_none() {
+            self.ctx = Some(ctx.clone());
+        }
+        // Subir texturas tiene su costo: por cuadro se suben las que entren en ~3 ms, en
+        // `UPLOAD_BYTES` y en `UPLOAD_COUNT`, y el resto en el siguiente. Así una carpeta llena de
+        // fotos no traba el movimiento, y una foto grande se sube en franjas, una por cuadro.
         let t0 = std::time::Instant::now();
         let budget = std::time::Duration::from_millis(3);
         let now = ctx.input(|i| i.time);
+        self.now = now;
         let frame = self.frame;
         self.pending.retain(|p| p.used + PENDING_FRAMES >= frame);
-        let mut sent = 0;
-        while t0.elapsed() <= budget && sent < UPLOAD_BYTES {
+        let (mut sent, mut count) = (0, 0);
+        // Con algo en movimiento, menos por cuadro (4 MB y 8 texturas); quieto, más (16 MB y 24).
+        let moved_at: f64 = ctx.data(|d| d.get_temp(egui::Id::new("texturas-moviendo"))).unwrap_or(f64::MIN);
+        let moving = now - moved_at < 0.1 || ctx.input(|i| i.pointer.is_decidedly_dragging() || i.smooth_scroll_delta != egui::Vec2::ZERO);
+        let (max_bytes, max_count) = if moving { (UPLOAD_BYTES_MOVING, UPLOAD_COUNT_MOVING) } else { (UPLOAD_BYTES, UPLOAD_COUNT) };
+        while t0.elapsed() <= budget && (sent < max_bytes || count == 0) && count < max_count {
             // Primero lo que quedó a medio subir.
             if let Some(p) = self.pending.first_mut() {
                 let Some(b) = p.left.pop_front() else {
@@ -178,34 +291,51 @@ impl Textures {
                     continue;
                 };
                 sent += b.img.pixels.len() * 4;
+                count += 1;
                 let tex = ctx.load_texture(format!("{}#{}", p.key.path, b.rows.start), b.img, TextureOptions::LINEAR);
                 p.done.push(BandTex { tex, rows: b.rows, top: b.top });
                 if p.left.is_empty() {
                     let p = self.pending.remove(0);
-                    let pic = Pic { bands: p.done, size: [p.img.w as usize, p.img.h as usize] };
-                    self.insert(p.key, Some((p.img, pic, p.shape)), now);
+                    let pic = Pic { bands: p.done.into(), size: [p.img.w as usize, p.img.h as usize] };
+                    self.insert(p.key, Some((p.img, pic, p.shape)), [128; 3], now);
                 }
                 continue;
             }
             let Ok(r) = self.loader.rx.try_recv() else { break };
+            self.loader.received(&r.key);
+            if r.cheap_miss {
+                // No estaba en la caché en disco: se pedirá de verdad cuando se deje de desplazar.
+                if self.cheap_missed.len() > 20_000 {
+                    self.cheap_missed.clear();
+                }
+                self.cheap_missed.insert(r.key);
+                continue;
+            }
             if r.key.path.starts_with(crate::fsx::thumbs::ICON_PREFIX) {
                 let ci = r.bands.into_iter().next().map(|b| b.img);
                 super::shellicons::deliver(ctx, &r.key, r.img.zip(ci));
                 continue;
             }
+            // El ícono del tipo en lugar de la foto no es un resultado: es un fallo (se reintenta).
+            let photo_icon = r.shape.1 && is_photo(&r.key.path);
             let mut bands = r.bands;
             match r.img {
+                Some(img) if photo_icon => {
+                    drop(img);
+                    self.insert(r.key, None, r.color, now);
+                }
                 Some(img) if bands.len() == 1 => {
                     let b = bands.pop().expect("una franja");
                     sent += b.img.pixels.len() * 4;
+                    count += 1;
                     let tex = ctx.load_texture(&r.key.path, b.img, TextureOptions::LINEAR);
                     let pic = Pic::of(&tex);
-                    self.insert(r.key, Some((img, pic, r.shape)), now);
+                    self.insert(r.key, Some((img, pic, r.shape)), r.color, now);
                 }
                 Some(img) if !bands.is_empty() => {
                     self.pending.push(Pending { key: r.key, img, shape: r.shape, left: bands.into(), done: Vec::new(), used: frame });
                 }
-                _ => self.insert(r.key, None, now),
+                _ => self.insert(r.key, None, r.color, now),
             }
         }
         if !self.pending.is_empty() || !self.loader.rx.is_empty() {
@@ -213,47 +343,73 @@ impl Textures {
         }
     }
 
-    /// Guarda lo que llegó (ya en la GPU) y desaloja lo que sobre.
-    fn insert(&mut self, key: ThumbKey, got: Option<(Rgba, Pic, (bool, bool))>, now: f64) {
-        // Si ya se veía otra versión del mismo archivo, la nueva la reemplaza sin fundido.
-        let replaces = self.map.iter().any(|(k, e)| k.path == key.path && e.pic.is_some());
-        let at = if replaces { f64::MIN } else { now };
+    /// Guarda lo que llegó (ya en la GPU) y desaloja lo que sobre. Nada (o el ícono del tipo en
+    /// una foto) se reintenta unas veces antes de guardarse como fallo.
+    fn insert(&mut self, key: ThumbKey, got: Option<(Rgba, Pic, (bool, bool))>, color: [u8; 3], now: f64) {
+        if got.is_none() {
+            let f = self.fails.entry(key.clone()).or_insert(Fail { tries: 0, retry_at: 0.0 });
+            f.tries += 1;
+            f.retry_at = now + RETRY_PAUSE * f.tries as f64;
+            if f.tries < TRIES {
+                if let Some(ctx) = &self.ctx {
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(RETRY_PAUSE * f.tries as f64));
+                }
+                return;
+            }
+        } else {
+            self.fails.remove(&key);
+        }
+        self.asked.remove(&key);
+        // Ya visto en esta sesión, o reemplaza a otra versión del mismo archivo: sin fundido.
+        let seen = self.prints.contains_key(&key.path);
+        let at = if seen { f64::MIN } else { now };
         self.seq += 1;
         let (used, seq) = (self.frame, self.seq);
         let entry = match got {
             Some((img, pic, (opaque, icon))) => {
-                let big = img.w.max(img.h) > BIG_SIDE;
-                let tex = match pic.bands.as_slice() {
+                if img.w > 0 && img.h > 0 && !icon {
+                    if self.prints.len() >= MAX_PRINTS {
+                        self.prints.clear();
+                    }
+                    let aspect = img.orig.filter(|o| o.0 > 0 && o.1 > 0).map_or(img.w as f32 / img.h as f32, |(w, h)| w as f32 / h as f32);
+                    self.prints.insert(key.path.clone(), Print { aspect, color: Color32::from_rgb(color[0], color[1], color[2]) });
+                }
+                let tex = match &*pic.bands {
                     [b] => Some(b.tex.clone()),
                     _ => None,
                 };
-                TexEntry { tex, pic: Some(pic), orig: img.orig, pages: img.pages, at, opaque, icon, bytes: if big { img.w as usize * img.h as usize * 4 } else { 0 }, used, seq }
+                TexEntry { tex, pic: Some(pic), orig: img.orig, pages: img.pages, at, opaque, icon, bytes: img.w as usize * img.h as usize * 4, used, seq }
             }
             None => TexEntry { tex: None, pic: None, orig: None, pages: None, at, opaque: false, icon: false, bytes: 0, used, seq },
         };
-        self.map.insert(key.clone(), entry);
+        if let Some(old) = self.map.insert(key.clone(), entry) {
+            self.account(&key, old.bytes, false);
+        }
+        let b = self.map[&key].bytes;
+        self.account(&key, b, true);
         self.evict(&key);
+    }
+
+    fn account(&mut self, key: &ThumbKey, bytes: usize, add: bool) {
+        let total = if key.size > BIG_SIDE { &mut self.big_bytes } else { &mut self.small_bytes };
+        *total = if add { *total + bytes } else { total.saturating_sub(bytes) };
     }
 
     /// Desaloja lo menos usado hasta volver a los topes. Nunca lo usado en los dos últimos cuadros
     /// (lo que está en pantalla) ni lo recién llegado.
     fn evict(&mut self, keep: &ThumbKey) {
         loop {
-            let count = self.map.len() > MAX_TEX;
-            let bytes = !count && self.map.values().map(|e| e.bytes).sum::<usize>() > BIG_BYTES;
-            if !count && !bytes {
+            let big = self.big_bytes > BIG_BYTES;
+            if !big && self.small_bytes <= SMALL_BYTES {
                 return;
             }
             let frame = self.frame;
-            let victim = self
-                .map
-                .iter()
-                .filter(|(k, e)| *k != keep && e.used + 2 < frame && (count || e.bytes > 0))
-                .min_by_key(|(_, e)| (e.used, e.seq))
-                .map(|(k, _)| k.clone());
+            let victim = self.map.iter().filter(|(k, e)| *k != keep && e.used + 2 < frame && (k.size > BIG_SIDE) == big).min_by_key(|(_, e)| (e.used, e.seq)).map(|(k, _)| k.clone());
             match victim {
                 Some(k) => {
-                    self.map.remove(&k);
+                    if let Some(e) = self.map.remove(&k) {
+                        self.account(&k, e.bytes, false);
+                    }
                 }
                 None => return,
             }
@@ -270,19 +426,70 @@ impl Textures {
         self.get_with(path, size, true)
     }
 
+    /// Pide sin devolver nada (precalentar: la foto que probablemente se va a ver).
+    pub fn warm(&mut self, path: &str, size: u32) {
+        let key = ThumbKey { path: path.to_string(), size };
+        if self.map.contains_key(&key) || self.pending.iter().any(|p| p.key == key) || self.fails.get(&key).is_some_and(|f| f.retry_at > self.now) {
+            return;
+        }
+        // Ya hay una del tamaño de la Vista rápida (de otro tamaño de ventana): alcanza.
+        if crate::fsx::thumbs::fit_area(size).is_some() && self.best_key(path).is_some_and(|(_, px)| px >= crate::fsx::thumbs::FIT_MIN as usize * 9 / 10) {
+            return;
+        }
+        self.loader.request_warm(key, 0);
+    }
+
+    /// Precalentar una miniatura (adelanto de la cuadrícula), con la versión del archivo.
+    pub fn warm_thumb(&mut self, path: &str, size: u32, stamp: u64) {
+        let key = ThumbKey { path: path.to_string(), size };
+        if self.map.contains_key(&key) || self.pending.iter().any(|p| p.key == key) || self.fails.get(&key).is_some_and(|f| f.retry_at > self.now) {
+            return;
+        }
+        self.loader.request_warm(key, stamp);
+    }
+
     fn get_with(&mut self, path: &str, size: u32, urgent: bool) -> Option<&TexEntry> {
+        self.get_req(path, size, if urgent { Req::Urgent } else { Req::Normal(0) })
+    }
+
+    fn get_req(&mut self, path: &str, size: u32, req: Req) -> Option<&TexEntry> {
         let key = ThumbKey { path: path.to_string(), size };
         let frame = self.frame;
         if !self.map.contains_key(&key) {
-            // Si ya llegó y se está subiendo, no se pide de nuevo.
+            // Si ya llegó y se está subiendo, no se pide de nuevo; si falló hace poco, se espera
+            // la pausa antes de reintentar.
+            let waiting = self.fails.get(&key).is_some_and(|f| f.retry_at > self.now);
+            let skip = match req {
+                Req::Cheap(_) => self.cheap_missed.contains(&key),
+                Req::Normal(_) | Req::Urgent => {
+                    self.cheap_missed.remove(&key);
+                    false
+                }
+            };
             match self.pending.iter_mut().find(|p| p.key == key) {
                 Some(p) => p.used = frame,
-                None => self.loader.request(key.clone(), urgent),
+                None if waiting || skip => {}
+                None => {
+                    if self.asked.len() > 20_000 {
+                        self.asked.clear();
+                    }
+                    self.asked.entry(key.clone()).or_insert(self.now);
+                    match req {
+                        Req::Urgent => self.loader.request(key.clone(), true),
+                        Req::Normal(stamp) => self.loader.request_thumb(key.clone(), stamp, false),
+                        Req::Cheap(stamp) => self.loader.request_thumb(key.clone(), stamp, true),
+                    }
+                }
             }
             // Mientras tanto, la versión más grande ya cargada del mismo archivo (para una
             // miniatura, una que vaya entera: la cuadrícula dibuja `tex`).
             let small = size <= BIG_SIDE;
-            let alt = self.map.iter().filter(|(k, _)| k.path == path).max_by_key(|(k, e)| (if small { e.tex.is_some() } else { e.pic.is_some() }, k.size)).map(|(k, _)| k.clone())?;
+            let alt = self
+                .map
+                .iter()
+                .filter(|(k, e)| k.path == path && e.pic.is_some())
+                .max_by_key(|(_, e)| (if small { e.tex.is_some() } else { true }, e.pic.as_ref().map_or(0, |p| p.size[0].max(p.size[1]))))
+                .map(|(k, _)| k.clone())?;
             let e = self.map.get_mut(&alt)?;
             e.used = frame;
             return Some(e);
@@ -292,26 +499,82 @@ impl Textures {
         Some(e)
     }
 
+    /// Una miniatura para la cuadrícula: la textura (o la de otra versión del archivo), en
+    /// camino (con desde cuándo y su huella) o fallida.
+    /// `stamp`: la versión del archivo según el listado (`thumbcache::stamp_of`), para buscar
+    /// primero en la caché en disco. `fast`: desplazándose rápido, solo de la caché en disco.
+    pub fn thumb(&mut self, path: &str, size: u32, stamp: u64, fast: bool) -> Thumb<'_> {
+        let key = ThumbKey { path: path.to_string(), size };
+        if self.map.get(&key).is_some_and(|e| e.pic.is_none()) {
+            // Fallo guardado (agotó los reintentos), salvo que haya otra versión con imagen.
+            if !self.map.iter().any(|(k, e)| k.path == path && e.tex.is_some()) {
+                return Thumb::Failed;
+            }
+        }
+        let now = self.now;
+        let req = if fast { Req::Cheap(stamp) } else { Req::Normal(stamp) };
+        let has = self.get_req(path, size, req).is_some_and(|e| e.tex.is_some());
+        if has {
+            // Se vuelve a buscar para devolver la referencia (el préstamo de arriba terminó).
+            let e = self.map.get(&key).filter(|e| e.tex.is_some()).map(|_| key.clone());
+            let e = match e {
+                Some(k) => self.map.get(&k),
+                None => self.get_req(path, size, req),
+            }
+            .expect("recién estaba");
+            return Thumb::Ready(e);
+        }
+        Thumb::Waiting { since: self.asked.get(&key).copied().unwrap_or(now), print: self.prints.get(path).copied() }
+    }
+
+    /// ¿Ya está esa versión exacta (o es un fallo definitivo)?
+    pub fn has(&self, path: &str, size: u32) -> bool {
+        self.map.contains_key(&ThumbKey { path: path.to_string(), size })
+    }
+
+    /// La versión más grande ya cargada de un archivo: (lado pedido, lado mayor en píxeles).
+    pub fn best_key(&self, path: &str) -> Option<(u32, usize)> {
+        self.map.iter().filter(|(k, e)| k.path == path && e.pic.is_some()).map(|(k, e)| (k.size, e.pic.as_ref().map_or(0, |p| p.size[0].max(p.size[1])))).max_by_key(|&(_, px)| px)
+    }
+
+    /// La huella de un archivo ya visto en esta sesión.
+    pub fn print(&self, path: &str) -> Option<Print> {
+        self.prints.get(path).copied()
+    }
+
     /// Lo que ya haya de un archivo (la versión más grande), sin pedir nada: para el subtítulo
     /// de la Vista rápida (medidas, páginas).
     pub fn peek(&self, path: &str) -> Option<&TexEntry> {
-        self.map.iter().filter(|(k, _)| k.path == path).max_by_key(|(k, e)| (e.pic.is_some(), k.size)).map(|(_, e)| e)
+        self.map.iter().filter(|(k, _)| k.path == path).max_by_key(|(_, e)| (e.pic.is_some(), e.pic.as_ref().map_or(0, |p| p.size[0].max(p.size[1])))).map(|(_, e)| e)
     }
 
-    /// La imagen de una foto (vista previa, vista rápida). Si Windows dio el ícono del tipo en vez
-    /// de la miniatura (le pasa al arrancar: durante unos segundos su extractor devuelve el ícono
-    /// de 48 en un lienzo de 256), se pide de más de 512, que Rayo decodifica él mismo (ver
-    /// `thumbs::load`). Sin esto el ícono quedaba para siempre: lo recibido no se vuelve a pedir.
+    /// La imagen de una foto (vista previa, vista rápida). El ícono del tipo que a veces da
+    /// Windows en lugar de la miniatura ya no se guarda (`poll` lo trata como un fallo).
     pub fn get_photo(&mut self, path: &str, size: u32) -> Option<&TexEntry> {
-        let key = ThumbKey { path: path.to_string(), size };
-        let icon = size <= 512 && self.map.get(&key).is_some_and(|e| e.icon);
-        self.get_with(path, if icon { 640 } else { size }, true)
+        self.get_with(path, size, true)
     }
 
+    /// Olvida todo, también los fallos (F5).
     pub fn clear(&mut self) {
         self.map.clear();
         self.pending.clear();
+        self.fails.clear();
+        self.asked.clear();
+        self.small_bytes = 0;
+        self.big_bytes = 0;
     }
+}
+
+/// Algo se mueve en este cuadro (desplazamiento, zoom, arrastre): `Textures::poll` sube menos.
+pub fn moving(ctx: &egui::Context) {
+    let now = ctx.input(|i| i.time);
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("texturas-moviendo"), now));
+}
+
+thread_local! {
+    /// Panel: la última foto que se dibujó (ruta, imagen, rectángulo, opaca) y hasta cuándo se
+    /// retiene mientras llega la siguiente (`f64::MAX` = todavía es la que se ve).
+    static PANE_HELD: std::cell::RefCell<Option<(String, Pic, Rect, bool, f64)>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Suelta algo grande (los fotogramas de un GIF, cientos de MB) en otro hilo: devolver tanta
@@ -700,6 +963,7 @@ pub fn preview_pane(
         let mut dims = None;
         let mut pages = None;
         let mut drew = false;
+        let mut loading = false;
         // El pozo: hundido, radio L. Con imagen o ícono lleva la trama de puntos alrededor.
         p.rect_filled(area, radius::L, t.sidebar);
         if matches!(kind, Kind::Picture | Kind::Icon) {
@@ -741,6 +1005,9 @@ pub fn preview_pane(
                 let size = ((w.max(h) * ppp).min(768.0) as u32).next_multiple_of(128);
                 let photo = is_image_ext(&e.ext);
                 let got = if photo { tex.get_photo(item.source(), size) } else { tex.get_now(item.source(), size) };
+                // Una foto en camino no es «sin vista previa»: el pozo con su trama, sin el glifo.
+                loading = photo && got.is_none();
+                let now = ui.input(|i| i.time);
                 if let Some(te) = got {
                     dims = te.orig;
                     pages = te.pages;
@@ -749,14 +1016,37 @@ pub fn preview_pane(
                     if let Some(tx) = te.pic.as_ref().filter(|_| !(te.icon && photo)) {
                         // Con aire dentro del pozo, para que la trama se vea alrededor.
                         let air = if w >= 240.0 { sp::XL } else { sp::L };
-                        picture(&p, t, te, tx, fit(tx.size_vec2() / ppp, area.shrink(air)));
+                        let r = fit(tx.size_vec2() / ppp, area.shrink(air));
+                        picture(&p, t, te, tx, r);
                         drew = true;
+                        PANE_HELD.with(|h| *h.borrow_mut() = Some((item.path.clone(), tx.clone(), r, te.opaque, f64::MAX)));
                     }
+                } else if photo {
+                    // Mientras llega, la foto anterior queda quieta hasta `HOLD_PREV`: si esta
+                    // llega antes, cambio de golpe, sin pasar por el pozo vacío.
+                    PANE_HELD.with(|h| {
+                        let mut h = h.borrow_mut();
+                        if let Some((path, pic, r, opaque, until)) = h.as_mut().filter(|x| x.0 != item.path) {
+                            if *until == f64::MAX {
+                                *until = now + super::motion::HOLD_PREV;
+                            }
+                            if now < *until {
+                                if *opaque {
+                                    framed_image(&p, t, pic, *r);
+                                } else {
+                                    pic.paint(&p, *r, None, Color32::WHITE);
+                                }
+                                ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(*until - now));
+                                drew = true;
+                            }
+                            let _ = path;
+                        }
+                    });
                 }
             }
             Kind::Icon => {}
         }
-        if !drew {
+        if !drew && !loading {
             big_icon(&p, t, area.center(), e, PANE_ICON);
         }
         if super::views::double_clicked(&resp) {
@@ -832,6 +1122,9 @@ pub fn preview_pane(
                 info_row(ui, t, t!("previa.paginas"), &n.to_string());
             } else if let Some((dw, dh)) = dims {
                 info_row(ui, t, t!("previa.dimensiones"), &format!("{dw} × {dh}"));
+            } else if is_image_ext(&e.ext) && !e.is_dir {
+                // La fila está siempre en una foto (con «—» hasta saberse): no empuja a las demás al llegar.
+                info_row(ui, t, t!("previa.dimensiones"), "—");
             }
             for (f, v) in props.iter().flat_map(|p| p.rows.iter()) {
                 info_row(ui, t, field_label(*f), v);

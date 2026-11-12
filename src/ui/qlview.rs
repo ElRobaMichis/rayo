@@ -12,7 +12,7 @@ use super::prevhost::Status;
 use super::ql::{FOLDER_CARD_W, HERO_GLYPH, HERO_ICON, LOADING_AFTER, MD_MAX, NOTICE_W, OPEN_DELAY, PDF_MAX, QL_NARROW, STRIP_THUMB, STRIP_W, ZOOM_MAX, ZOOM_STEP};
 use super::theme::Theme;
 use super::views;
-use crate::fsx::{self, anim, pdf, thumbs::is_image_ext};
+use crate::fsx::{self, anim, pdf, thumbs, thumbs::is_image_ext};
 use crossbeam_channel::{Receiver, bounded, unbounded};
 use egui::{Align2, Color32, ColorImage, CornerRadius, Key, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2};
 use egui_phosphor::regular as ic;
@@ -28,8 +28,9 @@ const PAGE_SIDE_MAX: u32 = 3072;
 const STRIP_TEX: u32 = 256;
 /// Puntos del medidor de la píldora del GIF.
 const GIF_DOTS: f32 = 24.0;
-/// Lado mínimo al que se pide una foto: más que el tope de las miniaturas del shell (512).
-const PHOTO_MIN: u32 = 768;
+/// Dónde se deja (en `ctx.data`) el pedido de la foto encajada de la Vista rápida, para
+/// precalentar con el mismo la foto elegida y las vecinas.
+pub const FIT_KEY_ID: &str = "ql-fit-key";
 
 /// Zoom, desplazamiento, página, animación, tira. Se reinicia con `reset` al cambiar de archivo.
 #[derive(Default)]
@@ -62,6 +63,16 @@ pub struct ViewState {
     shown_page: u32,
     /// La página a la que la tira se desplazó por última vez.
     strip_page: Option<u32>,
+    /// Imagen: la versión que se ve (y desde cuándo) y, mientras la nueva entra, la anterior.
+    top: Option<(Pic, f64)>,
+    base: Option<Pic>,
+    /// Lo último que se dibujó (imagen, opaca, rectángulo) y, al cambiar de archivo, eso mismo
+    /// retenido hasta un instante (`HOLD_PREV`) mientras llega lo nuevo.
+    shown: Option<(Pic, bool, Rect)>,
+    held: Option<(Pic, bool, Rect, f64)>,
+    /// Lado pedido en el último cuadro y cuándo cambió el zoom por última vez.
+    side: u32,
+    zoom_at: f64,
 }
 
 /// Ancho y alto de cada página de un PDF.
@@ -74,7 +85,9 @@ type Sizes = Vec<(f32, f32)>;
 pub fn body(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, text: Option<&str>, tex: &mut Textures, cfg: &mut QuickLookCfg, st: &mut ViewState) -> Option<(String, Rect)> {
     let now = ui.input(|i| i.time);
     if st.path != item.path {
+        let held = st.shown.take();
         reset(st);
+        st.held = held.map(|(pic, opaque, r)| (pic, opaque, r, now + motion::HOLD_PREV));
         st.path = item.path.clone();
         st.since = now;
     }
@@ -213,6 +226,11 @@ fn image(p: &Painter, t: &Theme, pic: &Pic, opaque: bool, r: Rect, a: f32) {
     } else {
         pic.paint(p, r, None, tint);
     }
+}
+
+/// Una capa de la foto (relevo): con las esquinas redondeadas si es opaca, sin marco.
+fn layer(p: &Painter, pic: &Pic, opaque: bool, r: Rect, a: f32) {
+    pic.paint(p, r, opaque.then(|| radius::S.into()), Color32::WHITE.gamma_multiply(a));
 }
 
 /// Página de papel mientras llega su imagen.
@@ -453,53 +471,125 @@ fn picture(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Tex
     if e.ext == "gif" {
         anim_tick(&ctx, src, st, now);
     }
-    // Tamaño natural (px) si ya se sabe: decide la resolución que se pide. El de una foto es solo
-    // su original (`orig`): la miniatura del shell que ya hubiera (panel, cuadrícula; ≤ 512, sin
-    // `orig`) no es la foto, y tomarla por natural dejaba la foto en la miniatura estirada.
     let size_of = |o: (u32, u32)| vec2(o.0 as f32, o.1 as f32);
-    let natural = |te: &preview::TexEntry| te.orig.map(size_of).or(te.pic.as_ref().map(|x| x.size_vec2()));
-    let orig = tex.peek(src).and_then(|te| te.orig).map(size_of);
-    let known = if photo { orig } else { tex.peek(src).and_then(natural) };
     let fit_of = |n: Vec2| (area.width() * ppp / n.x).min(area.height() * ppp / n.y).min(4.0);
-    let side_px = match known {
-        Some(n) => n.x.max(n.y) * st.zoom.unwrap_or_else(|| fit_of(n)),
-        None => area.width().max(area.height()) * ppp,
+    // Una foto se pide encajada en el área (el hilo de carga decide el lado cuando sabe las
+    // medidas y la orientación) y, antes, lo que haya enseguida (`QUICK`: la vista previa que trae
+    // adentro, con las medidas del original). Ampliada, al nivel que haga falta, sin tope.
+    let (aw, ah) = ((area.width() * ppp) as u32, (area.height() * ppp) as u32);
+    // Con histéresis: un área que baila un píxel (al acomodarse la ventana) no cambia el pedido.
+    let prev = ctx.data(|d| d.get_temp::<u32>(egui::Id::new(FIT_KEY_ID)));
+    let fit_key = match prev.and_then(|k| thumbs::fit_area(k).map(|a| (k, a))) {
+        Some((k, (pw, ph))) if pw.abs_diff(aw) <= 48 && ph.abs_diff(ah) <= 48 => k,
+        _ => thumbs::fit_key(aw, ah),
     };
-    // Una foto nunca se pide de 512 o menos: así la decodifica Rayo (`wic_load`) y llega `orig`.
-    let mut side = (side_px.max(1.0) as u32).clamp(if photo { PHOTO_MIN } else { 256 }, if photo { 4096 } else { 1024 }).next_multiple_of(256);
-    if st.zoom.is_some() {
-        // Ampliando, en saltos dobles: cada paso de la rueda no vuelve a decodificar la foto.
-        side = side.next_power_of_two().min(4096);
+    if photo {
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(FIT_KEY_ID), fit_key));
     }
-    if let Some(n) = orig.filter(|_| photo) {
-        // Más que el original no sirve (y sería otra entrada igual en `Textures`).
-        side = side.min((n.x.max(n.y) as u32).next_multiple_of(256)).max(PHOTO_MIN);
+    let orig = tex.peek(src).and_then(|te| te.orig).map(size_of);
+    let natural = |te: &preview::TexEntry| te.orig.map(size_of).or(te.pic.as_ref().map(|x| x.size_vec2()));
+    let known = if photo { orig } else { tex.peek(src).and_then(natural) };
+    let side = match (photo, st.zoom, orig) {
+        (true, Some(z), Some(n)) => {
+            // Ampliando: el nivel más chico que cubra lo que ocupa en pantalla, en potencias de
+            // dos, hasta el original; se pide cuando el zoom lleva `ZOOM_SETTLE` quieto.
+            let want = ((n.x.max(n.y) * z) as u32).next_power_of_two().max(thumbs::FIT_MIN).min((n.x.max(n.y) as u32).next_multiple_of(256));
+            let settle = st.zoom_at + motion::ZOOM_SETTLE - now;
+            if settle > 0.0 && st.side != 0 {
+                ctx.request_repaint_after(secs(settle));
+                st.side
+            } else {
+                want
+            }
+        }
+        (true, None, Some(n)) => {
+            // Si ya hay una versión que alcanza (precalentada para otro tamaño de ventana, o la de
+            // un zoom anterior), esa: no se decodifica otra casi igual.
+            let need = thumbs::fit_side((n.x as u32, n.y as u32), ((area.width() * ppp) as u32, (area.height() * ppp) as u32));
+            // (Tampoco una mucho más grande: reducida a menos de la mitad, sin mipmaps, centellea.)
+            tex.best_key(src).filter(|&(_, px)| px as f32 >= need as f32 * 0.9 && px as f32 <= need as f32 * 2.2).map_or(fit_key, |(k, _)| k)
+        }
+        (true, ..) => fit_key,
+        (false, ..) => {
+            let side_px = match known {
+                Some(n) => n.x.max(n.y) * st.zoom.unwrap_or_else(|| fit_of(n)),
+                None => area.width().max(area.height()) * ppp,
+            };
+            (side_px.max(1.0) as u32).clamp(256, 1024).next_multiple_of(256)
+        }
+    };
+    st.side = side;
+    if photo && orig.is_none() {
+        let _ = tex.get_photo(src, thumbs::QUICK);
     }
     let got = if photo { tex.get_photo(src, side) } else { tex.get_now(src, side) };
-    let Some(te) = got else {
-        well(&p, t, rect, CornerRadius::ZERO, true);
-        waiting(ui, &p, t, rect, st, now, t!("rapida.cargando"));
-        return;
-    };
-    let (Some(tx), false) = (te.pic.as_ref(), te.icon) else {
-        // Windows dio el ícono del tipo: en una foto, todavía no llegó la de verdad.
-        if te.icon && photo {
-            well(&p, t, rect, CornerRadius::ZERO, true);
-            waiting(ui, &p, t, rect, st, now, t!("rapida.cargando"));
-        } else {
+    // Lo que se ve ahora: la imagen de este archivo o, hasta `HOLD_PREV`, la del anterior.
+    // Una foto lleva marco por su tipo, no por el análisis de cada versión (si no, aparece y
+    // desaparece entre una y otra). Lo que no es foto y tiene transparencia es un ícono
+    // (programa, comprimido): sin vista previa.
+    let framed = matches!(e.ext.as_str(), "jpg" | "jpeg" | "jfif" | "heic" | "heif" | "dng" | "jxr" | "tif" | "tiff" | "bmp");
+    let cur = got.and_then(|te| te.pic.clone().filter(|_| !te.icon && (photo || te.opaque)).map(|pic| (pic, te.opaque || framed)));
+    if cur.is_none() {
+        if got.is_some() {
             no_preview(ui, t, rect, item, st, file_status(item));
+            return;
+        }
+        well(&p, t, rect, CornerRadius::ZERO, true);
+        if let Some((pic, opaque, r, until)) = st.held.clone().filter(|h| h.3 > now) {
+            // La foto anterior, quieta, mientras llega esta (si llega antes, cambio de golpe).
+            image(&p, t, &pic, opaque, r, 1.0);
+            ctx.request_repaint_after(secs(until - now));
+            st.held = Some((pic, opaque, r, until));
+            return;
+        }
+        st.held = None;
+        // Para una foto, el indicador recién a los 300 ms: a 150 aparecía justo antes que ella.
+        let left = st.since + motion::LOADER_AFTER - now;
+        if left <= 0.0 {
+            loading(&p, t, rect, t!("rapida.cargando"));
+        } else {
+            ctx.request_repaint_after(secs(left));
         }
         return;
-    };
-    // Lo que no es foto y tiene transparencia es un ícono (programa, comprimido): sin vista previa.
-    if !photo && !te.opaque {
-        no_preview(ui, t, rect, item, st, file_status(item));
-        return;
     }
-    let (mut pic, opaque, at) = (tx.clone(), te.opaque, te.at);
-    // El original si se sabe; la textura solo mientras llega.
-    let nat = te.orig.map(size_of).or(orig).or(te.pic.as_ref().map(|x| x.size_vec2())).unwrap_or(Vec2::splat(256.0));
+    let (cur_pic, opaque) = cur.expect("hay imagen");
+    let held = st.held.take().is_some_and(|h| h.3 > now);
+    // Relevo: una versión con más píxeles entra por encima en `FAST` (la de abajo queda al 100 %);
+    // de golpe si la de arriba lleva menos de `SWAP_INSTANT` a la vista o tiene transparencia.
+    // Una con menos píxeles (otra versión que quedó a mano) no reemplaza a la que se ve.
+    let px_of = |pic: &Pic| pic.size_vec2().x * pic.size_vec2().y;
+    match st.top.take() {
+        None => {
+            // Primera imagen: en un pozo vacío, `FAST`; si reemplaza a la foto anterior retenida, de golpe.
+            st.top = Some((cur_pic.clone(), if held { f64::MIN } else { now }));
+        }
+        Some((top, t0)) if top.same(&cur_pic) || px_of(&cur_pic) <= px_of(&top) => st.top = Some((top, t0)),
+        Some((top, t0)) => {
+            if now - t0 < motion::SWAP_INSTANT || !opaque {
+                st.base = None;
+                st.top = Some((cur_pic.clone(), f64::MIN));
+            } else {
+                if motion::since(&ctx, t0, design::dur::FAST) >= 1.0 || st.base.is_none() {
+                    st.base = Some(top);
+                }
+                st.top = Some((cur_pic.clone(), now));
+            }
+        }
+    }
+    let (pic, at) = st.top.clone().expect("recién puesta");
+    // Geometría: la proporción del original y el área; sin original todavía, la proporción de lo
+    // que haya, encajada (una foto de cámara siempre es más grande que el área). Nunca los
+    // píxeles de una miniatura como tamaño natural.
+    let nat = match orig.filter(|_| photo) {
+        Some(n) => n,
+        None if photo => {
+            let s = pic.size_vec2();
+            s * (area.width() * ppp / s.x).min(area.height() * ppp / s.y)
+        }
+        None => known.unwrap_or(pic.size_vec2()),
+    };
     well(&p, t, rect, CornerRadius::ZERO, true);
+    let mut pic = pic;
     // El GIF, cuando ya hay dos fotogramas: su textura en vez de la quieta.
     if let Some(x) = st.anim.as_ref().filter(|a| a.frames.len() >= 2).and_then(|a| a.tex.as_ref()) {
         pic = Pic::of(x);
@@ -507,8 +597,11 @@ fn picture(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Tex
     let fit = fit_of(nat);
     let zmax = ZOOM_MAX.max(fit);
     // Zoom: rueda hacia el puntero, doble clic encajar ↔ 100 %, arrastrar mueve.
-    let resp = ui.interact(rect, egui::Id::new(("ql-img", &item.path)), if photo { Sense::click_and_drag() } else { Sense::hover() });
-    if photo {
+    // Sin el original todavía no hay zoom (su cuenta depende de él).
+    let zoomable = photo && orig.is_some();
+    let zoom_before = st.zoom;
+    let resp = ui.interact(rect, egui::Id::new(("ql-img", &item.path)), if zoomable { Sense::click_and_drag() } else { Sense::hover() });
+    if zoomable {
         let pointer = ui.input(|i| i.pointer.hover_pos()).unwrap_or(rect.center());
         if resp.hovered() {
             let notches: f32 = ui.input(|i| {
@@ -547,21 +640,75 @@ fn picture(ui: &mut Ui, t: &Theme, rect: Rect, item: &PreviewItem, tex: &mut Tex
             }
         }
     }
+    if st.zoom != zoom_before {
+        st.zoom_at = now;
+    }
+    if st.zoom != zoom_before || resp.dragged() {
+        preview::moving(&ctx);
+    }
     let z = st.zoom.unwrap_or(fit);
     let size = nat * z / ppp;
     // No se puede sacar la imagen del cuerpo: siempre queda al menos un cuarto a la vista.
     let lim = |s: f32, b: f32| ((s + b) / 2.0 - s.min(b) / 4.0).max(0.0);
     st.pan = vec2(st.pan.x.clamp(-lim(size.x, rect.width()), lim(size.x, rect.width())), st.pan.y.clamp(-lim(size.y, rect.height()), lim(size.y, rect.height())));
     let r = Rect::from_center_size(rect.center() + st.pan, size);
-    image(&p, t, &pic, opaque, r, motion::since(&ctx, at, design::dur::SLOW));
+    // Al alejar el zoom, la de detalle queda mucho más grande que lo que ocupa (reducida a menos
+    // de la mitad, sin mipmaps, centellea): en cuanto hay una versión que alcanza, esa, de golpe.
+    let disp = r.width().max(r.height()) * ppp;
+    let side_of = |x: &Pic| x.size_vec2().max_elem();
+    let mut pic = pic;
+    let mut at = at;
+    if st.anim.is_none() && side_of(&pic) > disp * 2.2 && !cur_pic.same(&pic) && side_of(&cur_pic) >= disp * 0.9 {
+        (pic, at) = (cur_pic.clone(), f64::MIN);
+        st.top = Some((cur_pic.clone(), at));
+        st.base = None;
+    }
+    // La de abajo (la versión anterior) al 100 %; la nueva encima, entrando en `FAST`; el marco,
+    // una vez y entero.
+    let k = motion::since(&ctx, at, design::dur::FAST);
+    if let Some(b) = st.base.as_ref().filter(|_| k < 1.0) {
+        layer(&p, b, opaque, r, 1.0);
+    } else {
+        st.base = None;
+    }
+    layer(&p, &pic, opaque, r, k);
+    if opaque {
+        p.rect_stroke(r, radius::S, Stroke::new(stroke::HAIR, t.border), StrokeKind::Outside);
+    }
+    st.shown = Some((pic.clone(), opaque, r));
+    // «Enfocando»: con algo a la vista y la versión nítida que tarda más de `SHARPEN_HINT`
+    // (un disco mecánico arrancando), el medidor de puntos en una píldora abajo a la derecha (o
+    // dentro de la del zoom, antes del porcentaje).
+    let sharpening = photo && !tex.has(src, side) && {
+        let since = st.since.max(st.zoom_at);
+        let left = since + motion::SHARPEN_HINT - now;
+        if left > 0.0 {
+            ctx.request_repaint_after(secs(left));
+        }
+        left <= 0.0
+    };
+    const METER: f32 = 5.0 * 5.0 - 2.0;
+    let meter = |pr: Rect| design::dot_meter_busy(&p, t, Rect::from_min_size(pos2(pr.left() + sp::S, pr.center().y - 1.5), vec2(METER, 3.0)));
+    if sharpening && st.zoom.is_none() {
+        let g = p.layout_job(design::micro_job(t!("rapida.enfocando"), t.faint));
+        let w = sp::S + METER + sp::S + g.size().x + sp::S;
+        let pr = Rect::from_min_size(pos2(rect.right() - FLOAT_GAP - w, rect.bottom() - FLOAT_GAP - h::CTL), vec2(w, h::CTL));
+        pill(&p, t, pr);
+        meter(pr);
+        p.galley(pos2(pr.left() + sp::S + METER + sp::S, pr.center().y - g.size().y / 2.0), g, t.faint);
+    }
     // Píldora de zoom, abajo a la derecha, solo si no está encajada.
     if let Some(z) = st.zoom {
         let label = format!("{:.0} %", z * 100.0);
         let tw = design::text_width(&p, &label, design::text::mono_s());
-        let w = sp::S + tw + sp::S + h::CHIP + sp::S;
+        let extra = if sharpening { METER + sp::S } else { 0.0 };
+        let w = sp::S + extra + tw + sp::S + h::CHIP + sp::S;
         let pr = Rect::from_min_size(pos2(rect.right() - FLOAT_GAP - w, rect.bottom() - FLOAT_GAP - h::CTL), vec2(w, h::CTL));
         pill(&p, t, pr);
-        p.text(pos2(pr.left() + sp::S, pr.center().y), Align2::LEFT_CENTER, label, design::text::mono_s(), t.text);
+        if sharpening {
+            meter(pr);
+        }
+        p.text(pos2(pr.left() + sp::S + extra, pr.center().y), Align2::LEFT_CENTER, label, design::text::mono_s(), t.text);
         let br = Rect::from_center_size(pos2(pr.right() - sp::S - h::CHIP / 2.0, pr.center().y), Vec2::splat(h::CHIP));
         let b = design::icon_button_at(ui, t, br, egui::Id::new("ql-fit"), ic::CORNERS_IN, IconBtn::mini());
         if design::tip(b, t, t!("rapida.encajar")).clicked() {

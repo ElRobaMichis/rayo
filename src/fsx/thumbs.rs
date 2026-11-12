@@ -76,6 +76,11 @@ pub fn wic_decode_bytes(bytes: &[u8], max_side: u32) -> Option<Rgba> {
 }
 
 fn decode(factory: &IWICImagingFactory, decoder: &IWICBitmapDecoder, max_side: u32) -> Option<Rgba> {
+    decode_as(factory, decoder, max_side, true)
+}
+
+/// `decode`, girando según el EXIF de la imagen (`exif`) o tal como está guardada.
+fn decode_as(factory: &IWICImagingFactory, decoder: &IWICBitmapDecoder, max_side: u32, exif: bool) -> Option<Rgba> {
     unsafe {
         let frame = decoder.GetFrame(0).ok()?;
         let (mut fw, mut fh) = (0u32, 0u32);
@@ -83,7 +88,7 @@ fn decode(factory: &IWICImagingFactory, decoder: &IWICBitmapDecoder, max_side: u
         if fw == 0 || fh == 0 {
             return None;
         }
-        let orient = exif_orientation(&frame);
+        let orient = if exif { exif_orientation(&frame) } else { 1 };
         let scale = (max_side as f32 / fw.max(fh) as f32).min(1.0);
         let (nw, nh) = (((fw as f32 * scale) as u32).max(1), ((fh as f32 * scale) as u32).max(1));
         // Si el formato sabe decodificar ya reducido (JPEG: 1/2, 1/4, 1/8), se hace eso:
@@ -101,26 +106,16 @@ fn decode(factory: &IWICImagingFactory, decoder: &IWICBitmapDecoder, max_side: u
                 source = scaler.into();
             }
         }
-        let transform = match orient {
-            2 => WICBitmapTransformFlipHorizontal,
-            3 => WICBitmapTransformRotate180,
-            4 => WICBitmapTransformFlipVertical,
-            5 => WICBitmapTransformOptions(WICBitmapTransformRotate90.0 | WICBitmapTransformFlipHorizontal.0),
-            6 => WICBitmapTransformRotate90,
-            7 => WICBitmapTransformOptions(WICBitmapTransformRotate270.0 | WICBitmapTransformFlipHorizontal.0),
-            8 => WICBitmapTransformRotate270,
-            _ => WICBitmapTransformRotate0,
-        };
-        if transform != WICBitmapTransformRotate0 {
-            let rot = factory.CreateBitmapFlipRotator().ok()?;
-            rot.Initialize(&source, transform).ok()?;
-            source = rot.into();
-        }
+        // El giro EXIF se hace después, sobre los píxeles ya decodificados. El de WIC
+        // (`IWICBitmapFlipRotator`) pide la imagen por columnas al girar 90°: con el decodificador
+        // de JPEG detrás, vuelve a decodificar una y otra vez (una foto vertical de 40 MP a
+        // 1536 px tardaba 610 ms en vez de 200, y entera, más de un minuto).
         let converted = WICConvertBitmapSource(&GUID_WICPixelFormat32bppRGBA, &source).ok()?;
         let (mut cw, mut ch) = (0u32, 0u32);
         converted.GetSize(&mut cw, &mut ch).ok()?;
         let mut px = vec![0u8; (cw * ch * 4) as usize];
         converted.CopyPixels(std::ptr::null(), cw * 4, &mut px).ok()?;
+        let (px, cw, ch) = orient_pixels(px, cw, ch, orient);
         let orig = if matches!(orient, 5..=8) { (fh, fw) } else { (fw, fh) };
         Some(Rgba { w: cw, h: ch, px, premultiplied: false, orig: Some(orig), pages: None })
     }
@@ -193,24 +188,28 @@ fn orient_pixels(px: Vec<u8>, w: u32, h: u32, orient: u16) -> (Vec<u8>, u32, u32
     }
     let swap = orient >= 5;
     let (nw, nh) = if swap { (h, w) } else { (w, h) };
-    let mut out = vec![0u8; px.len()];
-    for y in 0..h {
-        for x in 0..w {
-            // A dónde va el píxel (x, y) de la imagen guardada.
-            let (dx, dy) = match orient {
-                2 => (w - 1 - x, y),
-                3 => (w - 1 - x, h - 1 - y),
-                4 => (x, h - 1 - y),
-                5 => (y, x),
-                6 => (h - 1 - y, x),
-                7 => (h - 1 - y, w - 1 - x),
-                _ => (y, w - 1 - x),
-            };
-            let s = ((y * w + x) * 4) as usize;
-            let d = ((dy * nw + dx) * 4) as usize;
-            out[d..d + 4].copy_from_slice(&px[s..s + 4]);
+    // A dónde va el píxel (x, y) de la imagen guardada: `start + x·sx + y·sy` (en píxeles). Sin
+    // decidir por píxel: una foto entera de 40 MP se gira en ~100 ms.
+    let (wi, hi, nwi) = (w as isize, h as isize, nw as isize);
+    let (start, sx, sy) = match orient {
+        2 => (wi - 1, -1, nwi),
+        3 => ((hi - 1) * nwi + wi - 1, -1, -nwi),
+        4 => ((hi - 1) * nwi, 1, -nwi),
+        5 => (0, nwi, 1),
+        6 => (hi - 1, nwi, -1),
+        7 => ((wi - 1) * nwi + hi - 1, -nwi, -1),
+        _ => ((wi - 1) * nwi, -nwi, 1),
+    };
+    let src: Vec<u32> = px.chunks_exact(4).map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
+    let mut dst = vec![0u32; src.len()];
+    for (y, row) in src.chunks_exact(w as usize).enumerate() {
+        let mut d = start + y as isize * sy;
+        for &p in row {
+            dst[d as usize] = p;
+            d += sx;
         }
     }
+    let out: Vec<u8> = dst.into_iter().flat_map(u32::to_ne_bytes).collect();
     (out, nw, nh)
 }
 
@@ -277,7 +276,11 @@ fn shell_image_with(path: &str, size: i32, icon_only: bool, cache_only: bool, th
         let factory: IShellItemImageFactory = SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None).ok()?;
         let flags = if icon_only {
             SIIGBF_ICONONLY
-        } else if cloud || cache_only {
+        } else if cache_only {
+            // Sin THUMBNAILONLY, si la miniatura no está en la caché Windows puede dar el ícono
+            // del tipo (medido: 20 de 123 fotos de una carpeta, al abrirla).
+            SIIGBF_RESIZETOFIT | SIIGBF_BIGGERSIZEOK | SIIGBF_INCACHEONLY | SIIGBF_THUMBNAILONLY
+        } else if cloud {
             SIIGBF_RESIZETOFIT | SIIGBF_BIGGERSIZEOK | SIIGBF_INCACHEONLY
         } else if thumb_only {
             SIIGBF_RESIZETOFIT | SIIGBF_BIGGERSIZEOK | SIIGBF_THUMBNAILONLY
@@ -360,6 +363,10 @@ pub struct ThumbResult {
     pub bands: Vec<Band>,
     /// (opaca, ícono en un lienzo vacío): ver `Rgba::shape`.
     pub shape: (bool, bool),
+    /// Color medio (ver `Rgba::mean_color`).
+    pub color: [u8; 3],
+    /// Pedido solo de la caché en disco y no estaba: no es un fallo (se pedirá de verdad después).
+    pub cheap_miss: bool,
 }
 
 /// Una franja horizontal de una imagen grande: sus filas (`rows`) más `GUTTER` filas de las
@@ -379,6 +386,29 @@ const SINGLE_BYTES: usize = 6 << 20;
 pub const GUTTER: usize = 2;
 
 impl Rgba {
+    /// Color medio (RGB, sin premultiplicar), de una muestra de ~32×32: la «huella» con la que
+    /// se pinta el lugar de la miniatura si su textura se desalojó.
+    pub fn mean_color(&self) -> [u8; 3] {
+        let (w, h) = (self.w as usize, self.h as usize);
+        if w == 0 || h == 0 || self.px.len() < w * h * 4 {
+            return [128; 3];
+        }
+        let step = (w.max(h) / 32).max(1);
+        let (mut sum, mut n) = ([0u64; 3], 0u64);
+        for y in (step / 2..h).step_by(step) {
+            for x in (step / 2..w).step_by(step) {
+                let p = &self.px[(y * w + x) * 4..(y * w + x) * 4 + 4];
+                let k = if self.premultiplied && p[3] > 0 { 255.0 / p[3] as f32 } else { 1.0 };
+                for c in 0..3 {
+                    sum[c] += (p[c] as f32 * k).min(255.0) as u64;
+                }
+                n += 1;
+            }
+        }
+        let n = n.max(1);
+        [(sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8]
+    }
+
     /// Cómo es: (opaca, ícono en un lienzo vacío). Mira una muestra de ~64×64 píxeles, así
     /// cuesta lo mismo una miniatura que una página de 4096. El ícono que da Windows en lugar de
     /// la miniatura es uno de 48 centrado en 256, a veces con un marco semitransparente en el
@@ -437,6 +467,12 @@ struct Want {
     first: u64,
     frame: u64,
     urgent: bool,
+    /// Precalentar (la foto que probablemente se va a ver): después de todo lo demás.
+    warm: bool,
+    /// Solo de la caché en disco (desplazándose rápido: nada de leer la foto).
+    cheap: bool,
+    /// Cuándo se pidió por primera vez (para medir la espera en la cola).
+    since: std::time::Instant,
 }
 
 #[derive(Default)]
@@ -444,6 +480,8 @@ struct Queue {
     wanted: std::collections::HashMap<ThumbKey, Want>,
     busy: HashSet<ThumbKey>,
     seq: u64,
+    /// Versión de cada archivo según el listado (`thumbcache::stamp_of`), para la caché en disco.
+    stamps: std::collections::HashMap<String, u64>,
 }
 
 /// Carga imágenes en segundo plano.
@@ -478,6 +516,7 @@ impl ThumbLoader {
                 .spawn(move || {
                     super::shell::com_init();
                     loop {
+                        let (waited, mut cheap, mut stamp);
                         let key = {
                             let (lock, cv) = &*queue;
                             let mut q = lock.lock();
@@ -491,25 +530,49 @@ impl ThumbLoader {
                                     .wanted
                                     .iter()
                                     .filter(|(_, w)| !urgent_only || w.urgent)
-                                    .min_by_key(|(_, w)| (!w.urgent, std::cmp::Reverse(w.frame), w.first))
+                                    .min_by_key(|(_, w)| (!w.urgent, w.warm, std::cmp::Reverse(w.frame), w.first))
                                     .map(|(k, _)| k.clone());
                                 if let Some(k) = pick {
-                                    q.wanted.remove(&k);
+                                    let w = q.wanted.remove(&k);
                                     q.busy.insert(k.clone());
+                                    waited = w.as_ref().map_or(std::time::Duration::ZERO, |w| w.since.elapsed());
+                                    cheap = w.is_some_and(|w| w.cheap);
+                                    stamp = q.stamps.get(&k.path).copied().unwrap_or(0);
                                     break k;
                                 }
                                 cv.wait_for(&mut q, std::time::Duration::from_millis(500));
                             }
                         };
-                        let mut img = load(&key);
+                        let started = std::time::Instant::now();
+                        // Lo que ya está en la caché en disco: sin tocar el disco de la foto.
+                        let small = key.size <= super::thumbcache::MAX_SIDE && !key.path.starts_with(ICON_PREFIX) && !key.path.starts_with(PEEK_PREFIX);
+                        if !small {
+                            stamp = 0;
+                        }
+                        let cached = super::thumbcache::get(&key.path, key.size, stamp);
+                        let from_ssd = cached.is_some();
+                        if from_ssd {
+                            method("ssd");
+                        }
+                        let cheap_miss = cheap && !from_ssd;
+                        cheap &= !from_ssd;
+                        let mut img = if from_ssd || cheap { cached } else { load(&key) };
+                        if !from_ssd && !cheap_miss && stamp != 0 && let Some(i) = img.as_ref().filter(|i| !i.shape().1) {
+                            super::thumbcache::put(&key.path, key.size, stamp, i);
+                        }
+                        if trace_on() {
+                            trace(&key, waited, started.elapsed(), img.as_ref());
+                        }
                         let shape = img.as_ref().map_or((false, false), |i| i.shape());
+                        let color = img.as_ref().map_or([128; 3], |i| i.mean_color());
                         let bands = img.as_mut().map_or_else(Vec::new, |i| {
                             let b = i.to_bands();
                             i.px = Vec::new();
                             b
                         });
-                        queue.0.lock().busy.remove(&key);
-                        let _ = res_tx.send(ThumbResult { key, img, bands, shape });
+                        // Sigue «en curso» hasta que la interfaz lo recibe (`received`): si no, un
+                        // pedido de ese mismo cuadro lo volvía a cargar.
+                        let _ = res_tx.send(ThumbResult { key, img, bands, shape, color, cheap_miss });
                         wake();
                     }
                 })
@@ -520,8 +583,29 @@ impl ThumbLoader {
 
     /// Pedir una imagen (se llama en cada cuadro mientras se necesite).
     pub fn request(&self, key: ThumbKey, urgent: bool) {
+        self.request_with(key, urgent, false, false, 0);
+    }
+
+    /// Pedir para precalentar: se atiende después de todo lo que se ve.
+    pub fn request_warm(&self, key: ThumbKey, stamp: u64) {
+        self.request_with(key, false, true, false, stamp);
+    }
+
+    /// Pedir una miniatura con la versión del archivo según el listado (`stamp`, 0 = no se
+    /// sabe): así se busca primero en la caché en disco. `cheap`: solo de ahí.
+    pub fn request_thumb(&self, key: ThumbKey, stamp: u64, cheap: bool) {
+        self.request_with(key, false, false, cheap, stamp);
+    }
+
+    fn request_with(&self, key: ThumbKey, urgent: bool, warm: bool, cheap: bool, stamp: u64) {
         let (lock, cv) = &*self.queue;
         let mut q = lock.lock();
+        if stamp != 0 && q.stamps.get(&key.path) != Some(&stamp) {
+            if q.stamps.len() > 50_000 {
+                q.stamps.clear();
+            }
+            q.stamps.insert(key.path.clone(), stamp);
+        }
         if q.busy.contains(&key) {
             return;
         }
@@ -529,21 +613,71 @@ impl ThumbLoader {
         if let Some(w) = q.wanted.get_mut(&key) {
             w.frame = frame;
             w.urgent |= urgent;
+            w.warm &= warm;
+            w.cheap &= cheap;
             if !urgent {
                 return;
             }
         } else {
             let first = q.seq;
             q.seq += 1;
-            q.wanted.insert(key, Want { first, frame, urgent });
+            q.wanted.insert(key, Want { first, frame, urgent, warm, cheap, since: std::time::Instant::now() });
         }
         cv.notify_all();
+    }
+
+    /// La interfaz recibió el resultado de `key`: ya se puede volver a pedir.
+    pub fn received(&self, key: &ThumbKey) {
+        self.queue.0.lock().busy.remove(key);
     }
 
     /// Un cuadro nuevo de la interfaz (para saber qué dejó de pedirse).
     pub fn next_frame(&self) {
         self.frame.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+// ---------------------------------------------------------------- medición (RAYO_PERF)
+
+thread_local! {
+    /// Con qué se resolvió la última carga de este hilo (para `thumbs.csv`).
+    static METHOD: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
+}
+
+fn method(m: &'static str) {
+    METHOD.with(|c| c.set(m));
+}
+
+fn trace_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("RAYO_PERF").is_some_and(|v| !v.is_empty() && v != "0"))
+}
+
+/// Con `RAYO_PERF`: una línea por imagen cargada en `thumbs.csv` (junto a `perf.csv`): cuándo
+/// terminó, cuánto esperó en la cola, cuánto tardó, con qué método y qué salió.
+fn trace(key: &ThumbKey, waited: std::time::Duration, took: std::time::Duration, img: Option<&Rgba>) {
+    use std::io::Write;
+    static FILE: std::sync::OnceLock<Option<parking_lot::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let f = FILE.get_or_init(|| {
+        let dir = crate::instance::custom_data_dir().or_else(|| std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("Rayo")))?;
+        let path = dir.join("thumbs.csv");
+        let fresh = !path.exists();
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).ok()?;
+        if fresh {
+            let _ = writeln!(f, "ms_unix,hilo,espera_ms,carga_ms,lado,metodo,resultado,ruta");
+        }
+        Some(parking_lot::Mutex::new(f))
+    });
+    let Some(f) = f else { return };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+    let res = match img {
+        Some(i) if i.shape().1 => format!("icono {}x{}", i.w, i.h),
+        Some(i) => format!("{}x{}", i.w, i.h),
+        None => "nada".into(),
+    };
+    let m = METHOD.with(|c| c.replace(""));
+    let hilo = std::thread::current().name().unwrap_or("").to_string();
+    let _ = writeln!(f.lock(), "{now},{hilo},{:.1},{:.1},{},{m},{res},\"{}\"", waited.as_secs_f64() * 1000.0, took.as_secs_f64() * 1000.0, key.size, key.path);
 }
 
 /// Marca de un pedido de ícono (no de miniatura) en la ruta de un `ThumbKey`.
@@ -571,6 +705,7 @@ fn load(key: &ThumbKey) -> Option<Rgba> {
         }
         return small.or_else(|| shell_image(path, key.size as i32, true));
     }
+    super::dev_slow();
     if let Some(dir) = key.path.strip_prefix(PEEK_PREFIX) {
         return folder_peek(dir, key.size);
     }
@@ -589,20 +724,215 @@ fn load(key: &ThumbKey) -> Option<Rgba> {
             .or_else(|| shell_image(&path, key.size as i32, false));
     }
     if is_image_ext(&ext) && !super::is_online_only(&path) {
-        // Miniaturas, de lo más rápido a lo más lento: la caché de Windows (la del Explorador,
-        // ~4 ms), la miniatura que guardó la cámara (~10 ms, si alcanza el tamaño) y, si no,
-        // la foto entera (~100–200 ms; Windows la guarda en su caché para la próxima vez).
-        // Para la vista previa (grande) se decodifica la foto, con mejor calidad.
-        return if key.size <= 512 {
-            shell_cached(&path, key.size as i32)
-                .or_else(|| embedded_thumb(&path).filter(|t| t.w.max(t.h) as f32 >= key.size as f32 * 0.75))
-                .or_else(|| shell_thumb(&path, key.size as i32))
-                .or_else(|| wic_load(&path, key.size))
-        } else {
-            wic_load(&path, key.size).or_else(|| shell_thumb(&path, key.size as i32))
-        };
+        return photo(&path, &ext, key.size);
     }
     shell_image(&path, key.size as i32, false)
+}
+
+/// Lado de pedido especial: «lo que haya enseguida» de una foto (la vista previa que trae
+/// adentro, o la miniatura que Windows ya tenga), del tamaño que tenga. Para el primer cuadro de
+/// la Vista rápida, mientras se decodifica la foto.
+pub const QUICK: u32 = 0;
+
+/// Marca de un pedido «encajada en un área» (ver `fit_key`).
+const FIT_BIT: u32 = 1 << 31;
+/// Lado mínimo de una foto encajada: más que el tope de las miniaturas del shell (512).
+pub const FIT_MIN: u32 = 768;
+
+/// Pedido de una foto encajada en un área de `w`×`h` píxeles (Vista rápida): el lado lo decide
+/// el hilo de carga cuando ya sabe las medidas y la orientación del original (que salen de la
+/// misma lectura). Así se puede pedir antes de saberlas, y precalentar las vecinas, sin
+/// decodificar dos veces una foto vertical. El área va en pasos de 32 px.
+pub fn fit_key(w: u32, h: u32) -> u32 {
+    FIT_BIT | (w.div_ceil(32).min(0x7FFF) << 15) | h.div_ceil(32).min(0x7FFF)
+}
+
+/// El área de un `fit_key`, si lo es.
+pub fn fit_area(size: u32) -> Option<(u32, u32)> {
+    (size & FIT_BIT != 0).then(|| (((size >> 15) & 0x7FFF) * 32, (size & 0x7FFF) * 32))
+}
+
+/// El lado (en pasos de 256) con que se pide una foto de `orig` (como se ve) encajada en `area`
+/// píxeles: nunca más que el original, nunca menos que `FIT_MIN`.
+pub fn fit_side(orig: (u32, u32), area: (u32, u32)) -> u32 {
+    let (ow, oh) = (orig.0.max(1) as f32, orig.1.max(1) as f32);
+    let fit = (area.0 as f32 / ow).min(area.1 as f32 / oh).min(4.0);
+    let side = (ow.max(oh) * fit).max(1.0) as u32;
+    side.clamp(FIT_MIN, 4096).next_multiple_of(256).min(orig.0.max(orig.1).next_multiple_of(256)).max(FIT_MIN)
+}
+
+/// `wic_load` encajada en un área (ver `fit_key`).
+fn wic_load_fit(path: &str, area: (u32, u32)) -> Option<Rgba> {
+    unsafe {
+        let factory: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        let w = wide(path);
+        let decoder = factory.CreateDecoderFromFilename(PCWSTR(w.as_ptr()), None, GENERIC_READ, WICDecodeMetadataCacheOnDemand).ok()?;
+        let frame = decoder.GetFrame(0).ok()?;
+        let (mut fw, mut fh) = (0u32, 0u32);
+        frame.GetSize(&mut fw, &mut fh).ok()?;
+        let shown = if matches!(exif_orientation(&frame), 5..=8) { (fh, fw) } else { (fw, fh) };
+        decode(&factory, &decoder, fit_side(shown, area))
+    }
+}
+
+/// ¿Sirve como miniatura de una foto de lado `size`? No el ícono del tipo (con
+/// `SIIGBF_INCACHEONLY` Windows a veces lo da en vez de fallar: era la miniatura que quedaba
+/// para siempre como ícono) ni una mucho más chica que lo pedido (la caché puede tener una de 96).
+fn real_thumb(img: &Rgba, size: u32) -> bool {
+    !img.shape().1 && img.w.max(img.h) as f32 >= size as f32 * 0.75
+}
+
+/// Una foto, de lo más rápido a lo más lento:
+///
+/// 1. JPEG: la vista previa que guardó la cámara (un salto del cabezal y 256 KB: ~8 ms en frío
+///    en un disco mecánico, ~1 ms en caché), si alcanza para el tamaño pedido.
+/// 2. La caché de miniaturas de Windows (la del Explorador), si tiene una de verdad.
+/// 3. La foto entera: Windows (que la guarda en su caché) o WIC, decodificada ya reducida.
+///    Leer 26 MB de un disco mecánico cuesta ~120 ms, y de a varias a la vez el cabezal salta
+///    y rinde la mitad: en esos discos se lee de a una (`heavy`).
+fn photo(path: &str, ext: &str, size: u32) -> Option<Rgba> {
+    // Miniatura (cuadrícula): si Windows ya la tiene en su caché, es lo más rápido (~1 ms, sin
+    // leer la foto). Llega de 256: se achica aquí al tamaño exacto (en la GPU, sin mipmaps,
+    // quedaría arenosa).
+    // (En un disco mecánico, también de a una: preguntarle a la caché de Windows lee el registro
+    // del archivo en el disco, y entreverado con las lecturas de los otros hilos hace saltar el
+    // cabezal.)
+    if size != QUICK
+        && size <= 256
+        && let Some(img) = super::disks::one_at_a_time(path, || shell_cached(path, size as i32)).filter(|i| real_thumb(i, size))
+    {
+        method("shell-cache");
+        return Some(fit_within(img, size));
+    }
+    if matches!(ext, "jpg" | "jpeg" | "jfif")
+        && fit_area(size).is_none()
+        && let Some(img) = jpeg_preview(path, size)
+    {
+        method("incrustada");
+        return Some(img);
+    }
+    let cache_side = if size == QUICK { 256 } else { size };
+    if size <= 512
+        && let Some(img) = super::disks::one_at_a_time(path, || shell_cached(path, cache_side as i32)).filter(|i| real_thumb(i, cache_side))
+    {
+        method("shell-cache");
+        return Some(img);
+    }
+    if size == QUICK {
+        return None;
+    }
+    if let Some(area) = fit_area(size) {
+        return heavy(path, || wic_load_fit(path, area).inspect(|_| method("wic-encajada")));
+    }
+    heavy(path, || {
+        let shell = || shell_thumb(path, size as i32).filter(|i| real_thumb(i, size.min(256))).inspect(|_| method("shell"));
+        let wic = || wic_load(path, size).inspect(|_| method("wic"));
+        // Hasta 512, primero Windows (la deja en su caché para la próxima vez); más grande, WIC.
+        if size <= 512 { shell().or_else(wic) } else { wic().or_else(shell) }
+    })
+}
+
+/// `img` achicada (calidad alta) para que su lado mayor sea `side`, si es más grande.
+fn fit_within(img: Rgba, side: u32) -> Rgba {
+    let big = img.w.max(img.h);
+    if big <= side || img.w == 0 || img.h == 0 {
+        return img;
+    }
+    let k = side as f32 / big as f32;
+    let (nw, nh) = (((img.w as f32 * k).round() as u32).max(1), ((img.h as f32 * k).round() as u32).max(1));
+    let scaled = (|| unsafe {
+        let factory: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        let fmt = if img.premultiplied { GUID_WICPixelFormat32bppPRGBA } else { GUID_WICPixelFormat32bppRGBA };
+        let bmp = factory.CreateBitmapFromMemory(img.w, img.h, &fmt, img.w * 4, &img.px).ok()?;
+        let scaler = factory.CreateBitmapScaler().ok()?;
+        scaler.Initialize(&bmp, nw, nh, WICBitmapInterpolationModeHighQualityCubic).ok()?;
+        let mut px = vec![0u8; (nw * nh * 4) as usize];
+        scaler.CopyPixels(std::ptr::null(), nw * 4, &mut px).ok()?;
+        Some(px)
+    })();
+    match scaled {
+        Some(px) => Rgba { w: nw, h: nh, px, ..img },
+        None => img,
+    }
+}
+
+/// Lo que lee una foto entera, de a uno por disco si el disco tiene cabezal (ver
+/// `disks::one_at_a_time`).
+fn heavy<T>(path: &str, f: impl FnOnce() -> T) -> T {
+    super::disks::one_at_a_time(path, f)
+}
+
+/// La vista previa que trae un JPEG (ver `jpeg`), lista: sin franjas negras, girada según EXIF y
+/// del tamaño pedido. Elige una que tenga el doble del lado pedido si la hay (achicada se ve más
+/// nítida que la justa), si no la que alcance; None si ninguna llega a ~3/4 de lo pedido.
+/// Con `QUICK`, la más grande, entera.
+pub fn jpeg_preview(path: &str, side: u32) -> Option<Rgba> {
+    // En un disco mecánico, de a una lectura (también las cortas): tres hilos leyendo el
+    // principio de fotos distintas a la vez hacían saltar el cabezal (~100 ms cada una en vez
+    // de ~8).
+    let (p, bytes) = super::disks::one_at_a_time(path, || {
+        let p = super::jpeg::peek(path)?;
+        let pv = if side == QUICK {
+            p.previews.last()?
+        } else {
+            p.previews.iter().find(|v| v.w.max(v.h) >= side * 2).or_else(|| p.best_for(side))?
+        };
+        if side != QUICK && (pv.w.max(pv.h) as f32) < side as f32 * 0.75 {
+            return None;
+        }
+        let bytes = super::jpeg::bytes_of(path, pv)?;
+        Some((p, bytes))
+    })?;
+    let img = unsafe {
+        let factory: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        let stream = SHCreateMemStream(Some(&bytes))?;
+        let decoder = factory.CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand).ok()?;
+        // La vista previa no trae su propia orientación: se usa la de la foto.
+        decode_as(&factory, &decoder, if side == QUICK { u32::MAX } else { side }, false)?
+    };
+    let (px, w, h) = letterbox_crop(img.px, img.w, img.h, p.size);
+    let (px, w, h) = orient_pixels(px, w, h, p.orient);
+    Some(Rgba { w, h, px, premultiplied: false, orig: p.shown_size(), pages: None })
+}
+
+/// Quita las franjas negras de una vista previa 4:3 de una foto 3:2 (o al revés): recorta a la
+/// proporción del original, centrado, si lo que sobra es oscuro (si no, la vista previa ya venía
+/// recortada y se deja como está).
+fn letterbox_crop(px: Vec<u8>, w: u32, h: u32, main: Option<(u32, u32)>) -> (Vec<u8>, u32, u32) {
+    let Some((mw, mh)) = main.filter(|&(a, b)| a > 0 && b > 0) else { return (px, w, h) };
+    let (aspect, own) = (mw as f32 / mh as f32, w as f32 / h as f32);
+    if (aspect / own - 1.0).abs() < 0.02 || w < 8 || h < 8 {
+        return (px, w, h);
+    }
+    // El recuadro de la foto dentro de la vista previa, hacia adentro (sin la fila de la unión).
+    let (x0, y0, x1, y1) = if aspect > own {
+        let y0 = ((h as f32 - w as f32 / aspect) / 2.0).ceil() as u32;
+        (0, y0, w, (h - y0).max(y0 + 1))
+    } else {
+        let x0 = ((w as f32 - h as f32 * aspect) / 2.0).ceil() as u32;
+        (x0, 0, (w - x0).max(x0 + 1), h)
+    };
+    // ¿Lo de afuera es negro? Se mira el promedio de lo que se va a quitar.
+    let (mut sum, mut n) = (0u64, 0u64);
+    for y in (0..h).step_by(2) {
+        for x in (0..w).step_by(2) {
+            if y < y0 || y >= y1 || x < x0 || x >= x1 {
+                let i = ((y * w + x) * 4) as usize;
+                sum += px[i].max(px[i + 1]).max(px[i + 2]) as u64;
+                n += 1;
+            }
+        }
+    }
+    if n == 0 || sum / n > 28 {
+        return (px, w, h);
+    }
+    let (cw, ch) = (x1 - x0, y1 - y0);
+    let mut out = Vec::with_capacity((cw * ch * 4) as usize);
+    for y in y0..y1 {
+        let row = ((y * w + x0) * 4) as usize;
+        out.extend_from_slice(&px[row..row + (cw * 4) as usize]);
+    }
+    (out, cw, ch)
 }
 
 /// Ícono chico mejor que el de Windows, cuando el ícono no trae dibujo chico (p. ej. accesos
@@ -737,7 +1067,7 @@ fn folder_peek(dir: &str, size: u32) -> Option<Rgba> {
             if super::is_online_only(&path) {
                 continue;
             }
-            return shell_cached(&path, size as i32).or_else(|| shell_image(&path, size as i32, false)).or_else(|| wic_load(&path, size));
+            return photo(&path, &ext, size);
         }
         if video.is_none() && matches!(ext.as_str(), "mp4" | "mkv" | "mov" | "avi" | "wmv" | "webm" | "m4v") {
             video = Some(path);
@@ -852,6 +1182,122 @@ mod bench {
         }
         eprintln!("Incrustada: {:.1} ms por foto ({}x{} sin franjas)", t.elapsed().as_secs_f64() * 1000.0 / files.len() as f64, got.0, got.1);
     }
+
+    /// Lee sin pasar por la caché de Windows (FILE_FLAG_NO_BUFFERING): lo que cuesta de verdad
+    /// en el disco, cada vez. Devuelve los bytes leídos.
+    fn read_raw(path: &str, offset: u64, len: usize) -> usize {
+        use std::io::{Read, Seek};
+        use std::os::windows::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new().read(true).custom_flags(0x2000_0000).open(path).unwrap();
+        let chunk = 1 << 20;
+        let layout = std::alloc::Layout::from_size_align(chunk, 4096).unwrap();
+        let buf = unsafe { std::slice::from_raw_parts_mut(std::alloc::alloc(layout), chunk) };
+        f.seek(std::io::SeekFrom::Start(offset & !4095)).unwrap();
+        let mut got = 0;
+        while got < len {
+            let want = (len - got).next_multiple_of(4096).min(chunk);
+            let n = f.read(&mut buf[..want]).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            got += n;
+        }
+        unsafe { std::alloc::dealloc(buf.as_mut_ptr(), layout) };
+        got
+    }
+
+    /// Disco mecánico: el principio de cada foto (lo que trae la vista previa incrustada) contra
+    /// la foto entera, de a una y de a tres a la vez. `RAYO_DIAG_DIR`: carpeta con fotos.
+    #[test]
+    #[ignore]
+    fn diag_hdd_reads() {
+        let Ok(dir) = std::env::var("RAYO_DIAG_DIR") else { return };
+        let skip: usize = std::env::var("RAYO_DIAG_SKIP").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let mut files: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path().display().to_string()).filter(|p| is_image_ext(&crate::fsx::ext_of(p))).collect();
+        files.sort();
+        let files = &files[skip..];
+        let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
+        // Cabeceras: 256 KB de 24 fotos, en orden.
+        let t = std::time::Instant::now();
+        for f in &files[..24] {
+            read_raw(f, 0, 256 << 10);
+        }
+        eprintln!("cabecera 256 KB, en orden: {:.1} ms por foto", ms(t) / 24.0);
+        // Las mismas al revés (salto hacia atrás en cada una).
+        let t = std::time::Instant::now();
+        for f in files[24..48].iter().rev() {
+            read_raw(f, 0, 256 << 10);
+        }
+        eprintln!("cabecera 256 KB, al revés: {:.1} ms por foto", ms(t) / 24.0);
+        // Cabeceras de a tres hilos.
+        let t = std::time::Instant::now();
+        std::thread::scope(|s| {
+            for k in 0..3 {
+                let part: Vec<&String> = files[48..72].iter().skip(k).step_by(3).collect();
+                s.spawn(move || part.iter().for_each(|f| _ = read_raw(f, 0, 256 << 10)));
+            }
+        });
+        eprintln!("cabecera 256 KB, 3 hilos: {:.1} ms por foto", ms(t) / 24.0);
+        // Fotos enteras: 6 de a una, 6 de a tres a la vez.
+        let t = std::time::Instant::now();
+        let mut bytes = 0;
+        for f in &files[72..78] {
+            bytes += read_raw(f, 0, usize::MAX >> 1);
+        }
+        eprintln!("enteras de a una: {:.0} ms por foto, {:.0} MB/s", ms(t) / 6.0, bytes as f64 / 1e6 / (ms(t) / 1000.0));
+        let t = std::time::Instant::now();
+        let total = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for k in 0..3 {
+                let part: Vec<&String> = files[78..84].iter().skip(k).step_by(3).collect();
+                let total = &total;
+                s.spawn(move || part.iter().for_each(|f| _ = total.fetch_add(read_raw(f, 0, usize::MAX >> 1), std::sync::atomic::Ordering::Relaxed)));
+            }
+        });
+        let bytes = total.load(std::sync::atomic::Ordering::Relaxed);
+        eprintln!("enteras de a tres: {:.0} ms por foto, {:.0} MB/s", ms(t) / 6.0, bytes as f64 / 1e6 / (ms(t) / 1000.0));
+    }
+
+    /// Diagnóstico: cada método sobre cada archivo de `RAYO_DIAG_FILES` (separados por `;`).
+    #[test]
+    #[ignore]
+    fn diag_methods() {
+        let Ok(list) = std::env::var("RAYO_DIAG_FILES") else { return };
+        let size: u32 = std::env::var("RAYO_DIAG_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(128);
+        crate::fsx::shell::com_init();
+        let show = |name: &str, t: std::time::Instant, r: Option<Rgba>| {
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            match r {
+                Some(i) => eprintln!("    {name:<14} {ms:8.1} ms  {}x{} shape={:?}", i.w, i.h, i.shape()),
+                None => eprintln!("    {name:<14} {ms:8.1} ms  NONE"),
+            }
+        };
+        for f in list.split(';').filter(|s| !s.is_empty()) {
+            eprintln!("{f}");
+            let methods = std::env::var("RAYO_DIAG_METHODS").unwrap_or_else(|_| "cached,embedded,shell_thumb,shell,wic,load".into());
+            for m in methods.split(',') {
+                let t = std::time::Instant::now();
+                let num = |pre: &str| m.strip_prefix(pre).and_then(|n| n.parse::<u32>().ok());
+                let r = match m {
+                    _ if num("pv:").is_some() => jpeg_preview(f, num("pv:").unwrap_or(0)),
+                    _ if num("wic:").is_some() => wic_load(f, num("wic:").unwrap_or(0)),
+                    "peek" => {
+                        let p = crate::fsx::jpeg::peek(f);
+                        eprintln!("    peek: {:?}", p.as_ref().map(|p| (p.orient, p.size, p.previews.iter().map(|v| (v.w, v.h)).collect::<Vec<_>>())));
+                        None
+                    }
+                    "cached" => shell_cached(f, size as i32),
+                    "embedded" => embedded_thumb(f),
+                    "shell_thumb" => shell_thumb(f, size as i32),
+                    "shell" => shell_image(f, size as i32, false),
+                    "wic" => wic_load(f, size),
+                    "load" => load(&ThumbKey { path: f.to_string(), size }),
+                    _ => continue,
+                };
+                show(m, t, r);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -909,6 +1355,28 @@ mod tests {
         let (out, w, h) = orient_pixels(px, 3, 2, 6);
         assert_eq!((w, h), (2, 3));
         assert_eq!(out[4], 255);
+        // Las ocho, contra la definición píxel por píxel.
+        let (w, h) = (5u32, 3u32);
+        let px: Vec<u8> = (0..w * h).flat_map(|i| [i as u8, 0, 0, 255]).collect();
+        for o in 1..=8u16 {
+            let (out, nw, nh) = orient_pixels(px.clone(), w, h, o);
+            assert_eq!((nw, nh), if o >= 5 { (h, w) } else { (w, h) });
+            for y in 0..h {
+                for x in 0..w {
+                    let (dx, dy) = match o {
+                        1 => (x, y),
+                        2 => (w - 1 - x, y),
+                        3 => (w - 1 - x, h - 1 - y),
+                        4 => (x, h - 1 - y),
+                        5 => (y, x),
+                        6 => (h - 1 - y, x),
+                        7 => (h - 1 - y, w - 1 - x),
+                        _ => (y, w - 1 - x),
+                    };
+                    assert_eq!(out[((dy * nw + dx) * 4) as usize], (y * w + x) as u8, "orientación {o}");
+                }
+            }
+        }
     }
 }
 
@@ -982,5 +1450,46 @@ pub fn system_icon(path: &str, size: u32) -> Option<Rgba> {
             }
         }
         Some(img)
+    }
+}
+
+#[cfg(test)]
+mod lcn_bench {
+    /// Diagnóstico: ¿el orden por nombre de las fotos de una carpeta es su orden físico en el
+    /// disco? (primer LCN de cada archivo, sin leer sus datos). `RAYO_DIAG_DIR`.
+    #[test]
+    #[ignore]
+    fn diag_lcn_order() {
+        use windows::Win32::Storage::FileSystem::*;
+        use windows::Win32::System::IO::DeviceIoControl;
+        use windows::Win32::System::Ioctl::*;
+        let Ok(dir) = std::env::var("RAYO_DIAG_DIR") else { return };
+        let mut files: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path().display().to_string()).collect();
+        files.sort();
+        let t = std::time::Instant::now();
+        let mut lcns = Vec::new();
+        for f in &files {
+            let w = crate::index::walk::wide(f);
+            let h = unsafe { CreateFileW(windows::core::PCWSTR(w.as_ptr()), FILE_READ_ATTRIBUTES.0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, None, OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES(0), None) };
+            let Ok(h) = h else { continue };
+            let input = STARTING_VCN_INPUT_BUFFER { StartingVcn: 0 };
+            let mut out = [0u64; 8];
+            let mut got = 0u32;
+            let _ = unsafe { DeviceIoControl(h, FSCTL_GET_RETRIEVAL_POINTERS, Some(&input as *const _ as *const _), std::mem::size_of_val(&input) as u32, Some(out.as_mut_ptr() as *mut _), 64, Some(&mut got), None) };
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(h);
+            }
+            // RETRIEVAL_POINTERS_BUFFER: ExtentCount (u32 + relleno), StartingVcn, [NextVcn, Lcn]…
+            lcns.push((out[3] as i64, out[0] as u32));
+        }
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        let ordered = lcns.windows(2).filter(|w| w[1].0 >= w[0].0).count();
+        let extents: Vec<u32> = lcns.iter().map(|l| l.1).collect();
+        let frag = extents.iter().filter(|&&e| e > 1).count();
+        let jumps: i64 = lcns.windows(2).map(|w| (w[1].0 - w[0].0).abs()).sum();
+        let mut sorted: Vec<i64> = lcns.iter().map(|l| l.0).collect();
+        sorted.sort();
+        let jumps_sorted: i64 = sorted.windows(2).map(|w| w[1] - w[0]).sum();
+        eprintln!("{} archivos, LCN en {ms:.0} ms ({:.2} ms c/u); en orden por nombre: {ordered}/{}; fragmentados: {frag}; recorrido por nombre {jumps} vs ordenado {jumps_sorted} clústeres", lcns.len(), ms / lcns.len().max(1) as f64, lcns.len().saturating_sub(1));
     }
 }

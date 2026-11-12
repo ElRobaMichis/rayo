@@ -1849,9 +1849,9 @@ fn path_suggestions(ctx: &egui::Context, typed: &str) -> Vec<String> {
     let cached: Option<(String, std::sync::Arc<Vec<String>>)> = ctx.data(|d| d.get_temp(key));
     let names = match cached {
         Some((d, n)) if d.eq_ignore_ascii_case(dir) => n,
-        _ if fsx::is_remote(dir) => {
-            // En la red, listar puede tardar (o no contestar nunca): en otro hilo, y las
-            // sugerencias aparecen cuando llegan.
+        _ => {
+            // Listar puede tardar (una red que no contesta, un disco mecánico dormido: segundos):
+            // en otro hilo, y las sugerencias aparecen cuando llegan.
             ctx.data_mut(|d| d.insert_temp(key, (dir.to_string(), std::sync::Arc::new(Vec::<String>::new()))));
             let (c, d) = (ctx.clone(), dir.to_string());
             std::thread::spawn(move || {
@@ -1866,12 +1866,6 @@ fn path_suggestions(ctx: &egui::Context, typed: &str) -> Vec<String> {
                 c.request_repaint();
             });
             std::sync::Arc::new(Vec::new())
-        }
-        _ => {
-            let n: Vec<String> = fsx::list_dir(dir).map(|l| l.into_iter().filter(|e| e.is_dir && !e.hidden).map(|e| e.name).collect()).unwrap_or_default();
-            let n = std::sync::Arc::new(n);
-            ctx.data_mut(|d| d.insert_temp(key, (dir.to_string(), n.clone())));
-            n
         }
     };
     let key_of = |s: &str| crate::index::store::search_key(s);

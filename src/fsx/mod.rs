@@ -8,6 +8,8 @@ pub mod remote;
 pub mod pinyin;
 pub mod shell;
 pub mod thumbs;
+pub mod jpeg;
+pub mod thumbcache;
 pub mod transfer;
 pub mod disks;
 pub mod rename;
@@ -241,6 +243,15 @@ pub fn is_dir_like(p: &str) -> bool {
     std::path::Path::new(&long_path(p)).is_dir() || archive::is_dir(p)
 }
 
+/// `is_dir_like` con plazo: si el disco no contesta en `ms` milisegundos (mecánico dormido,
+/// servidor caído), None («no se sabe todavía»). La pregunta sigue en otro hilo.
+pub fn probe_dir_like(p: &str, ms: u64) -> Option<bool> {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    let path = p.to_string();
+    std::thread::Builder::new().name("sondeo".into()).spawn(move || _ = tx.send(is_dir_like(&path))).ok()?;
+    rx.recv_timeout(std::time::Duration::from_millis(ms)).ok()
+}
+
 /// ¿Está en la red? (\\servidor\recurso o una unidad de red asignada, como Z:)
 pub fn is_remote(p: &str) -> bool {
     if p.starts_with(r"\\") && !p.starts_with(r"\\?\") {
@@ -299,7 +310,18 @@ pub fn exists_like(p: &str) -> bool {
     std::path::Path::new(&long_path(p)).exists() || archive::split(p).is_some_and(|(a, inner)| inner.is_empty() || archive::find(&a, &inner).is_some())
 }
 
+/// Solo para desarrollo: `RAYO_DISCO_LENTO=400` agrega esa demora (ms) a cada listado y a cada
+/// imagen que se carga, para ver (y capturar) los estados de espera sin un disco mecánico dormido.
+pub fn dev_slow() {
+    static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let ms = *MS.get_or_init(|| std::env::var("RAYO_DISCO_LENTO").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
+    if ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+
 pub fn list_dir(dir: &str) -> Result<Vec<FileEntry>, String> {
+    dev_slow();
     // Dentro de un comprimido (o el comprimido mismo): se lista su contenido.
     if let Some((archive, inner)) = archive::split(dir) {
         return archive::list(&archive, &inner);

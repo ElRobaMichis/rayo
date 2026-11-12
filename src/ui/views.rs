@@ -264,11 +264,67 @@ pub fn cloud_glyph(t: &Theme, c: fsx::Cloud) -> Option<(&'static str, Color32, &
     }
 }
 
+/// Ancla de desplazamiento: cuando la lista cambia debajo (el listado del disco reemplaza al del
+/// índice, aparece un archivo arriba), el primer elemento visible queda en el mismo lugar de la
+/// pantalla en vez de correrse. Se guarda (lista, nombre del primero visible, cuánto se pasó de su
+/// borde) en cada cuadro; si la lista cambió y ese nombre está en otro lugar, devuelve el
+/// desplazamiento que lo deja donde estaba. Con un botón apretado (arrastre, marquesina) espera.
+#[derive(Clone)]
+struct Anchor {
+    list: (usize, usize),
+    name: String,
+    idx: usize,
+    top: f32,
+    past: f32,
+}
+
+/// O(1) por cuadro: solo si la lista es otra y el ancla ya no está en su lugar se la busca.
+fn anchor_fix(ui: &Ui, id: Id, entries: &[FileEntry], top_of: impl Fn(usize) -> f32) -> Option<f32> {
+    let _p = super::perf::scope("lista.ancla");
+    let list = (entries.as_ptr() as usize, entries.len());
+    let (same, moved) = ui.data_mut(|d| d.get_temp_mut_or_default::<Option<Anchor>>(id).as_ref().map(|a| (a.list == list, entries.get(a.idx).is_none_or(|e| e.name != a.name))))?;
+    if same || !moved || ui.input(|i| i.pointer.any_down()) {
+        return None;
+    }
+    let a: Anchor = ui.data(|d| d.get_temp::<Option<Anchor>>(id)).flatten()?;
+    let i = entries.iter().position(|e| e.name == a.name)?;
+    let top = top_of(i);
+    ((top - a.top).abs() > 0.5).then_some((top + a.past).max(0.0))
+}
+
+fn anchor_keep(ui: &Ui, id: Id, entries: &[FileEntry], first: usize, top: f32, viewport_top: f32) {
+    if ui.input(|i| i.pointer.any_down()) {
+        return;
+    }
+    let Some(e) = entries.get(first) else { return };
+    let list = (entries.as_ptr() as usize, entries.len());
+    ui.data_mut(|d| {
+        let slot = d.get_temp_mut_or_default::<Option<Anchor>>(id);
+        match slot {
+            // Sin asignar si no cambió nada (el nombre solo se copia al cambiar el primero visible).
+            Some(a) if a.idx == first && a.name == e.name => {
+                (a.list, a.top, a.past) = (list, top, viewport_top - top);
+            }
+            _ => *slot = Some(Anchor { list, name: e.name.clone(), idx: first, top, past: viewport_top - top }),
+        }
+    });
+}
+
 /// Lista virtualizada: solo se dibujan las filas visibles.
 /// `glide`: fila del resaltado deslizante y su color (si hay una sola seleccionada); a cada fila
 /// se le pasa dónde está ese resaltado.
 fn virtual_list(ui: &mut Ui, id: Id, n: usize, scroll_to: Option<usize>, glide: Option<(usize, Color32)>, mut row: impl FnMut(&mut Ui, usize, Rect, Option<Rect>)) -> egui::scroll_area::ScrollAreaOutput<()> {
-    let out = egui::ScrollArea::vertical().id_salt(id).auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
+    virtual_list_in(ui, id, n, None, scroll_to, glide, &mut row)
+}
+
+/// `virtual_list` con el ancla de desplazamiento sobre `entries` (ver `anchor_fix`).
+fn virtual_list_in(ui: &mut Ui, id: Id, n: usize, entries: Option<&[FileEntry]>, scroll_to: Option<usize>, glide: Option<(usize, Color32)>, row: &mut impl FnMut(&mut Ui, usize, Rect, Option<Rect>)) -> egui::scroll_area::ScrollAreaOutput<()> {
+    let anchor_id = id.with("ancla");
+    let mut area = egui::ScrollArea::vertical().id_salt(id).auto_shrink([false, false]);
+    if let Some(off) = entries.filter(|_| scroll_to.is_none()).and_then(|e| anchor_fix(ui, anchor_id, e, |i| i as f32 * ROW_H)) {
+        area = area.vertical_scroll_offset(off);
+    }
+    let out = area.show_viewport(ui, |ui, viewport| {
         let width = ui.available_width();
         ui.set_height(ROW_H * n as f32 + 6.0);
         let top = ui.max_rect().top();
@@ -288,6 +344,9 @@ fn virtual_list(ui: &mut Ui, id: Id, n: usize, scroll_to: Option<usize>, glide: 
         for i in first..last {
             let r = Rect::from_min_size(pos2(left, top + i as f32 * ROW_H), vec2(width, ROW_H));
             row(ui, i, r, pill);
+        }
+        if let Some(e) = entries {
+            anchor_keep(ui, anchor_id, e, first, first as f32 * ROW_H, viewport.min.y);
         }
     });
     out
@@ -389,9 +448,37 @@ fn background_click(cx: &mut Cx, bg: &egui::Response, ci: usize) {
     }
 }
 
-/// Lo que se muestra mientras se lee una carpeta: en la red puede tardar (servidor dormido, VPN).
-fn loading_text(dir: &str) -> &'static str {
-    if fsx::is_remote(dir) { t!("lista.esperando_servidor") } else { t!("lista.cargando") }
+/// Mientras se lee una carpeta: nada los primeros `LOADER_AFTER` (en un SSD llega antes y no
+/// destella ninguna etiqueta); después «Cargando», y desde el segundo, en la red «Esperando al
+/// servidor» y en un disco mecánico o USB «Despertando el disco» (dormido, tarda segundos).
+fn loading_message(ui: &mut Ui, t: &Theme, dir: &str) {
+    let id = Id::new("carpeta-cargando");
+    let now = ui.input(|i| i.time);
+    let since = match ui.data(|d| d.get_temp::<(String, f64)>(id)) {
+        Some((d, at)) if d == dir => at,
+        _ => {
+            ui.data_mut(|d| d.insert_temp(id, (dir.to_string(), now)));
+            now
+        }
+    };
+    let waited = now - since;
+    if waited < super::motion::LOADER_AFTER {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(super::motion::LOADER_AFTER - waited));
+        return;
+    }
+    if waited < 1.0 {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(1.0 - waited));
+    }
+    let msg = if waited < 1.0 {
+        t!("lista.cargando")
+    } else if fsx::is_remote(dir) {
+        t!("lista.esperando_servidor")
+    } else if !fsx::disks::volume(dir).kind.parallel_friendly() {
+        t!("lista.despertando_disco")
+    } else {
+        t!("lista.cargando")
+    };
+    empty_message(ui, t, "", msg);
 }
 
 /// Vacío o cargando, en lo que queda del área. En una zona grande, el estado vacío con trama e
@@ -856,8 +943,8 @@ fn slow_rename(cx: &mut Cx, resp: &egui::Response, dir: &str, e: &FileEntry, sel
 /// ese arrastre es un rectángulo de selección, no mover archivos.
 /// `name_area` / `measure`: dónde está el nombre (para renombrar con un clic lento).
 #[allow(clippy::too_many_arguments)]
-fn handle_row_response(cx: &mut Cx, resp: &egui::Response, ci: usize, dir: &str, e: &FileEntry, selected: bool, selection: Vec<String>, marquee_x: Option<f32>, name_area: Rect, measure: bool) -> bool {
-    slow_rename(cx, resp, dir, e, selected, &selection, name_area, measure);
+fn handle_row_response(cx: &mut Cx, resp: &egui::Response, ci: usize, dir: &str, e: &FileEntry, selected: bool, selection: &[String], marquee_x: Option<f32>, name_area: Rect, measure: bool) -> bool {
+    slow_rename(cx, resp, dir, e, selected, selection, name_area, measure);
     let path = fsx::join(dir, &e.name);
     // Arrastrar: se lleva la selección si la fila está seleccionada; si no, solo esa fila (y queda seleccionada sola).
     if resp.drag_started() {
@@ -953,7 +1040,7 @@ pub fn column(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, active: bool, 
     }
     if data.entries.is_empty() {
         if data.loading {
-            empty_message(ui, cx.t, "", loading_text(&dir));
+            loading_message(ui, cx.t, &dir);
         } else {
             empty_message(ui, cx.t, ic::FOLDER_OPEN, t!("lista.carpeta_vacia"));
         }
@@ -970,7 +1057,7 @@ pub fn column(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, active: bool, 
         let right = st.as_deref();
         let resp = file_row(ui, cx, r, e, &dir, selected, active, right, e.is_dir, None);
         let name_area = Rect::from_min_max(pos2(r.left() + TEXT_X, r.top()), pos2(r.right() - 12.0, r.bottom()));
-        handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), None, name_area, true);
+        handle_row_response(cx, &resp, ci, &dir, e, selected, &selection, None, name_area, true);
     });
     cx.pill = None;
     marquee(ui, cx, ci, start, selection, &out, |r| list_hits(data.entries, r));
@@ -1222,7 +1309,7 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
     }
     if data.entries.is_empty() {
         if data.loading {
-            empty_message(ui, &t, "", loading_text(&dir));
+            loading_message(ui, &t, &dir);
         } else {
             empty_message(ui, &t, ic::FOLDER_OPEN, t!("lista.carpeta_vacia"));
         }
@@ -1233,7 +1320,7 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
     // Para las barras de "qué ocupa espacio": proporción de cada elemento sobre el total de la carpeta.
     let total: u64 = data.entries.iter().filter_map(|e| e.display_size()).sum();
     let glide = glide_row(&t, col, data.entries, focused);
-    let out = virtual_list(ui, Id::new(("det", cx.tab_id, &dir)), data.entries.len(), scroll_to, glide, |ui, i, r, pill| {
+    let out = virtual_list_in(ui, Id::new(("det", cx.tab_id, &dir)), data.entries.len(), Some(data.entries), scroll_to, glide, &mut |ui, i, r, pill| {
         cx.pill = pill;
         let e = &data.entries[i];
         let selected = col.is_selected(&e.name);
@@ -1304,7 +1391,7 @@ pub fn details(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool
         }
         // Arrastrar desde fuera del nombre (fecha, tipo, tamaño) dibuja un rectángulo, como en el Explorador.
         let name_area = Rect::from_min_max(pos2(r.left() + TEXT_X, r.top()), pos2(name_end, r.bottom()));
-        if handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), Some(x1), name_area, true) {
+        if handle_row_response(cx, &resp, ci, &dir, e, selected, &selection, Some(x1), name_area, true) {
             start = resp.ctx.input(|i| i.pointer.press_origin());
         }
     });
@@ -1572,6 +1659,109 @@ fn rounded_image(p: &Painter, tex: egui::TextureId, rect: Rect, uv: Rect, tint: 
     p.add(egui::epaint::RectShape::filled(rect, radius::S, tint).with_texture(tex, uv));
 }
 
+/// ¿Se está desplazando rápido? (más de 3 pantallas por segundo, o hace menos de `SCROLL_SETTLE`
+/// que lo hacía). Entonces la cuadrícula solo pide lo que está en la caché en disco: las fotos
+/// que pasan de largo no ocupan los hilos (una lectura en curso no se puede cancelar). También
+/// avisa a `Textures` que algo se mueve (sube menos texturas por cuadro).
+fn scroll_fast(ui: &Ui, id: Id, viewport: Rect) -> bool {
+    let now = ui.input(|i| i.time);
+    let prev: Option<(f32, f64, f64)> = ui.data(|d| d.get_temp(id));
+    let (mut fast_at, moved) = match prev {
+        Some((y, t, fast_at)) => {
+            let dt = (now - t).max(1e-3) as f32;
+            let speed = (viewport.min.y - y).abs() / dt / viewport.height().max(1.0);
+            (if speed > 3.0 && (viewport.min.y - y).abs() > 1.0 { now } else { fast_at }, (viewport.min.y - y).abs() > 0.5)
+        }
+        None => (f64::MIN, false),
+    };
+    if ui.ctx().dragged_id().is_some() && moved {
+        fast_at = now;
+    }
+    ui.data_mut(|d| d.insert_temp(id, (viewport.min.y, now, fast_at)));
+    if moved {
+        super::preview::moving(ui.ctx());
+    }
+    let left = fast_at + super::motion::SCROLL_SETTLE - now;
+    if left > 0.0 {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(left));
+        return true;
+    }
+    false
+}
+
+/// Proporción que se supone antes de saber la real: foto 3:2, video 16:9, PDF vertical (1:√2).
+fn default_aspect(ext: &str) -> f32 {
+    match ext {
+        "pdf" => 1.0 / std::f32::consts::SQRT_2,
+        "mp4" | "mkv" | "mov" | "avi" | "wmv" | "webm" | "m4v" | "mpg" => 16.0 / 9.0,
+        _ => 1.5,
+    }
+}
+
+/// El rectángulo de una miniatura en su caja: sale de la proporción (y del original, si es más
+/// chico que la caja: un PNG de 32 px no se agranda), nunca de cuántos píxeles llegaron. Así una
+/// versión mejor reemplaza a otra sin mover nada. Alineado a píxeles.
+fn thumb_rect(caja: Rect, aspect: f32, orig: Option<(u32, u32)>, ppp: f32) -> Rect {
+    let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 1.5 };
+    let mut s = if aspect >= caja.aspect_ratio() { vec2(caja.width(), caja.width() / aspect) } else { vec2(caja.height() * aspect, caja.height()) };
+    if let Some((w, _)) = orig.filter(|o| o.0 > 0) {
+        let nat = w as f32 / ppp;
+        if nat < s.x {
+            s *= nat / s.x;
+        }
+    }
+    let r = Rect::from_center_size(caja.center(), s);
+    let snap = |v: f32| (v * ppp).round() / ppp;
+    Rect::from_min_max(pos2(snap(r.min.x), snap(r.min.y)), pos2(snap(r.max.x), snap(r.max.y)))
+}
+
+/// La miniatura de un archivo con imagen en su caja de la cuadrícula. Mientras no llega: nada
+/// los primeros `GRACE_THUMB`, después una placa quieta (con el color y la forma de la foto si ya
+/// se vio en esta sesión); nunca el ícono genérico, que queda para el fallo definitivo (devuelve
+/// false: lo dibuja quien llama). La primera vez que llega entra con un fundido `SLOW` sobre la
+/// placa; si ya se había visto, de golpe.
+#[allow(clippy::too_many_arguments)]
+fn grid_thumb(ui: &Ui, p: &Painter, t: &Theme, caja: Rect, path: &str, e: &FileEntry, fast: bool, tex: &mut super::preview::Textures, ppp: f32, a: f32) -> bool {
+    let ext = e.ext.as_str();
+    use super::preview::Thumb;
+    let px = (caja.width().max(caja.height()) * ppp).ceil() as u32 / 32 * 32 + 32;
+    let ctx = ui.ctx();
+    let placa = |r: Rect, color: Color32, k: f32| p.rect_filled(r, radius::S, alpha(color, a * k));
+    match tex.thumb(path, px, fsx::thumbcache::stamp_of(e.mtime, e.size), fast) {
+        Thumb::Failed => false,
+        Thumb::Ready(te) => {
+            let Some(tx) = &te.tex else { return false };
+            let size = tx.size_vec2();
+            // Si en vez de una miniatura llegó un ícono (un PDF que no se pudo dibujar, un video
+            // sin vista: cuadrado, sin medidas ni páginas), va del tamaño de los demás.
+            let is_icon = !fsx::thumbs::is_image_ext(ext) && te.orig.is_none() && te.pages.is_none() && size.x == size.y;
+            let img = if is_icon { Rect::from_center_size(caja.center(), vec2(TILE_ICON, TILE_ICON)) } else { thumb_rect(caja, te.aspect().unwrap_or(1.5), te.orig, ppp) };
+            let shown = super::motion::since(ctx, te.at, dur::SLOW);
+            if shown < 1.0 && !is_icon {
+                placa(img, t.hover, 1.0 - shown);
+            }
+            rounded_image(p, tx.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), alpha(Color32::WHITE, a * shown));
+            true
+        }
+        Thumb::Waiting { print: Some(pr), .. } => {
+            // Ya vista: su forma y su color medio desde el primer cuadro.
+            placa(thumb_rect(caja, pr.aspect, None, ppp), pr.color, 1.0);
+            true
+        }
+        Thumb::Waiting { since, print: None } => {
+            let now = ctx.input(|i| i.time);
+            let left = since + super::motion::GRACE_THUMB - now;
+            if left > 0.0 {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
+            } else {
+                let k = super::motion::since(ctx, since + super::motion::GRACE_THUMB, dur::FAST);
+                placa(thumb_rect(caja, default_aspect(ext), None, ppp), t.hover, k);
+            }
+            true
+        }
+    }
+}
+
 /// ¿Vale la pena pedir la miniatura real (foto, video, PDF, ícono del programa)?
 /// Archivos que se muestran con su contenido (fotos, videos, documentos). Lo demás (programas,
 /// accesos directos, zip, Word…) lleva su ícono de Windows, todos del mismo tamaño.
@@ -1651,7 +1841,7 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
     }
     if data.entries.is_empty() {
         if data.loading {
-            empty_message(ui, &t, "", loading_text(&dir));
+            loading_message(ui, &t, &dir);
         } else {
             empty_message(ui, &t, ic::FOLDER_OPEN, t!("lista.carpeta_vacia"));
         }
@@ -1665,7 +1855,13 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
     let selection = col.selected();
     let ppp = ui.ctx().pixels_per_point();
     let base = selection.clone();
-    let out = egui::ScrollArea::vertical().id_salt(("grid", cx.tab_id, &dir)).auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
+    let anchor_id = Id::new(("grid-ancla", cx.tab_id, &dir));
+    let row_top = |i: usize| GRID_PAD + (i / cols) as f32 * TILE_H;
+    let mut area = egui::ScrollArea::vertical().id_salt(("grid", cx.tab_id, &dir)).auto_shrink([false, false]);
+    if let Some(off) = Some(data.entries).filter(|_| scroll_to.is_none()).and_then(|e| anchor_fix(ui, anchor_id, e, row_top)) {
+        area = area.vertical_scroll_offset(off);
+    }
+    let out = area.show_viewport(ui, |ui, viewport| {
         ui.set_height(rows as f32 * TILE_H + 2.0 * GRID_PAD);
         let origin = ui.max_rect().min;
         if let Some(i) = scroll_to {
@@ -1681,6 +1877,8 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
         });
         let first = (viewport.min.y / TILE_H).floor().max(0.0) as usize;
         let last = ((viewport.max.y / TILE_H).ceil() as usize + 1).min(rows);
+        let fast = scroll_fast(ui, Id::new(("grid-vel", cx.tab_id, &dir)), viewport);
+        anchor_keep(ui, anchor_id, data.entries, first * cols, row_top(first * cols), viewport.min.y);
         for row in first..last {
             for c in 0..cols {
                 let i = row * cols + c;
@@ -1708,25 +1906,8 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                 if e.is_dir {
                     grid_folder(ui, &p, &t, thumb, &path, tex, a);
                     drew = true;
-                } else if wants_thumbnail(e) {
-                    if let Some(te) = tex.get(&path, (thumb.width().max(thumb.height()) * ppp).ceil() as u32 / 32 * 32 + 32) {
-                        if let Some(tx) = &te.tex {
-                            let size = tx.size_vec2();
-                            // Nunca más grande que sus píxeles: agrandada se vería borrosa.
-                            let s = (thumb.width() / size.x).min(thumb.height() / size.y).min(1.0 / ppp);
-                            // Si en vez de una miniatura llegó un ícono (un PDF que no se pudo dibujar, un
-                            // video sin vista: cuadrado, sin medidas ni páginas), va del tamaño de los demás.
-                            let is_icon = !fsx::thumbs::is_image_ext(&e.ext) && te.orig.is_none() && te.pages.is_none() && size.x == size.y;
-                            let img = if is_icon { Rect::from_center_size(thumb.center(), vec2(TILE_ICON, TILE_ICON)) } else { Rect::from_center_size(thumb.center(), size * s) };
-                            // Recién llegada: aparece con un fundido sobre el ícono, que se desvanece.
-                            let shown = super::motion::since(ui.ctx(), te.at, dur::SLOW);
-                            if shown < 1.0 {
-                                file_icon(&p, &t, thumb.center(), TILE_ICON, TILE_GLYPH, &path, e.is_dir, &e.ext, a * (1.0 - shown));
-                            }
-                            rounded_image(&p, tx.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), alpha(Color32::WHITE, a * shown));
-                            drew = true;
-                        }
-                    }
+                } else if wants_thumbnail(e) && e.cloud != fsx::Cloud::OnlineOnly {
+                    drew = grid_thumb(ui, &p, &t, thumb, &path, e, fast, tex, ppp, a);
                 }
                 if !drew {
                     file_icon(&p, &t, thumb.center(), TILE_ICON, TILE_GLYPH, &path, e.is_dir, &e.ext, a);
@@ -1755,7 +1936,17 @@ pub fn grid(ui: &mut Ui, cx: &mut Cx, ci: usize, col: &mut Col, focused: bool, d
                     let g = p.layout_job(job);
                     p.galley(pos2(name_rect.center().x, name_rect.top()), g, name_c);
                 }
-                handle_row_response(cx, &resp, ci, &dir, e, selected, selection.clone(), None, name_rect, false);
+                handle_row_response(cx, &resp, ci, &dir, e, selected, &selection, None, name_rect, false);
+            }
+        }
+        // Adelanto: una pantalla más abajo y media arriba, después de todo lo visible (al
+        // desplazarse ya están). Solo lo barato de pedir: lo que deja de pedirse se olvida solo.
+        let screen = last.saturating_sub(first).max(1);
+        let thumb_w = TILE_W - 2.0 * TILE_INSET - 2.0 * sp::S;
+        let px = (thumb_w.max(THUMB_H) * ppp).ceil() as u32 / 32 * 32 + 32;
+        for row in (last..(last + screen).min(rows)).chain(first.saturating_sub(screen / 2)..first).filter(|_| !fast) {
+            for e in data.entries[row * cols..((row + 1) * cols).min(n)].iter().filter(|e| !e.is_dir && wants_thumbnail(e) && e.cloud != fsx::Cloud::OnlineOnly) {
+                tex.warm_thumb(&fsx::join(&dir, &e.name), px, fsx::thumbcache::stamp_of(e.mtime, e.size));
             }
         }
     });

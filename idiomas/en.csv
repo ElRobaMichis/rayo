@@ -582,6 +582,7 @@ lista.ajustar_columna,Drag to resize · double-click: original width,Arrastra pa
 lista.buscando,Searching…,Buscando…,
 lista.cambia_extension,Changes the extension: {antes} → {despues},Cambia la extensión: {antes} → {despues},Al renombrar · {antes} y {despues} = extensiones como «.pdf» o «sin extensión»
 lista.cargando,Loading…,Cargando…,
+lista.despertando_disco,Waking the disk…,Despertando el disco…,
 lista.esperando_servidor,Waiting for the server…,Esperando al servidor…,
 lista.carpeta_vacia,Empty folder,Carpeta vacía,
 lista.descarga,Download,Descarga,Columna Tipo de una descarga que todavía no termina
@@ -835,6 +836,7 @@ rapida.maximizar,Maximize,Maximizar,Tooltip de la Vista rápida
 rapida.restaurar,Restore,Restaurar,Tooltip de la Vista rápida
 rapida.miniaturas,Thumbnails,Miniaturas,Tooltip: mostrar u ocultar la tira de páginas del PDF
 rapida.encajar,Fit,Encajar,Tooltip: volver a ver la imagen entera
+rapida.enfocando,Sharpening,Enfocando,Micro-etiqueta (se muestra en mayúsculas): llega la versión nítida de la foto
 rapida.pagina_anterior,Previous page,Página anterior,Tooltip del paginador del PDF
 rapida.pagina_siguiente,Next page,Página siguiente,Tooltip del paginador del PDF
 rapida.sin_seleccion,No selection,Sin selección,Micro-etiqueta (se muestra en mayúsculas)

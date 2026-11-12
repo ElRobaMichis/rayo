@@ -123,6 +123,10 @@ pub struct App {
     /// Copias temporales de archivos de adentro de comprimidos (para la vista previa):
     /// ruta → None mientras se extrae, Some(resultado) al terminar.
     extracted: Arc<Mutex<std::collections::HashMap<String, Option<Option<String>>>>>,
+    /// Precalentar fotos para la Vista rápida: el elemento enfocado y desde cuándo; la foto que
+    /// se ve en ella y sus vecinas (se recalculan al cambiar).
+    warm_focus: (String, f64),
+    warm_near: (String, Vec<String>),
     /// Visores de vista previa de Windows (Word, Excel…) en el panel.
     prevhost: Option<super::prevhost::PreviewHost>,
     /// Audio y video de la Vista rápida.
@@ -433,6 +437,8 @@ impl App {
             awaiting: Vec::new(),
             drag_out: None,
             extracted: Default::default(),
+            warm_focus: (String::new(), 0.0),
+            warm_near: (String::new(), Vec::new()),
             prevhost,
             player,
             locks: None,
@@ -1401,7 +1407,12 @@ impl App {
         match a {
             Action::Navigate(p) => {
                 let p = fsx::normalize(&p);
-                if fsx::is_dir_like(&p) {
+                // Sin preguntarle al disco en el hilo de la interfaz: un disco mecánico dormido
+                // tarda segundos en contestar y la ventana quedaba congelada. Una unidad es una
+                // carpeta; lo demás se pregunta con un plazo, y si no contesta a tiempo se entra
+                // igual (el listado dirá si no existe).
+                let root = p.len() <= 3 && p.as_bytes().get(1) == Some(&b':');
+                if root || fsx::probe_dir_like(&p, 40).unwrap_or(true) {
                     let tab = self.tab();
                     tab.search.text.clear();
                     tab.navigate(&p, true);
@@ -4138,6 +4149,72 @@ impl App {
         (list.iter().filter(|e| names.contains(&e.name)).map(|e| fsx::join(&path, &e.name)).collect(), from_search)
     }
 
+    /// Lo que hace que Espacio muestre la foto nítida en el primer cuadro: se pide de antemano,
+    /// sin urgencia, del tamaño de la Vista rápida (el último con que se abrió) la foto enfocada
+    /// cuando el cursor lleva `DWELL_WARM` quieto en ella y, con la Vista rápida abierta, las
+    /// vecinas de la que se ve (la anterior y las dos siguientes). Lo que deja de pedirse se
+    /// olvida solo en la cola del cargador.
+    fn warm_photos(&mut self, ctx: &egui::Context, focused: Option<String>, ql: Option<String>) {
+        // El tamaño con que se pidió la última vez; antes de abrirla en esta sesión, una estimación
+        // con el lugar donde se va a abrir (si no coincide, la Vista rápida usa igual lo
+        // precalentado mientras pide la suya: ver `qlview::picture`).
+        let known = ctx.data(|d| d.get_temp::<u32>(egui::Id::new(super::qlview::FIT_KEY_ID)));
+        if known.is_none() && self.ql.open {
+            // Recién abierta: todavía no dibujó la foto (y con ella su tamaño).
+            return;
+        }
+        let key = known.unwrap_or_else(|| {
+            let r = super::qlwin::placement(self.cfg.quicklook.rect, self.hwnd);
+            let s = ctx.pixels_per_point();
+            let margin = (2.0 * super::design::sp::L + 8.0) * s;
+            fsx::thumbs::fit_key((r[2] as f32 - margin).max(64.0) as u32, (r[3] as f32 - (super::design::h::TOOLBAR + 2.0 * super::design::sp::L + 8.0) * s).max(64.0) as u32)
+        });
+        let now = ctx.input(|i| i.time);
+        let photo = |p: &str| fsx::thumbs::is_image_ext(&fsx::ext_of(p)) && fsx::archive::split(p).is_none();
+        let focused = focused.filter(|p| photo(p));
+        if focused.as_deref() != Some(self.warm_focus.0.as_str()) {
+            self.warm_focus = (focused.clone().unwrap_or_default(), now);
+        }
+        if let Some(f) = focused.filter(|_| !self.ql.open) {
+            let left = self.warm_focus.1 + super::motion::DWELL_WARM - now;
+            if left > 0.0 {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
+            } else {
+                self.tex.warm(&f, key);
+            }
+        }
+        let Some(cur) = ql.filter(|_| self.ql.open) else { return };
+        if self.warm_near.0 != cur {
+            let near = match fsx::parent_of(&cur) {
+                Some(dir) => {
+                    let list = self.view_of(&dir);
+                    // Las que están a una flecha: al lado y, en la cuadrícula, arriba y abajo.
+                    let cols = if self.cfg.view == ViewMode::Grid { views::grid_columns(ctx, self.tabs[self.cur].id) } else { 1 };
+                    let name = fsx::file_name(&cur);
+                    match list.iter().position(|e| e.name == name) {
+                        Some(i) => [i + 1, i.wrapping_sub(1), i + cols, i.wrapping_sub(cols), i + 2]
+                            .into_iter()
+                            .filter_map(|k| list.get(k))
+                            .filter(|e| !e.is_dir && fsx::thumbs::is_image_ext(&e.ext))
+                            .map(|e| fsx::join(&dir, &e.name))
+                            .fold(Vec::new(), |mut v, p| {
+                                if !v.contains(&p) {
+                                    v.push(p);
+                                }
+                                v
+                            }),
+                        None => Vec::new(),
+                    }
+                }
+                None => Vec::new(),
+            };
+            self.warm_near = (cur, near);
+        }
+        for p in self.warm_near.1.clone() {
+            self.tex.warm(&p, key);
+        }
+    }
+
     /// Un elemento de la carpeta abierta, para la Vista rápida (el que se recorre de una
     /// selección múltiple).
     fn item_at(&mut self, path: &str) -> Option<PreviewItem> {
@@ -4645,7 +4722,10 @@ impl eframe::App for App {
             let ql_text = if self.ql.open { self.ql_text_for(&ctx, ql_item) } else { None };
             let env = super::ql::Env { t: &t, tex: &mut self.tex, host: self.prevhost.as_ref(), player: self.player.as_ref(), cfg: &mut self.cfg.quicklook, main: self.hwnd };
             let model = super::ql::Model { item: ql_item, text: ql_text.as_deref(), group: &group, from_search };
-            for e in self.ql.show(&ctx, env, model) {
+            let ql_path = ql_item.map(|i| i.source().to_string());
+            let events = self.ql.show(&ctx, env, model);
+            self.warm_photos(&ctx, item.as_ref().map(|i| i.source().to_string()), ql_path);
+            for e in events {
                 match e {
                     super::ql::Event::Close => self.ql.close(),
                     super::ql::Event::Open { path, is_dir } => actions.push(Action::Open { path, is_dir }),

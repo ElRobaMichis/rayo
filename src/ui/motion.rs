@@ -17,6 +17,24 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 pub const DWELL_TAB: f64 = 0.45;
 /// Puntero quieto sobre una carpeta: cuánto esperar antes de leerla por adelantado.
 pub const DWELL_PREFETCH: f64 = 0.08;
+/// Miniatura sin imagen ni huella: cuánto se espera antes de pintar su placa (lo que llega antes
+/// entra sin pasar por la placa).
+pub const GRACE_THUMB: f64 = 0.08;
+/// Vista rápida y panel: cuánto se retiene la foto anterior mientras llega la nueva.
+pub const HOLD_PREV: f64 = 0.12;
+/// Una versión más nítida que llega cuando la anterior lleva menos que esto a la vista la
+/// reemplaza de golpe (el ojo no llegó a posarse en la borrosa).
+pub const SWAP_INSTANT: f64 = 0.10;
+/// Sin nada que mostrar: cuándo aparece el indicador de carga.
+pub const LOADER_AFTER: f64 = 0.30;
+/// Cursor quieto sobre una foto: cuándo pedir la versión del tamaño de la Vista rápida.
+pub const DWELL_WARM: f64 = 0.15;
+/// Desplazamiento quieto: desde cuándo se permiten lecturas de fotos (antes, solo caché).
+pub const SCROLL_SETTLE: f64 = 0.10;
+/// Con algo a la vista y falta la versión nítida: cuándo aparece «Enfocando».
+pub const SHARPEN_HINT: f64 = 1.0;
+/// Zoom quieto: cuándo se pide el nivel de detalle.
+pub const ZOOM_SETTLE: f64 = 0.12;
 /// Cuánto se ve un aviso.
 pub const TOAST: f64 = 2.5;
 /// Cuánto se ve una confirmación en el lugar («Copiado»).

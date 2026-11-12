@@ -25,7 +25,11 @@ pub struct DirState {
     again: bool,
 }
 
-type ListResult = (String, Result<Vec<FileEntry>, String>);
+/// (carpeta, listado, ¿provisorio? (del índice, mientras el disco contesta)).
+/// Cuánto se espera al disco antes de mostrar el listado del índice.
+const PROVISIONAL_AFTER: std::time::Duration = std::time::Duration::from_millis(120);
+
+type ListResult = (String, Result<Vec<FileEntry>, String>, bool);
 
 pub struct DirCache {
     pub map: HashMap<String, DirState>,
@@ -42,26 +46,64 @@ impl DirCache {
     pub fn new(mgr: Arc<IndexManager>, wake: Wake) -> Self {
         let (tx, req_rx) = unbounded::<String>();
         let (res_tx, rx) = unbounded::<ListResult>();
+        // Lo que se hace con un listado terminado: tamaños de las carpetas (del índice) y entregarlo.
+        type Finish = Arc<dyn Fn(String, Result<Vec<FileEntry>, String>, std::time::Instant) + Send + Sync>;
+        let finish: Finish = {
+            let (mgr, res_tx, wake) = (mgr.clone(), res_tx.clone(), wake.clone());
+            Arc::new(move |path: String, mut r: Result<Vec<FileEntry>, String>, t0: std::time::Instant| {
+                if super::perf::on() {
+                    crate::diag::log(&format!("listado «{path}»: {} elementos en {:.1} ms", r.as_ref().map_or(0, |l| l.len()), t0.elapsed().as_secs_f64() * 1000.0));
+                }
+                if let Ok(list) = &mut r {
+                    if list.iter().any(|e| e.is_dir) {
+                        if let Some(sizes) = mgr.child_sizes(&path) {
+                            for e in list.iter_mut().filter(|e| e.is_dir) {
+                                e.dir_size = sizes.get(&e.lower).copied();
+                            }
+                        }
+                    }
+                }
+                let _ = res_tx.send((path, r, false));
+                wake();
+            })
+        };
         let job: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |path: String| {
             // Vista plana: todos los archivos de la carpeta y sus subcarpetas.
             if let Some(dir) = path.strip_prefix(fsx::FLAT_KEY) {
                 let r = mgr.files_under(dir, 300_000).map(Ok).unwrap_or_else(|| fsx::list_flat(dir, 300_000));
-                let _ = res_tx.send((path, r));
+                let _ = res_tx.send((path, r, false));
                 wake();
                 return;
             }
-            let mut r = fsx::list_dir(&path);
-            if let Ok(list) = &mut r {
-                if list.iter().any(|e| e.is_dir) {
-                    if let Some(sizes) = mgr.child_sizes(&path) {
-                        for e in list.iter_mut().filter(|e| e.is_dir) {
-                            e.dir_size = sizes.get(&e.lower).copied();
+            let t0 = std::time::Instant::now();
+            // En un disco mecánico o USB (que puede estar dormido: segundos hasta que contesta),
+            // si el listado no llega en `PROVISIONAL_AFTER`, se entrega antes lo que sabe el índice
+            // y el de verdad lo entrega otro hilo cuando llegue: este queda libre para la carpeta
+            // siguiente (si no, las de arriba en la ruta, también dormidas, la hacían esperar).
+            let slow = !fsx::is_remote(&path) && fsx::archive::split(&path).is_none() && !fsx::disks::volume(&path).kind.parallel_friendly();
+            if slow {
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                let p2 = path.clone();
+                let spawned = std::thread::Builder::new().name("listado-lento".into()).spawn(move || _ = tx.send(fsx::list_dir(&p2))).is_ok();
+                match rx.recv_timeout(PROVISIONAL_AFTER) {
+                    Ok(r) => finish(path, r, t0),
+                    Err(_) if spawned => {
+                        if let Some(mut list) = mgr.children_entries(&path) {
+                            if super::perf::on() {
+                                crate::diag::log(&format!("listado «{path}»: provisorio del índice ({} elementos)", list.len()));
+                            }
+                            list.shrink_to_fit();
+                            let _ = res_tx.send((path.clone(), Ok(list), true));
+                            wake();
                         }
+                        let finish = finish.clone();
+                        let _ = std::thread::Builder::new().name("listado-espera".into()).spawn(move || finish(path, rx.recv().unwrap_or_else(|_| Err(String::new())), t0));
                     }
+                    Err(_) => finish(path.clone(), fsx::list_dir(&path), t0),
                 }
+            } else {
+                finish(path.clone(), fsx::list_dir(&path), t0);
             }
-            let _ = res_tx.send((path, r));
-            wake();
         });
         for i in 0..2 {
             let req_rx = req_rx.clone();
@@ -135,8 +177,19 @@ impl DirCache {
     pub fn poll(&mut self) -> bool {
         let mut any = false;
         let mut again = Vec::new();
-        while let Ok((path, r)) = self.rx.try_recv() {
+        while let Ok((path, r, provisional)) = self.rx.try_recv() {
             any = true;
+            if provisional {
+                // Lo del índice, solo si todavía no hay nada (sigue «cargando»: el de verdad viene).
+                if let (Some(st), Ok(list)) = (self.map.get_mut(&path), r) {
+                    if st.raw.is_none() {
+                        st.generation += 1;
+                        st.raw = Some(Arc::new(list));
+                        st.view_key = None;
+                    }
+                }
+                continue;
+            }
             if let Some(st) = self.map.get_mut(&path) {
                 // Si cambió mientras tanto, se muestra este y se pide otro (sigue "cargando").
                 st.loading = std::mem::take(&mut st.again);
